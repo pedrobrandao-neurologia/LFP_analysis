@@ -421,6 +421,117 @@ sec('perda de pacotes, fs efetiva e NaN');
   });
 }
 
+/* --------------------------------------------- 9. DSP tolerante a NaN (Onda 1) -- */
+sec('DSP tolerante a lacunas');
+{
+  const FS = 250, N = 250 * 20;                       // 20 s a 250 Hz
+  const senoide = (nan) => {
+    const x = new Float64Array(N);
+    for (let i = 0; i < N; i++) x[i] = Math.sin(2 * Math.PI * 20 * i / FS);
+    if (nan) for (const i of nan) x[i] = NaN;
+    return x;
+  };
+  const picoDe = w => {
+    let bi = 0;
+    for (let i = 0; i < w.f.length; i++) if (w.f[i] >= 5 && w.f[i] <= 45 && w.p[i] > w.p[bi]) bi = i;
+    return w.f[bi];
+  };
+
+  t('nanStats conta lacunas e a maior sequência contígua', () => {
+    const x = senoide([10, 11, 12, 500]);
+    const s = C.nanStats(x);
+    assert(s.nNan === 4, 'nNan: ' + s.nNan);
+    assert(s.nValid === N - 4, 'nValid: ' + s.nValid);
+    assert(s.longestGapSamples === 3, 'maior lacuna: ' + s.longestGapSamples);
+    return `${s.nNan} NaN (${s.pctNan.toFixed(2)}%), maior lacuna ${s.longestGapSamples}`;
+  });
+  t('PSD com 5% de perda de pacotes (lacunas contíguas) recupera o pico', () => {
+    /* perda real é de PACOTES INTEIROS (63 amostras), não de amostras avulsas */
+    const idx = [];
+    for (const p of [8, 30, 52, 74]) for (let k = 0; k < 63; k++) idx.push(p * 63 + k);
+    const w = C.welchPSD(senoide(idx), FS, { nperseg: 512, overlap: .5 });
+    assert(w.p, 'espectro não deveria ser nulo: ' + w.reason);
+    const erro = Math.abs(picoDe(w) - 20);
+    assert(erro < 0.5, 'erro de ' + erro.toFixed(2) + ' Hz');
+    assert(w.nSegmentsDropped > 0, 'deveria ter descartado os segmentos com lacuna');
+    assert(w.pctDataUsed > 0 && w.pctDataUsed < 100, 'pctDataUsed: ' + w.pctDataUsed);
+    return `pico ${picoDe(w).toFixed(2)} Hz, ${w.nSegments} segs usados, ${w.nSegmentsDropped} descartados (${w.pctDataUsed.toFixed(0)}%)`;
+  });
+  t('NaN espalhado: recusa honesta com maxNanPct=0, estima com tolerância explícita', () => {
+    const idx = []; for (let i = 0; i < N * 0.05; i++) idx.push((i * 37) % N);
+    const x = senoide(idx);
+    /* com o default (qualquer NaN descarta), nenhum segmento sobra — e a
+       resposta correta é dizer isso, não fabricar um espectro */
+    const estrito = C.welchPSD(x, FS, { nperseg: 512, overlap: .5 });
+    assert(estrito.p === null, 'deveria recusar com maxNanPct=0');
+    /* com tolerância declarada pelo usuário, estima e reporta quanto faltava */
+    const tolerante = C.welchPSD(x, FS, { nperseg: 512, overlap: .5, maxNanPct: 10 });
+    assert(tolerante.p, 'deveria estimar com maxNanPct=10: ' + tolerante.reason);
+    const erro = Math.abs(picoDe(tolerante) - 20);
+    assert(erro < 0.5, 'erro de ' + erro.toFixed(2) + ' Hz');
+    assert(tolerante.pctNan > 4 && tolerante.pctNan < 6, 'pctNan não reportado');
+    return `estrito → null; tolerante → pico ${picoDe(tolerante).toFixed(2)} Hz (${tolerante.pctNan.toFixed(1)}% faltante)`;
+  });
+  t('PSD com 90% de NaN retorna null com motivo legível', () => {
+    const idx = []; for (let i = 0; i < N * 0.9; i++) idx.push(i);
+    const w = C.welchPSD(senoide(idx), FS, { nperseg: 512, overlap: .5 });
+    assert(w.p === null, 'deveria recusar-se a estimar');
+    assert(typeof w.reason === 'string' && w.reason.length > 10, 'sem motivo legível');
+    return w.reason.slice(0, 54) + '…';
+  });
+  t('espectrograma produz coluna NaN visível na lacuna (não zero)', () => {
+    const x = senoide([]);
+    for (let i = 1000; i < 1400; i++) x[i] = NaN;
+    const sg = C.spectrogram(x, FS, { window: 256, hop: 64, fmax: 60 });
+    assert(sg.nColumnsNaN > 0, 'nenhuma coluna marcada como lacuna');
+    const temNaN = sg.S.some(c => Array.from(c).every(Number.isNaN));
+    assert(temNaN, 'coluna de lacuna deveria ser NaN, não zero');
+    const temZero = sg.S.some(c => Array.from(c).every(v => v === 0));
+    assert(!temZero, 'lacuna virou silêncio espectral (zero) — errado');
+    return `${sg.nColumnsNaN}/${sg.nColumns} colunas em lacuna`;
+  });
+  t('filtro e envelope imputam só para filtrar e repõem NaN, declarando pctImputed', () => {
+    const x = senoide([]); for (let i = 500; i < 560; i++) x[i] = NaN;
+    const bp = C.bandpassFFT(x, FS, 13, 30);
+    const env = C.hilbertEnvelope(bp);
+    assert(bp.pctImputed > 0, 'pctImputed não declarado no filtro');
+    assert(Number.isNaN(bp[520]), 'NaN não reposto no filtro');
+    assert(Number.isNaN(env[520]), 'NaN não reposto no envelope');
+    assert(isFinite(bp[100]) && isFinite(env[100]), 'amostras válidas viraram NaN');
+    return `pctImputed ${bp.pctImputed.toFixed(2)}%, NaN reposto`;
+  });
+  t('bursts não atravessam lacunas e os truncados saem das estatísticas', () => {
+    const env = new Float64Array(1000).fill(0.1);
+    for (let i = 100; i < 200; i++) env[i] = 5;          // burst inteiro, 400 ms
+    for (let i = 400; i < 500; i++) env[i] = 5;          // burst que encosta na lacuna
+    for (let i = 500; i < 520; i++) env[i] = NaN;        // lacuna
+    const r = C.detectBursts(env, 250, { threshold: 1, minDurationMs: 100 });
+    assert(r.n === 2, 'esperava 2 bursts, veio ' + r.n);
+    assert(r.nTruncatedByGap === 1, 'esperava 1 truncado, veio ' + r.nTruncatedByGap);
+    r.bursts.forEach(b => {
+      for (let k = Math.round(b.start * 250); k < Math.round(b.end * 250); k++)
+        assert(isFinite(env[k]), 'burst atravessou lacuna em ' + k);
+    });
+    /* o truncado não pode contaminar a duração média */
+    assert(Math.abs(r.meanDurationMs - 400) < 1e-6, 'duração média contaminada: ' + r.meanDurationMs);
+    return `${r.n} bursts, ${r.nTruncatedByGap} truncado fora das estatísticas`;
+  });
+  t('média e variância ignoram NaN em vez de propagá-lo', () => {
+    assert(C.mean([1, 2, NaN, 3]) === 2, 'mean: ' + C.mean([1, 2, NaN, 3]));
+    assert(isFinite(C.variance([1, 2, NaN, 3])), 'variance virou NaN');
+    assert(isFinite(C.sd([1, 2, NaN, 3])), 'sd virou NaN');
+    return 'na.rm com n reportado por nanStats';
+  });
+  t('espectro sem lacuna é idêntico ao de antes (sem regressão)', () => {
+    const w = C.welchPSD(senoide([]), FS, { nperseg: 512, overlap: .5 });
+    const erro = Math.abs(picoDe(w) - 20);
+    assert(erro < 0.5, 'erro ' + erro);
+    assert(w.nSegmentsDropped === 0, 'descartou segmento sem motivo');
+    assert(w.pctDataUsed === 100, 'pctDataUsed: ' + w.pctDataUsed);
+    return `pico ${picoDe(w).toFixed(2)} Hz, 100% dos segmentos usados`;
+  });
+}
+
 /* ------------------------------------------------------------- resultado -- */
 console.log(`\n${'='.repeat(58)}`);
 console.log(`  ${ok} passaram   ${falhas} falharam   ${pulados} sem dados`);

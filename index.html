@@ -169,6 +169,11 @@ footer.foot{padding:24px 20px 40px;text-align:center;font:11px/1.7 var(--mono);c
 .privacy{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border:1px solid var(--rule);
   border-radius:3px;background:var(--panel);font:10.5px/1 var(--mono);color:var(--ink-2)}
 .privacy i{width:7px;height:7px;border-radius:50%;background:var(--ok);display:inline-block}
+/* ---------- selo de qualidade do dado (Onda 1) ---------- */
+.seal{display:inline-block;font:10.5px/1.4 var(--mono);color:var(--ink-2);background:var(--panel-2);
+  border:1px solid var(--rule-2);border-radius:3px;padding:4px 8px;margin-bottom:10px}
+.seal.warn{color:var(--warn);background:#FBF3EA;border-color:#E8D5BE;font-weight:600}
+
 /* ---------- painel de exportação ---------- */
 .exportgrid{display:flex;flex-direction:column;gap:9px}
 .exportitem{display:flex;flex-direction:column;gap:3px}
@@ -895,6 +900,122 @@ function prettyChannel(c) {
 /*  2. DSP                                                                   */
 /* ======================================================================== */
 
+/* ---------- core/dsp/nan.js ---------- */
+/* dsp/nan.js — contabilidade de dados faltantes (dsp)
+
+   POR QUE ISTO EXISTE. A partir da Onda 1 a perda de pacotes vira NaN na série
+   (ver io/packets.js). Um único NaN propaga pela FFT e destrói o espectro
+   inteiro. Este módulo dá às funções de DSP as utilidades para trabalhar com
+   lacunas SEM imputar dado em silêncio: cada função declara quanto descartou,
+   quanto usou e — quando precisa preencher para poder filtrar — quanto imputou
+   temporariamente, repondo NaN na saída.
+
+   Contrato do projeto (CLAUDE.md): perda de pacote é NaN, e NaN é propagado com
+   contabilidade explícita.                                                   */
+
+/* nanStats(x) → { n, nValid, nNan, pctNan, longestGapSamples }
+   Unidades: amostras. Serve de base para os selos de qualidade da UI.       */
+function nanStats(x) {
+  const n = x ? x.length : 0;
+  let nNan = 0, atual = 0, maior = 0;
+  for (let i = 0; i < n; i++) {
+    if (!isFinite(x[i])) { nNan++; atual++; if (atual > maior) maior = atual; }
+    else atual = 0;
+  }
+  return {
+    n, nValid: n - nNan, nNan,
+    pctNan: n ? 100 * nNan / n : 0,
+    longestGapSamples: maior
+  };
+}
+
+/* segmentsWithoutNan(x, nper, step) → índices de início dos segmentos cuja
+   fração de NaN não excede maxNanPct (default 0: qualquer NaN descarta).    */
+function segmentsWithoutNan(x, nper, step, maxNanPct) {
+  const lim = isFinite(maxNanPct) ? maxNanPct : 0;
+  const bons = [], maus = [];
+  for (let s = 0; s + nper <= x.length; s += step) {
+    let nan = 0;
+    for (let i = s; i < s + nper; i++) if (!isFinite(x[i])) nan++;
+    ((100 * nan / nper) <= lim ? bons : maus).push(s);
+  }
+  return { starts: bons, dropped: maus.length, total: bons.length + maus.length };
+}
+
+/* interpolateForFilter(x) → { filled, mask, pctImputed }
+   Preenchimento linear APENAS para viabilizar a filtragem (a FFT não aceita
+   NaN). A máscara permite repor NaN nas posições originais na saída — a
+   imputação é temporária e declarada, nunca silenciosa. Bordas faltantes são
+   preenchidas com o primeiro/último valor válido (extensão constante).      */
+function interpolateForFilter(x) {
+  const n = x.length;
+  const filled = Float64Array.from(x);
+  const mask = new Uint8Array(n);
+  let nNan = 0;
+  for (let i = 0; i < n; i++) if (!isFinite(x[i])) { mask[i] = 1; nNan++; }
+  if (!nNan) return { filled, mask, pctImputed: 0 };
+  if (nNan === n) { filled.fill(0); return { filled, mask, pctImputed: 100 }; }
+
+  let i = 0;
+  while (i < n) {
+    if (!mask[i]) { i++; continue; }
+    let j = i; while (j < n && mask[j]) j++;
+    const antes = i - 1, depois = j;
+    const vA = antes >= 0 ? filled[antes] : NaN;
+    const vD = depois < n ? x[depois] : NaN;
+    for (let k = i; k < j; k++) {
+      if (isFinite(vA) && isFinite(vD)) {
+        const t = (k - antes) / (depois - antes);
+        filled[k] = vA + t * (vD - vA);
+      } else if (isFinite(vA)) filled[k] = vA;          // lacuna no fim
+      else if (isFinite(vD)) filled[k] = vD;            // lacuna no início
+      else filled[k] = 0;
+    }
+    i = j;
+  }
+  return { filled, mask, pctImputed: 100 * nNan / n };
+}
+
+/* Repõe NaN nas posições originalmente faltantes. */
+function restoreNaN(y, mask) {
+  for (let i = 0; i < y.length && i < mask.length; i++) if (mask[i]) y[i] = NaN;
+  return y;
+}
+
+/* --------- versões tolerantes a NaN das estatísticas de apoio do DSP ----- */
+/* Ignoram amostras não finitas (equivalente a na.rm = TRUE) e reportam n por
+   meio de nanStats — nunca inventam valor para a posição faltante.          */
+function nanMean(a) {
+  let s = 0, n = 0;
+  for (let i = 0; i < a.length; i++) if (isFinite(a[i])) { s += a[i]; n++; }
+  return n ? s / n : NaN;
+}
+function nanVariance(a) {
+  const m = nanMean(a);
+  if (!isFinite(m)) return NaN;
+  let s = 0, n = 0;
+  for (let i = 0; i < a.length; i++) if (isFinite(a[i])) { s += (a[i] - m) * (a[i] - m); n++; }
+  return n > 1 ? s / (n - 1) : NaN;
+}
+
+/* Detrend linear ignorando NaN no ajuste e preservando NaN na saída.
+   Entrada e saída na mesma unidade do sinal (µV).                          */
+function detrendLinearNaN(x) {
+  const n = x.length;
+  let sx = 0, sy = 0, sxx = 0, sxy = 0, k = 0;
+  for (let i = 0; i < n; i++) {
+    if (!isFinite(x[i])) continue;
+    sx += i; sy += x[i]; sxx += i * i; sxy += i * x[i]; k++;
+  }
+  const o = new Float64Array(n);
+  if (k < 2) { for (let i = 0; i < n; i++) o[i] = x[i]; return o; }
+  const den = k * sxx - sx * sx;
+  const b = den ? (k * sxy - sx * sy) / den : 0;
+  const a = (sy - b * sx) / k;
+  for (let i = 0; i < n; i++) o[i] = isFinite(x[i]) ? x[i] - (a + b * i) : NaN;
+  return o;
+}
+
 /* ---------- core/dsp/fft.js ---------- */
 /* dsp/fft.js — FFT e utilidades de janela (dsp)
    Gerado do refactor modular (Prompt 0.1). Ver docs/arquitetura.md. */
@@ -931,6 +1052,8 @@ function fft(re, im, inverse) {
 
 function hann(n) { const w = new Float64Array(n); for (let i = 0; i < n; i++) w[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (n - 1)); return w; }
 
+/* Detrend linear. Mantido por compatibilidade; a versão tolerante a lacunas
+   (detrendLinearNaN, em dsp/nan.js) é a usada pelo Welch e pelo espectrograma. */
 function detrendLinear(x) {
   const n = x.length; let sx = 0, sy = 0, sxx = 0, sxy = 0;
   for (let i = 0; i < n; i++) { sx += i; sy += x[i]; sxx += i * i; sxy += i * x[i]; }
@@ -945,22 +1068,41 @@ function detrendLinear(x) {
 /* dsp/spectral.js — PSD de Welch, espectrograma e bandas (dsp)
    Gerado do refactor modular (Prompt 0.1). Ver docs/arquitetura.md. */
 
+
+/* PSD de Welch (Hann, sobreposição 50%, detrend linear por segmento).
+   Entrada em µV, saída em µV²/Hz.
+
+   Tolerância a NaN (Onda 1): segmentos cuja fração de NaN excede maxNanPct
+   (default 0 — qualquer NaN descarta o segmento) são DESCARTADOS, nunca
+   preenchidos. Se sobrarem menos de 3 segmentos válidos, `p` volta como null
+   com um motivo legível, em vez de um espectro que parece válido e não é.
+
+   Nota sobre maxNanPct > 0: nesse caso o segmento é aceito e as posições
+   faltantes entram como zero após o detrend, o que é uma imputação implícita —
+   por isso o default é 0. Use tolerância apenas de forma deliberada, e leia
+   `pctNan` e `pctDataUsed` junto com o resultado. Perda de pacote real é
+   contígua (pacotes inteiros), então o descarte estrito costuma preservar a
+   maior parte dos segmentos.                                                */
 function welchPSD(x, fs, opts) {
   opts = opts || {};
   const nper = opts.nperseg || Math.min(nextPow2(Math.floor(fs)), nextPow2(x.length));
   const nfft = nextPow2(nper);
   const overlap = opts.overlap == null ? 0.5 : opts.overlap;
   const step = Math.max(1, Math.floor(nper * (1 - overlap)));
+  const maxNanPct = isFinite(opts.maxNanPct) ? opts.maxNanPct : 0;
   const w = hann(nper);
   let U = 0; for (let i = 0; i < nper; i++) U += w[i] * w[i];
   U *= fs;
   const nBins = nfft / 2 + 1;
   const acc = new Float64Array(nBins);
+
+  const sel = segmentsWithoutNan(x, nper, step, maxNanPct);
+  const est = nanStats(x);
   let segs = 0;
-  for (let s = 0; s + nper <= x.length; s += step) {
-    const seg = detrendLinear(x.subarray ? x.subarray(s, s + nper) : x.slice(s, s + nper));
+  for (const s of sel.starts) {
+    const seg = detrendLinearNaN(x.subarray ? x.subarray(s, s + nper) : x.slice(s, s + nper));
     const re = new Float64Array(nfft), im = new Float64Array(nfft);
-    for (let i = 0; i < nper; i++) re[i] = seg[i] * w[i];
+    for (let i = 0; i < nper; i++) re[i] = isFinite(seg[i]) ? seg[i] * w[i] : 0;
     fft(re, im, false);
     for (let k = 0; k < nBins; k++) {
       const mag = (re[k] * re[k] + im[k] * im[k]) / U;
@@ -968,10 +1110,21 @@ function welchPSD(x, fs, opts) {
     }
     segs++;
   }
-  if (!segs) return { f: [], p: [], segments: 0 };
+  const meta = {
+    segments: segs, nSegments: segs, nSegmentsDropped: sel.dropped,
+    nperseg: nper, df: fs / nfft,
+    pctDataUsed: sel.total ? 100 * segs / sel.total : 0,
+    pctNan: est.pctNan
+  };
+  if (segs < 3) return Object.assign({
+    f: [], p: null,
+    reason: sel.total === 0
+      ? 'registro curto demais para um único segmento de Welch'
+      : `apenas ${segs} de ${sel.total} segmentos sem lacuna (${est.pctNan.toFixed(1)}% de dados faltantes) — insuficiente para estimar o espectro`
+  }, meta);
   const f = new Float64Array(nBins), p = new Float64Array(nBins);
   for (let k = 0; k < nBins; k++) { f[k] = k * fs / nfft; p[k] = acc[k] / segs; }
-  return { f, p, segments: segs, nperseg: nper, df: fs / nfft };
+  return Object.assign({ f, p, reason: null }, meta);
 }
 
 /* Espectrograma (STFT) */
@@ -986,18 +1139,27 @@ function spectrogram(x, fs, opts) {
   const nBins = win / 2 + 1;
   const kMax = Math.min(nBins - 1, Math.floor(fmax * win / fs));
   const cols = [], times = [];
+  let nColsNaN = 0;
   for (let s = 0; s + win <= x.length; s += hop) {
-    const seg = detrendLinear(x.subarray ? x.subarray(s, s + win) : x.slice(s, s + win));
-    const re = new Float64Array(win), im = new Float64Array(win);
-    for (let i = 0; i < win; i++) re[i] = seg[i] * w[i];
-    fft(re, im, false);
+    /* coluna que contém lacuna vira NaN (não zero): a plotagem mostra o buraco
+       como buraco, e não como silêncio espectral */
+    let temNaN = false;
+    for (let i = s; i < s + win; i++) if (!isFinite(x[i])) { temNaN = true; break; }
     const col = new Float64Array(kMax + 1);
-    for (let k = 0; k <= kMax; k++) col[k] = 2 * (re[k] * re[k] + im[k] * im[k]) / U;
+    if (temNaN) {
+      col.fill(NaN); nColsNaN++;
+    } else {
+      const seg = detrendLinearNaN(x.subarray ? x.subarray(s, s + win) : x.slice(s, s + win));
+      const re = new Float64Array(win), im = new Float64Array(win);
+      for (let i = 0; i < win; i++) re[i] = seg[i] * w[i];
+      fft(re, im, false);
+      for (let k = 0; k <= kMax; k++) col[k] = 2 * (re[k] * re[k] + im[k] * im[k]) / U;
+    }
     cols.push(col); times.push((s + win / 2) / fs);
   }
   const f = new Float64Array(kMax + 1);
   for (let k = 0; k <= kMax; k++) f[k] = k * fs / win;
-  return { t: times, f, S: cols };
+  return { t: times, f, S: cols, nColumns: cols.length, nColumnsNaN: nColsNaN };
 }
 
 /* Filtro passa-banda de fase zero via FFT */
@@ -1037,10 +1199,18 @@ function bandTable(f, p) {
 /* dsp/filters.js — passa-banda de fase zero e envelope de Hilbert (dsp)
    Gerado do refactor modular (Prompt 0.1). Ver docs/arquitetura.md. */
 
+
+/* Passa-banda de fase zero por FFT. Entrada e saída em µV.
+
+   Tolerância a NaN (Onda 1): a FFT não aceita lacuna, então as posições
+   faltantes são preenchidas por interpolação linear APENAS para viabilizar a
+   filtragem e recebem NaN de volta na saída. A imputação é temporária e
+   declarada: o array devolvido carrega `pctImputed`.                        */
 function bandpassFFT(x, fs, lo, hi) {
-  const n = nextPow2(x.length);
+  const { filled, mask, pctImputed } = interpolateForFilter(x);
+  const n = nextPow2(filled.length);
   const re = new Float64Array(n), im = new Float64Array(n);
-  for (let i = 0; i < x.length; i++) re[i] = x[i];
+  for (let i = 0; i < filled.length; i++) re[i] = filled[i];
   fft(re, im, false);
   const df = fs / n;
   for (let k = 0; k <= n / 2; k++) {
@@ -1051,21 +1221,27 @@ function bandpassFFT(x, fs, lo, hi) {
     }
   }
   fft(re, im, true);
-  return re.slice(0, x.length);
+  const out = re.slice(0, x.length);
+  if (pctImputed) restoreNaN(out, mask);
+  out.pctImputed = pctImputed;
+  return out;
 }
 
-/* Envelope de Hilbert */
-
+/* Envelope de Hilbert. Entrada e saída em µV. Mesma estratégia de imputação
+   temporária declarada; o array devolvido carrega `pctImputed`.             */
 function hilbertEnvelope(x) {
-  const n = nextPow2(x.length);
+  const { filled, mask, pctImputed } = interpolateForFilter(x);
+  const n = nextPow2(filled.length);
   const re = new Float64Array(n), im = new Float64Array(n);
-  for (let i = 0; i < x.length; i++) re[i] = x[i];
+  for (let i = 0; i < filled.length; i++) re[i] = filled[i];
   fft(re, im, false);
   for (let k = 1; k < n / 2; k++) { re[k] *= 2; im[k] *= 2; }
   for (let k = n / 2 + 1; k < n; k++) { re[k] = 0; im[k] = 0; }
   fft(re, im, true);
   const env = new Float64Array(x.length);
   for (let i = 0; i < x.length; i++) env[i] = Math.hypot(re[i], im[i]);
+  if (pctImputed) restoreNaN(env, mask);
+  env.pctImputed = pctImputed;
   return env;
 }
 
@@ -1077,9 +1253,22 @@ function hilbertEnvelope(x) {
 
 const sum = a => a.reduce((x, y) => x + y, 0);
 
-const mean = a => a.length ? sum(a) / a.length : NaN;
+/* Média e variância ignoram amostras não finitas (equivalente a na.rm = TRUE):
+   com lacunas de pacote no sinal (Onda 1), propagar NaN para toda a estatística
+   apagaria o dado válido. O n efetivamente usado é reportado por nanStats(). */
+const mean = a => {
+  let s = 0, n = 0;
+  for (let i = 0; i < a.length; i++) if (isFinite(a[i])) { s += a[i]; n++; }
+  return n ? s / n : NaN;
+};
 
-function variance(a) { if (a.length < 2) return NaN; const m = mean(a); return sum(a.map(v => (v - m) * (v - m))) / (a.length - 1); }
+function variance(a) {
+  const m = mean(a);
+  if (!isFinite(m)) return NaN;
+  let s = 0, n = 0;
+  for (let i = 0; i < a.length; i++) if (isFinite(a[i])) { s += (a[i] - m) * (a[i] - m); n++; }
+  return n > 1 ? s / (n - 1) : NaN;
+}
 
 const sd = a => Math.sqrt(variance(a));
 
@@ -1162,34 +1351,53 @@ function bimodalityCoefficient(a) {
 /* dsp/bursts.js — detecção de bursts (dsp)
    Gerado do refactor modular (Prompt 0.1). Ver docs/arquitetura.md. */
 
+/* Detecção de bursts sobre o envelope. Entrada em µV, durações em ms.
+
+   Tolerância a NaN (Onda 1): nenhum burst pode começar, terminar ou ATRAVESSAR
+   uma lacuna. Um burst encostado numa lacuna recebe `truncated: true` — sua
+   duração real é desconhecida, então ele entra na contagem mas fica FORA das
+   estatísticas de duração e de amplitude, com o n de truncados reportado.   */
 function detectBursts(env, fs, opts) {
   opts = opts || {};
   const pct = opts.percentile == null ? 75 : opts.percentile;
   const minMs = opts.minDurationMs == null ? 100 : opts.minDurationMs;
   const thr = (opts.threshold != null && isFinite(opts.threshold)) ? opts.threshold : quantile(Array.from(env), pct / 100);
   const minN = Math.round(minMs * fs / 1000);
-  const bursts = []; let i = 0;
+  const bursts = []; let i = 0, nNaN = 0;
+  for (let k = 0; k < env.length; k++) if (!isFinite(env[k])) nNaN++;
   while (i < env.length) {
-    if (env[i] > thr) {
+    if (isFinite(env[i]) && env[i] > thr) {
       const s = i; let peak = env[i];
-      while (i < env.length && env[i] > thr) { if (env[i] > peak) peak = env[i]; i++; }
+      /* a lacuna interrompe o burst: a varredura para no primeiro NaN */
+      while (i < env.length && isFinite(env[i]) && env[i] > thr) { if (env[i] > peak) peak = env[i]; i++; }
       const n = i - s;
+      /* encostou numa lacuna (antes ou depois)? então a duração é incerta */
+      const truncated = (s > 0 && !isFinite(env[s - 1])) || (i < env.length && !isFinite(env[i]));
       if (n >= minN) {
-        let sum = 0; for (let k = s; k < i; k++) sum += env[k];
-        bursts.push({ start: s / fs, end: i / fs, durationMs: n * 1000 / fs, peak, mean: sum / n });
+        let soma = 0; for (let k = s; k < i; k++) soma += env[k];
+        bursts.push({ start: s / fs, end: i / fs, durationMs: n * 1000 / fs, peak, mean: soma / n, truncated });
       }
     } else i++;
   }
+  /* tempo analisável exclui as lacunas — usar o total infla a taxa e a
+     probabilidade de burst justamente nos registros mais degradados */
+  const totalAnalisavel = (env.length - nNaN) / fs;
   const total = env.length / fs;
+  const bons = bursts.filter(b => !b.truncated);
+  const nTruncados = bursts.length - bons.length;
   return {
     threshold: thr, bursts,
     n: bursts.length,
-    rate: bursts.length / total,
-    meanDurationMs: mean(bursts.map(b => b.durationMs)),
-    medianDurationMs: median(bursts.map(b => b.durationMs)),
-    meanAmplitude: mean(bursts.map(b => b.mean)),
-    probability: bursts.reduce((a, b) => a + (b.end - b.start), 0) / total,
-    durationHistogram: burstHistogram(bursts)
+    rate: totalAnalisavel > 0 ? bursts.length / totalAnalisavel : NaN,
+    meanDurationMs: mean(bons.map(b => b.durationMs)),
+    medianDurationMs: median(bons.map(b => b.durationMs)),
+    meanAmplitude: mean(bons.map(b => b.mean)),
+    probability: totalAnalisavel > 0
+      ? bons.reduce((a, b) => a + (b.end - b.start), 0) / totalAnalisavel : NaN,
+    durationHistogram: burstHistogram(bons),
+    nTruncatedByGap: nTruncados,
+    pctNan: env.length ? 100 * nNaN / env.length : 0,
+    analyzableSeconds: totalAnalisavel, totalSeconds: total
   };
 }
 
@@ -1949,6 +2157,7 @@ function extractMetrics(parsedList, offMin) {
 
 
 
+
 const API = {
   parsePercept, MODALITIES, BANDS, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId,
   fft, nextPow2, welchPSD, spectrogram, bandpassFFT, hilbertEnvelope, detectBursts, fitAperiodic,
@@ -1960,7 +2169,8 @@ const API = {
   mergeTrend, collectThresholds, chronicMetrics, extractMetrics,
   detectStates, betaEnvelopeSeries, streamOnOff, bimodalityCoefficient,
   /* integridade do sinal bruto (Onda 1 — L01, L02, L05, L07) */
-  parseIntList, unwrapCounter, unwrapTicks, analyzePackets, insertNaNGaps, effectiveFs, stitchStreams
+  parseIntList, unwrapCounter, unwrapTicks, analyzePackets, insertNaNGaps, effectiveFs, stitchStreams,
+  nanStats, segmentsWithoutNan, interpolateForFilter, detrendLinearNaN
 };
 if (typeof module !== "undefined" && module.exports) module.exports = API;
 root.PerceptCore = API;
@@ -2515,6 +2725,31 @@ function plotBox(parent, h) {
   cv.style.width = '100%'; cv.style.height = (h || 260) + 'px';
   return { canvas: cv, width: Math.max(280, (box.clientWidth || w) - 12), height: h || 260 };
 }
+/* Selo de qualidade do dado (Onda 1): toda figura que consome série bruta
+   declara quantas amostras são válidas e quanto falta. Acima de 20% de dados
+   faltantes o selo vira alerta e o painel avisa que as métricas derivadas têm
+   confiabilidade reduzida — o cálculo não é bloqueado, é informado. */
+function qualitySeal(node, td) {
+  if (!td || !td.data) return;
+  const st = C.nanStats(td.data);
+  const pk = td.packets || {};
+  const alerta = st.pctNan > 20;
+  const partes = [`${st.nValid.toLocaleString('pt-BR')} / ${st.n.toLocaleString('pt-BR')} amostras válidas (${f(st.pctNan, 1)}% faltante)`];
+  if (pk.method && pk.method !== 'none') partes.push(`perda detectada por ${pk.method === 'sequences' ? 'GlobalSequences' : 'TicksInMses'}`);
+  else if (pk.reliable === false) partes.push('perda de pacotes não verificável neste registro');
+  if (td.timing && td.timing.reliable) partes.push(`fs efetiva ${f(td.fsEff, 3)} Hz`);
+  node.appendChild(el('div', { class: 'seal' + (alerta ? ' warn' : ''), text: partes.join(' · ') }));
+  if (alerta) node.appendChild(el('div', {
+    class: 'warnbox', html: `Este registro tem <b>${f(st.pctNan, 1)}% de dados faltantes</b> (maior lacuna contígua: ` +
+      `${f(st.longestGapSamples / (td.fsEff || td.fs), 2)} s). As métricas derivadas abaixo têm <b>confiabilidade reduzida</b> — ` +
+      `as lacunas não são interpoladas, e segmentos que as contêm ficam de fora do espectro.`
+  }));
+  if (td.timing && td.timing.warnDrift) node.appendChild(el('div', {
+    class: 'warnbox', html: `<b>Deriva temporal de ${f(td.timing.driftMsTotal, 1)} ms</b> neste registro ` +
+      `(fs efetiva ${f(td.fsEff, 4)} Hz vs. ${f(td.fs, 0)} Hz nominal). Relevante para análise alinhada a evento e para sincronização com dado externo.`
+  }));
+}
+
 function exportRow(items) {
   const d = el('div', { class: 'ctrls' });
   items.forEach(i => d.appendChild(el('button', { class: 'btn', onclick: i.fn, text: i.label })));
@@ -2858,6 +3093,8 @@ const FIGURES = [
         ctrlNumber('dur. mín (ms)', minMs, 20, 400, 10, v => setOpt('F6', 'minms', v)),
         ctrlNumber('janela vista (s)', winS, 2, 120, 2, v => setOpt('F6', 'win', v))
       ]));
+
+      qualitySeal(node, td);
 
       let x = td.data, ecg = null;
       if (doEcg) { ecg = C.ecgTemplateSubtract(td.data, td.fs); x = ecg.cleaned; }
@@ -3475,6 +3712,7 @@ const FIGURES = [
       if (cur.kind === 'stream') {
         const mds = opt('F13', 'mds', 2);
         ctrls.push(ctrlNumber('dur. mín (s)', mds, 0, 30, 1, v => setOpt('F13', 'mds', v)));
+        qualitySeal(node, cur.td);
         series = C.betaEnvelopeSeries(cur.td, { lo, hi, winS: 1 }); isTime = false; minDur = mds;
       } else {
         const mdm = opt('F13', 'mdm', 30);
