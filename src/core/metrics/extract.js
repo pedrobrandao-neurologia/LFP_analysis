@@ -5,6 +5,7 @@ import { pickSpectrum, spectralMetrics, burstMetrics, doseResponse, ecgMetrics, 
 import { T, localDayKey } from '../io/parse.js';
 import { chronicMetrics, collectThresholds, mergeTrend } from './chronic.js';
 import { streamOnOff } from '../stats/states.js';
+import { suggestProfile, getProfile } from '../profiles/index.js';
 
 export function daysSince(fromISO, toISO) {
   const a = T(fromISO), b = T(toISO);
@@ -14,11 +15,14 @@ export function daysSince(fromISO, toISO) {
 /* Escolhe o melhor espectro disponível para um hemisfério, com prioridade:
    Signal Test (canal de sensing crônico) > Survey > Signal Check > Welch(bruto). */
 
-export function extractMetrics(parsedList, offMin) {
+export function extractMetrics(parsedList, offMin, opts) {
+  opts = opts || {};
   parsedList = (parsedList || []).slice();
   if (!parsedList.length) return null;
   if (offMin == null) { const pf = parsedList.find(p => p.meta && p.meta.utcOffsetMin != null); offMin = pf ? pf.meta.utcOffsetMin : -180; }
   const p0 = parsedList[0];
+  /* perfil de doença ativo: sugerido do Diagnosis/LeadLocation, ou o informado */
+  const perfilId = opts.profileId || suggestProfile(p0);
   const implant = p0.device.implantDate || null;
   const implantDay = implant ? String(implant).slice(0, 10) : null;
   const targetOf = h => { const l = (p0.leads || []).find(x => x.hemisphere === h); return l ? l.target : ''; };
@@ -27,7 +31,8 @@ export function extractMetrics(parsedList, offMin) {
     implant_date: implantDay,
     device_model: p0.device.model || null, device_location: p0.device.location || null, firmware: p0.device.firmware || null,
     targets: (p0.leads || []).map(l => ({ hemisphere: l.hemisphere, target: l.target, model: l.model })),
-    timezone_offset_min: offMin
+    timezone_offset_min: offMin,
+    profile_id: perfilId, profile_label: getProfile(perfilId).label
   };
   const sessions = parsedList.map(p => ({
     file: p.fileName, session_start: p.meta.sessionStart || null,
@@ -47,7 +52,7 @@ export function extractMetrics(parsedList, offMin) {
         session_file: p.fileName, session_date_local: sdate, days_since_implant: dsi,
         hemisphere: h, target: targetOf(h)
       };
-      if (spec) Object.assign(row, spectralMetrics(spec));
+      if (spec) Object.assign(row, spectralMetrics(spec, perfilId));
       if (bu) Object.assign(row, bu);
       if (dr) Object.assign(row, dr);
       if (so) Object.assign(row, so);
@@ -61,6 +66,7 @@ export function extractMetrics(parsedList, offMin) {
     const m = chronicMetrics(merged[h], offMin, thr[h]);
     chronic.push(Object.assign({
       subject_id: subject.id, diagnosis: subject.diagnosis, implant_date: implantDay,
+      profile_id: perfilId,
       hemisphere: h, target: targetOf(h),
       days_since_implant_start: (implant && m.first_day_local) ? daysSince(implant, m.first_day_local) : NaN
     }, m));

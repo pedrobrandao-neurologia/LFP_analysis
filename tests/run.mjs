@@ -694,6 +694,123 @@ sec('remoção de ECG — detecção em duas passagens, três métodos e valida�
   });
 }
 
+/* --------------------------------------- 11. perfis de doença (Onda 5) -- */
+sec('perfis de doença');
+{
+  t('todos os perfis carregam com estrutura declarativa completa', () => {
+    C.PROFILE_IDS.forEach(id => {
+      const p = C.getProfile(id);
+      assert(p.bands && p.bands.length, `${id}: sem bandas`);
+      assert(p.primaryBand && isFinite(p.primaryBand.lo) && isFinite(p.primaryBand.hi), `${id}: sem banda primária`);
+      assert(p.normalization, `${id}: sem normalização`);
+      assert(p.glossary && p.glossary.intuicao, `${id}: sem glossário`);
+      assert(Array.isArray(p.references), `${id}: sem referências`);
+      p.bands.forEach(b => assert(b.hi > b.lo, `${id}/${b.key}: banda invertida`));
+    });
+    return C.PROFILE_IDS.join(', ');
+  });
+  t('trocar de perfil muda banda primária, normalização e glossário', () => {
+    const pd = C.getProfile('pd'), dy = C.getProfile('dystonia'), et = C.getProfile('et');
+    assert(pd.primaryBand.lo === 13 && pd.primaryBand.hi === 35, 'DP: banda primária errada');
+    assert(dy.primaryBand.lo === 4 && dy.primaryBand.hi === 12, 'distonia: deveria ser teta-alfa 4–12');
+    assert(dy.normalization === 'sd_6_96hz', 'distonia: normalização deveria ser sd_6_96hz');
+    assert(et.primaryBand.lo === 2 && et.primaryBand.hi === 12, 'TE: deveria buscar a frequência do tremor');
+    assert(pd.glossary.primario !== dy.glossary.primario, 'glossário não mudou entre perfis');
+    assert(dy.chronicBandSelection === 'largest_peak' && pd.chronicBandSelection === 'a_priori', 'seleção de banda crônica não difere');
+    return `DP β 13–35 · distonia θα 4–12 (${dy.normalization}) · TE f₀ 2–12`;
+  });
+  t('perfil é sugerido pelo Diagnosis e pelo alvo do eletrodo', () => {
+    assert(C.suggestProfile(parsed[0]) === 'pd', 'exemplo (Parkinson/STN) deveria sugerir pd');
+    const falso = { patient: { diagnosis: 'Dystonia' }, leads: [{ target: 'Gpi' }] };
+    assert(C.suggestProfile(falso) === 'dystonia', 'Dystonia/GPi deveria sugerir dystonia');
+    const soAlvo = { patient: { diagnosis: '' }, leads: [{ target: 'Vim' }] };
+    assert(C.suggestProfile(soAlvo) === 'et', 'alvo Vim deveria sugerir tremor essencial');
+    return 'Parkinson→pd · Dystonia/GPi→dystonia · Vim→et';
+  });
+  t('detectTremorFrequency recupera 4,5 Hz e o supraharmônico em 9 Hz', () => {
+    const FS = 250, N = FS * 30;
+    const x = new Float64Array(N);
+    for (let i = 0; i < N; i++)
+      x[i] = 2.0 * Math.sin(2 * Math.PI * 4.5 * i / FS) + 0.8 * Math.sin(2 * Math.PI * 9.0 * i / FS + 0.6)
+        + 0.15 * Math.sin(2 * Math.PI * 23 * i / FS);
+    const w = C.welchPSD(x, FS, { nperseg: 2048, overlap: .5 });
+    const tr = C.detectTremorFrequency(Array.from(w.f), Array.from(w.p), { searchRange: [2, 12] });
+    assert(tr, 'sem resultado');
+    assert(Math.abs(tr.fundamentalHz - 4.5) < 0.3, 'fundamental: ' + tr.fundamentalHz);
+    assert(Math.abs(tr.supraharmonicHz - 9.0) < 0.4, 'supraharmônico: ' + tr.supraharmonicHz);
+    assert(tr.hasSupraharmonic, 'não identificou o supraharmônico');
+    return `f₀ ${tr.fundamentalHz.toFixed(2)} Hz, 2f₀ ${tr.supraharmonicHz.toFixed(2)} Hz (razão ${tr.supraToFundamentalRatio.toFixed(2)})`;
+  });
+  t('bandas do perfil de TE são derivadas da frequência medida', () => {
+    const fixas = C.bandsOf(C.getProfile('et'), {});
+    const derivadas = C.bandsOf(C.getProfile('et'), { tremorHz: 4.5 });
+    const f0 = derivadas.find(b => b.key === 'tremor'), s0 = derivadas.find(b => b.key === 'supra');
+    assert(Math.abs(f0.lo - 3.5) < 1e-9 && Math.abs(f0.hi - 5.5) < 1e-9, 'fundamental não derivou: ' + JSON.stringify(f0));
+    assert(Math.abs(s0.lo - 7.5) < 1e-9 && Math.abs(s0.hi - 10.5) < 1e-9, 'supraharmônico não derivou');
+    assert(fixas.find(b => b.key === 'tremor').hi === 12, 'sem tremorHz deveria manter a faixa de busca');
+    return `f₀ ${f0.lo}–${f0.hi} Hz · 2f₀ ${s0.lo}–${s0.hi} Hz`;
+  });
+  t('normalização sd_6_96hz da distonia difere da relativa', () => {
+    const f = [], p = [];
+    for (let i = 0; i < 200; i++) { f.push(i * 0.5); p.push(10 / (1 + i * 0.5) + (Math.abs(i * 0.5 - 5.7) < 1 ? 5 : 0)); }
+    const rel = C.normalizeSpectrum(f, p, 'relative');
+    const sd = C.normalizeSpectrum(f, p, 'sd_6_96hz');
+    assert(rel.some((v, i) => Math.abs(v - sd[i]) > 1e-9), 'as duas normalizações deram o mesmo resultado');
+    const somaRel = rel.reduce((a, b, i) => f[i] >= 1 && f[i] <= 100 ? a + b : a, 0);
+    assert(Math.abs(somaRel - 100) < 1, 'normalização relativa não soma 100%: ' + somaRel);
+    assert(sd.every(v => isFinite(v)), 'sd_6_96hz produziu valores não finitos');
+    return `relativa soma ${somaRel.toFixed(1)}% · sd_6_96hz preserva a forma`;
+  });
+  t('métricas exportadas carregam o perfil e a banda primária', () => {
+    const b = C.extractMetrics(parsed, null, { profileId: 'dystonia' });
+    assert(b.subject.profile_id === 'dystonia', 'perfil não chegou ao sujeito');
+    b.acute.forEach(r => {
+      assert(r.profile_id === 'dystonia', 'linha aguda sem profile_id');
+      assert(r.primary_band === '4-12', 'banda primária errada: ' + r.primary_band);
+      assert('primary_peak_hz' in r, 'sem primary_peak_hz');
+      if (isFinite(r.primary_peak_hz)) assert(r.primary_peak_hz >= 4 && r.primary_peak_hz <= 12, 'pico primário fora da banda');
+    });
+    b.chronic.forEach(r => assert(r.profile_id === 'dystonia', 'linha crônica sem profile_id'));
+    return `${b.acute.length} linhas agudas com banda primária ${b.acute[0].primary_band} Hz`;
+  });
+  t('perfil de TE exporta métricas de tremor que os outros não exportam', () => {
+    const et = C.extractMetrics(parsed, null, { profileId: 'et' });
+    const pd = C.extractMetrics(parsed, null, { profileId: 'pd' });
+    assert('tremor_fundamental_hz' in et.acute[0], 'TE não exportou métrica de tremor');
+    assert(!('tremor_fundamental_hz' in pd.acute[0]), 'DP exportou métrica de tremor indevidamente');
+    return `TE: f₀ ${et.acute[0].tremor_fundamental_hz} Hz, supraharmônico ${et.acute[0].tremor_has_supraharmonic ? 'sim' : 'não'}`;
+  });
+  t('Spearman e média móvel para correlação sintoma-LFP (distonia)', () => {
+    /* relação monotônica negativa, como em Hubers et al. (ρ = −0,69) */
+    const x = [], y = [];
+    for (let i = 0; i < 40; i++) { x.push(i); y.push(100 - 2 * i + 6 * Math.sin(i * 1.3)); }
+    const s = C.spearman(x, y, { nBoot: 200 });
+    assert(s, 'sem resultado');
+    assert(s.rho < -0.8, 'ρ deveria ser fortemente negativo: ' + s.rho);
+    assert(s.ci95[0] <= s.rho && s.rho <= s.ci95[1], 'ρ fora do próprio IC');
+    const serie = x.map(i => ({ t: Date.UTC(2025, 0, 1) + i * 864e5, v: y[i] }));
+    const mm = C.movingAverageDays(serie, 5);
+    assert(mm.length === serie.length, 'média móvel mudou o comprimento');
+    assert(mm.every(p => isFinite(p.v)), 'média móvel com NaN');
+    return `ρ = ${s.rho.toFixed(3)} IC95% [${s.ci95.map(v => v.toFixed(2)).join('; ')}], média móvel de 5 dias`;
+  });
+  t('renderizadores funcionam sob todos os perfis', () => {
+    const antes = H.S.profile;
+    const usados = [];
+    C.PROFILE_IDS.forEach(id => {
+      H.S.profile = id; H.S.opts = {};
+      const d = H.ds();
+      const fig = H.FIGURES.find(x => x.id === 'F1');
+      const node = document.createElement('div');
+      fig.render(node, d);
+      assert(node.children.length > 0, `perfil ${id}: F1 não renderizou`);
+      usados.push(id);
+    });
+    H.S.profile = antes;
+    return usados.length + ' perfis renderizam F1';
+  });
+}
+
 /* ------------------------------------------------------------- resultado -- */
 console.log(`\n${'='.repeat(58)}`);
 console.log(`  ${ok} passaram   ${falhas} falharam   ${pulados} sem dados`);
