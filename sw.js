@@ -1,6 +1,9 @@
-/* Service worker — cache-first para operação offline completa.
-   Nenhuma requisição de rede é feita com dados do paciente: o app é 100% local. */
-const CACHE = 'percept-lfp-studio-v1';
+/* Service worker — app shell sempre atualizado.
+   Estratégia: NETWORK-FIRST para o HTML (garante que novas versões — novas
+   figuras, correções — apareçam assim que publicadas), com queda para o cache
+   quando offline; CACHE-FIRST para os demais recursos (ícones, manifest).
+   Nenhuma requisição carrega dados do paciente: o app é 100% local. */
+const CACHE = 'percept-lfp-studio-v2';
 const ASSETS = ['./', './index.html', './manifest.webmanifest',
                 './icon-192.png', './icon-512.png', './icon-1024.png'];
 
@@ -16,13 +19,33 @@ self.addEventListener('activate', e => {
 
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
+  const req = e.request;
+  const isHTML = req.mode === 'navigate' ||
+    (req.headers.get('accept') || '').includes('text/html');
+
+  if (isHTML) {
+    /* network-first: sempre tenta a versão mais nova do app; se estiver
+       offline, serve o index.html cacheado. */
+    e.respondWith(
+      fetch(req).then(res => {
+        if (res && res.status === 200) {
+          const copy = res.clone();
+          caches.open(CACHE).then(c => c.put('./index.html', copy));
+        }
+        return res;
+      }).catch(() => caches.match(req).then(hit => hit || caches.match('./index.html')))
+    );
+    return;
+  }
+
+  /* demais recursos: cache-first */
   e.respondWith(
-    caches.match(e.request).then(hit => hit || fetch(e.request).then(res => {
+    caches.match(req).then(hit => hit || fetch(req).then(res => {
       if (res && res.status === 200 && res.type === 'basic') {
         const copy = res.clone();
-        caches.open(CACHE).then(c => c.put(e.request, copy));
+        caches.open(CACHE).then(c => c.put(req, copy));
       }
       return res;
-    }).catch(() => caches.match('./index.html')))
+    }))
   );
 });
