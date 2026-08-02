@@ -1,0 +1,57 @@
+metrica,condicao,valor,unidade,criterio,aprovado
+detecção de picos R — VP,SNR -10 dB,100,%,≥ 95%,1
+detecção de picos R — FP,SNR -10 dB,0,%,≤ 1%,1
+supressão de ECG — interpolation,SNR -10 dB,11.2922,dB,> 0 dB,1
+recuperação do pico beta — interpolation,SNR -10 dB,0.9194,razão,"[0,7; 1,3]",1
+correlação com ground truth — interpolation,SNR -10 dB,0.9028,r,"> 0,50",1
+supressão de ECG — template,SNR -10 dB,7.3335,dB,> 0 dB,1
+recuperação do pico beta — template,SNR -10 dB,0.8998,razão,"[0,7; 1,3]",1
+correlação com ground truth — template,SNR -10 dB,0.6198,r,"> 0,50",1
+supressão de ECG — svd,SNR -10 dB,11.4486,dB,> 0 dB,1
+recuperação do pico beta — svd,SNR -10 dB,1.0339,razão,"[0,7; 1,3]",1
+correlação com ground truth — svd,SNR -10 dB,0.9683,r,"> 0,90",1
+preservação de potência beta (BPP),SNR -10 dB,0.9038,razão,"[0,7; 1,3]",1
+preservação de potência teta (TPP),SNR -10 dB,0.9787,razão,"[0,7; 1,3]",1
+detecção de picos R — VP,SNR -5 dB,100,%,≥ 95%,1
+detecção de picos R — FP,SNR -5 dB,0,%,≤ 1%,1
+supressão de ECG — interpolation,SNR -5 dB,6.8338,dB,> 0 dB,1
+recuperação do pico beta — interpolation,SNR -5 dB,0.8378,razão,"[0,7; 1,3]",1
+correlação com ground truth — interpolation,SNR -5 dB,0.9039,r,"> 0,50",1
+supressão de ECG — template,SNR -5 dB,5.3638,dB,> 0 dB,1
+recuperação do pico beta — template,SNR -5 dB,0.9268,razão,"[0,7; 1,3]",1
+correlação com ground truth — template,SNR -5 dB,0.8199,r,"> 0,50",1
+supressão de ECG — svd,SNR -5 dB,6.9989,dB,> 0 dB,1
+recuperação do pico beta — svd,SNR -5 dB,0.9498,razão,"[0,7; 1,3]",1
+correlação com ground truth — svd,SNR -5 dB,0.969,r,"> 0,90",1
+preservação de potência beta (BPP),SNR -5 dB,0.9108,razão,"[0,7; 1,3]",1
+preservação de potência teta (TPP),SNR -5 dB,0.9598,razão,"[0,7; 1,3]",1
+detecção de picos R — VP,SNR 0 dB,100,%,≥ 95%,1
+detecção de picos R — FP,SNR 0 dB,0,%,≤ 1%,1
+supressão de ECG — interpolation,SNR 0 dB,3.4364,dB,> 0 dB,1
+recuperação do pico beta — interpolation,SNR 0 dB,0.7616,razão,"[0,7; 1,3]",1
+correlação com ground truth — interpolation,SNR 0 dB,0.9025,r,"> 0,50",1
+supressão de ECG — template,SNR 0 dB,2.956,dB,> 0 dB,1
+recuperação do pico beta — template,SNR 0 dB,0.8891,razão,"[0,7; 1,3]",1
+correlação com ground truth — template,SNR 0 dB,0.9251,r,"> 0,50",1
+supressão de ECG — svd,SNR 0 dB,3.5685,dB,> 0 dB,1
+recuperação do pico beta — svd,SNR 0 dB,0.8096,razão,"[0,7; 1,3]",1
+correlação com ground truth — svd,SNR 0 dB,0.9504,r,"> 0,90",1
+preservação de potência beta (BPP),SNR 0 dB,0.8983,razão,"[0,7; 1,3]",1
+preservação de potência teta (TPP),SNR 0 dB,0.9818,razão,"[0,7; 1,3]",1
+confiança declarada com artefato fraco,SNR 5 dB,1,bool,não reivindicar confiança alta,1
+confiança declarada com artefato fraco,SNR 10 dB,1,bool,não reivindicar confiança alta,1
+detecção de pacotes perdidos (Jaccard),perda 0%,1,índice,"> 0,99",1
+recuperação da fs efetiva,perda 0%,0.0016,Hz,"< 0,005 Hz",1
+detecção de pacotes perdidos (Jaccard),perda 1%,1,índice,"> 0,99",1
+recuperação da fs efetiva,perda 1%,0.0016,Hz,"< 0,005 Hz",1
+detecção de pacotes perdidos (Jaccard),perda 5%,1,índice,"> 0,99",1
+recuperação da fs efetiva,perda 5%,0.0016,Hz,"< 0,005 Hz",1
+detecção de pacotes perdidos (Jaccard),perda 10%,1,índice,"> 0,99",1
+recuperação da fs efetiva,perda 10%,0.0016,Hz,"< 0,005 Hz",1
+recuperação da frequência de pico,preset pd,0.0664,Hz,"< 0,5 Hz",1
+recuperação do expoente aperiódico,preset pd,1.9526,%,< 40%,1
+recuperação da frequência de pico,preset dystonia,0.0848,Hz,"< 0,5 Hz",1
+recuperação do expoente aperiódico,preset dystonia,0.9047,%,< 40%,1
+recuperação da frequência de pico,preset et,0.1055,Hz,"< 0,5 Hz",1
+recuperação do expoente aperiódico,preset et,0.5363,%,< 40%,1
+detecção de bursts (F1),"SNR 20 dB, p75",0.9787,F1,"> 0,80",1

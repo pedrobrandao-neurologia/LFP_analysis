@@ -1,0 +1,454 @@
+{
+  "aprovados": 56,
+  "total": 56,
+  "linhas": [
+    {
+      "metrica": "detecção de picos R — VP",
+      "condicao": "SNR -10 dB",
+      "valor": 100,
+      "criterio": "≥ 95%",
+      "aprovado": 1,
+      "unidade": "%"
+    },
+    {
+      "metrica": "detecção de picos R — FP",
+      "condicao": "SNR -10 dB",
+      "valor": 0,
+      "criterio": "≤ 1%",
+      "aprovado": 1,
+      "unidade": "%"
+    },
+    {
+      "metrica": "supressão de ECG — interpolation",
+      "condicao": "SNR -10 dB",
+      "valor": 11.2922,
+      "criterio": "> 0 dB",
+      "aprovado": 1,
+      "unidade": "dB"
+    },
+    {
+      "metrica": "recuperação do pico beta — interpolation",
+      "condicao": "SNR -10 dB",
+      "valor": 0.9194,
+      "criterio": "[0,7; 1,3]",
+      "aprovado": 1,
+      "unidade": "razão"
+    },
+    {
+      "metrica": "correlação com ground truth — interpolation",
+      "condicao": "SNR -10 dB",
+      "valor": 0.9028,
+      "criterio": "> 0,50",
+      "aprovado": 1,
+      "unidade": "r"
+    },
+    {
+      "metrica": "supressão de ECG — template",
+      "condicao": "SNR -10 dB",
+      "valor": 7.3335,
+      "criterio": "> 0 dB",
+      "aprovado": 1,
+      "unidade": "dB"
+    },
+    {
+      "metrica": "recuperação do pico beta — template",
+      "condicao": "SNR -10 dB",
+      "valor": 0.8998,
+      "criterio": "[0,7; 1,3]",
+      "aprovado": 1,
+      "unidade": "razão"
+    },
+    {
+      "metrica": "correlação com ground truth — template",
+      "condicao": "SNR -10 dB",
+      "valor": 0.6198,
+      "criterio": "> 0,50",
+      "aprovado": 1,
+      "unidade": "r"
+    },
+    {
+      "metrica": "supressão de ECG — svd",
+      "condicao": "SNR -10 dB",
+      "valor": 11.4486,
+      "criterio": "> 0 dB",
+      "aprovado": 1,
+      "unidade": "dB"
+    },
+    {
+      "metrica": "recuperação do pico beta — svd",
+      "condicao": "SNR -10 dB",
+      "valor": 1.0339,
+      "criterio": "[0,7; 1,3]",
+      "aprovado": 1,
+      "unidade": "razão"
+    },
+    {
+      "metrica": "correlação com ground truth — svd",
+      "condicao": "SNR -10 dB",
+      "valor": 0.9683,
+      "criterio": "> 0,90",
+      "aprovado": 1,
+      "unidade": "r"
+    },
+    {
+      "metrica": "preservação de potência beta (BPP)",
+      "condicao": "SNR -10 dB",
+      "valor": 0.9038,
+      "criterio": "[0,7; 1,3]",
+      "aprovado": 1,
+      "unidade": "razão"
+    },
+    {
+      "metrica": "preservação de potência teta (TPP)",
+      "condicao": "SNR -10 dB",
+      "valor": 0.9787,
+      "criterio": "[0,7; 1,3]",
+      "aprovado": 1,
+      "unidade": "razão"
+    },
+    {
+      "metrica": "detecção de picos R — VP",
+      "condicao": "SNR -5 dB",
+      "valor": 100,
+      "criterio": "≥ 95%",
+      "aprovado": 1,
+      "unidade": "%"
+    },
+    {
+      "metrica": "detecção de picos R — FP",
+      "condicao": "SNR -5 dB",
+      "valor": 0,
+      "criterio": "≤ 1%",
+      "aprovado": 1,
+      "unidade": "%"
+    },
+    {
+      "metrica": "supressão de ECG — interpolation",
+      "condicao": "SNR -5 dB",
+      "valor": 6.8338,
+      "criterio": "> 0 dB",
+      "aprovado": 1,
+      "unidade": "dB"
+    },
+    {
+      "metrica": "recuperação do pico beta — interpolation",
+      "condicao": "SNR -5 dB",
+      "valor": 0.8378,
+      "criterio": "[0,7; 1,3]",
+      "aprovado": 1,
+      "unidade": "razão"
+    },
+    {
+      "metrica": "correlação com ground truth — interpolation",
+      "condicao": "SNR -5 dB",
+      "valor": 0.9039,
+      "criterio": "> 0,50",
+      "aprovado": 1,
+      "unidade": "r"
+    },
+    {
+      "metrica": "supressão de ECG — template",
+      "condicao": "SNR -5 dB",
+      "valor": 5.3638,
+      "criterio": "> 0 dB",
+      "aprovado": 1,
+      "unidade": "dB"
+    },
+    {
+      "metrica": "recuperação do pico beta — template",
+      "condicao": "SNR -5 dB",
+      "valor": 0.9268,
+      "criterio": "[0,7; 1,3]",
+      "aprovado": 1,
+      "unidade": "razão"
+    },
+    {
+      "metrica": "correlação com ground truth — template",
+      "condicao": "SNR -5 dB",
+      "valor": 0.8199,
+      "criterio": "> 0,50",
+      "aprovado": 1,
+      "unidade": "r"
+    },
+    {
+      "metrica": "supressão de ECG — svd",
+      "condicao": "SNR -5 dB",
+      "valor": 6.9989,
+      "criterio": "> 0 dB",
+      "aprovado": 1,
+      "unidade": "dB"
+    },
+    {
+      "metrica": "recuperação do pico beta — svd",
+      "condicao": "SNR -5 dB",
+      "valor": 0.9498,
+      "criterio": "[0,7; 1,3]",
+      "aprovado": 1,
+      "unidade": "razão"
+    },
+    {
+      "metrica": "correlação com ground truth — svd",
+      "condicao": "SNR -5 dB",
+      "valor": 0.969,
+      "criterio": "> 0,90",
+      "aprovado": 1,
+      "unidade": "r"
+    },
+    {
+      "metrica": "preservação de potência beta (BPP)",
+      "condicao": "SNR -5 dB",
+      "valor": 0.9108,
+      "criterio": "[0,7; 1,3]",
+      "aprovado": 1,
+      "unidade": "razão"
+    },
+    {
+      "metrica": "preservação de potência teta (TPP)",
+      "condicao": "SNR -5 dB",
+      "valor": 0.9598,
+      "criterio": "[0,7; 1,3]",
+      "aprovado": 1,
+      "unidade": "razão"
+    },
+    {
+      "metrica": "detecção de picos R — VP",
+      "condicao": "SNR 0 dB",
+      "valor": 100,
+      "criterio": "≥ 95%",
+      "aprovado": 1,
+      "unidade": "%"
+    },
+    {
+      "metrica": "detecção de picos R — FP",
+      "condicao": "SNR 0 dB",
+      "valor": 0,
+      "criterio": "≤ 1%",
+      "aprovado": 1,
+      "unidade": "%"
+    },
+    {
+      "metrica": "supressão de ECG — interpolation",
+      "condicao": "SNR 0 dB",
+      "valor": 3.4364,
+      "criterio": "> 0 dB",
+      "aprovado": 1,
+      "unidade": "dB"
+    },
+    {
+      "metrica": "recuperação do pico beta — interpolation",
+      "condicao": "SNR 0 dB",
+      "valor": 0.7616,
+      "criterio": "[0,7; 1,3]",
+      "aprovado": 1,
+      "unidade": "razão"
+    },
+    {
+      "metrica": "correlação com ground truth — interpolation",
+      "condicao": "SNR 0 dB",
+      "valor": 0.9025,
+      "criterio": "> 0,50",
+      "aprovado": 1,
+      "unidade": "r"
+    },
+    {
+      "metrica": "supressão de ECG — template",
+      "condicao": "SNR 0 dB",
+      "valor": 2.956,
+      "criterio": "> 0 dB",
+      "aprovado": 1,
+      "unidade": "dB"
+    },
+    {
+      "metrica": "recuperação do pico beta — template",
+      "condicao": "SNR 0 dB",
+      "valor": 0.8891,
+      "criterio": "[0,7; 1,3]",
+      "aprovado": 1,
+      "unidade": "razão"
+    },
+    {
+      "metrica": "correlação com ground truth — template",
+      "condicao": "SNR 0 dB",
+      "valor": 0.9251,
+      "criterio": "> 0,50",
+      "aprovado": 1,
+      "unidade": "r"
+    },
+    {
+      "metrica": "supressão de ECG — svd",
+      "condicao": "SNR 0 dB",
+      "valor": 3.5685,
+      "criterio": "> 0 dB",
+      "aprovado": 1,
+      "unidade": "dB"
+    },
+    {
+      "metrica": "recuperação do pico beta — svd",
+      "condicao": "SNR 0 dB",
+      "valor": 0.8096,
+      "criterio": "[0,7; 1,3]",
+      "aprovado": 1,
+      "unidade": "razão"
+    },
+    {
+      "metrica": "correlação com ground truth — svd",
+      "condicao": "SNR 0 dB",
+      "valor": 0.9504,
+      "criterio": "> 0,90",
+      "aprovado": 1,
+      "unidade": "r"
+    },
+    {
+      "metrica": "preservação de potência beta (BPP)",
+      "condicao": "SNR 0 dB",
+      "valor": 0.8983,
+      "criterio": "[0,7; 1,3]",
+      "aprovado": 1,
+      "unidade": "razão"
+    },
+    {
+      "metrica": "preservação de potência teta (TPP)",
+      "condicao": "SNR 0 dB",
+      "valor": 0.9818,
+      "criterio": "[0,7; 1,3]",
+      "aprovado": 1,
+      "unidade": "razão"
+    },
+    {
+      "metrica": "confiança declarada com artefato fraco",
+      "condicao": "SNR 5 dB",
+      "valor": 1,
+      "criterio": "não reivindicar confiança alta",
+      "aprovado": 1,
+      "unidade": "bool"
+    },
+    {
+      "metrica": "confiança declarada com artefato fraco",
+      "condicao": "SNR 10 dB",
+      "valor": 1,
+      "criterio": "não reivindicar confiança alta",
+      "aprovado": 1,
+      "unidade": "bool"
+    },
+    {
+      "metrica": "detecção de pacotes perdidos (Jaccard)",
+      "condicao": "perda 0%",
+      "valor": 1,
+      "criterio": "> 0,99",
+      "aprovado": 1,
+      "unidade": "índice"
+    },
+    {
+      "metrica": "recuperação da fs efetiva",
+      "condicao": "perda 0%",
+      "valor": 0.0016,
+      "criterio": "< 0,005 Hz",
+      "aprovado": 1,
+      "unidade": "Hz"
+    },
+    {
+      "metrica": "detecção de pacotes perdidos (Jaccard)",
+      "condicao": "perda 1%",
+      "valor": 1,
+      "criterio": "> 0,99",
+      "aprovado": 1,
+      "unidade": "índice"
+    },
+    {
+      "metrica": "recuperação da fs efetiva",
+      "condicao": "perda 1%",
+      "valor": 0.0016,
+      "criterio": "< 0,005 Hz",
+      "aprovado": 1,
+      "unidade": "Hz"
+    },
+    {
+      "metrica": "detecção de pacotes perdidos (Jaccard)",
+      "condicao": "perda 5%",
+      "valor": 1,
+      "criterio": "> 0,99",
+      "aprovado": 1,
+      "unidade": "índice"
+    },
+    {
+      "metrica": "recuperação da fs efetiva",
+      "condicao": "perda 5%",
+      "valor": 0.0016,
+      "criterio": "< 0,005 Hz",
+      "aprovado": 1,
+      "unidade": "Hz"
+    },
+    {
+      "metrica": "detecção de pacotes perdidos (Jaccard)",
+      "condicao": "perda 10%",
+      "valor": 1,
+      "criterio": "> 0,99",
+      "aprovado": 1,
+      "unidade": "índice"
+    },
+    {
+      "metrica": "recuperação da fs efetiva",
+      "condicao": "perda 10%",
+      "valor": 0.0016,
+      "criterio": "< 0,005 Hz",
+      "aprovado": 1,
+      "unidade": "Hz"
+    },
+    {
+      "metrica": "recuperação da frequência de pico",
+      "condicao": "preset pd",
+      "valor": 0.0664,
+      "criterio": "< 0,5 Hz",
+      "aprovado": 1,
+      "unidade": "Hz"
+    },
+    {
+      "metrica": "recuperação do expoente aperiódico",
+      "condicao": "preset pd",
+      "valor": 1.9526,
+      "criterio": "< 40%",
+      "aprovado": 1,
+      "unidade": "%"
+    },
+    {
+      "metrica": "recuperação da frequência de pico",
+      "condicao": "preset dystonia",
+      "valor": 0.0848,
+      "criterio": "< 0,5 Hz",
+      "aprovado": 1,
+      "unidade": "Hz"
+    },
+    {
+      "metrica": "recuperação do expoente aperiódico",
+      "condicao": "preset dystonia",
+      "valor": 0.9047,
+      "criterio": "< 40%",
+      "aprovado": 1,
+      "unidade": "%"
+    },
+    {
+      "metrica": "recuperação da frequência de pico",
+      "condicao": "preset et",
+      "valor": 0.1055,
+      "criterio": "< 0,5 Hz",
+      "aprovado": 1,
+      "unidade": "Hz"
+    },
+    {
+      "metrica": "recuperação do expoente aperiódico",
+      "condicao": "preset et",
+      "valor": 0.5363,
+      "criterio": "< 40%",
+      "aprovado": 1,
+      "unidade": "%"
+    },
+    {
+      "metrica": "detecção de bursts (F1)",
+      "condicao": "SNR 20 dB, p75",
+      "valor": 0.9787,
+      "criterio": "> 0,80",
+      "aprovado": 1,
+      "unidade": "F1"
+    }
+  ]
+}
