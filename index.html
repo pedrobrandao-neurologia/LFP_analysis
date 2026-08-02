@@ -213,6 +213,19 @@ footer.foot{padding:24px 20px 40px;text-align:center;font:11px/1.7 var(--mono);c
   a[href]:after{content:''}
 }
 @media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+/* ---------- painel de QC (F17) ---------- */
+.qc-title{font:11.5px/1.5 var(--mono);color:var(--ink-2);margin:14px 0 6px;font-weight:400}
+.qcgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:7px}
+.qcitem{border:1px solid var(--rule-2);border-left-width:3px;border-radius:3px;padding:7px 9px;
+  background:var(--panel-2);display:flex;flex-direction:column;gap:2px}
+.qcitem b{font:10.5px/1.3 var(--mono);font-weight:600}
+.qcitem .v{font:11.5px/1.3 var(--mono)}
+.qcitem .m{font:10px/1.35 var(--sans);color:var(--ink-3)}
+.qcitem.verde{border-left-color:var(--ok);background:#EFF7F2}
+.qcitem.amarelo{border-left-color:var(--warn);background:#FBF3EA}
+.qcitem.vermelho{border-left-color:var(--right);background:#FBEDF0}
+.qcitem.cinza{border-left-color:var(--rule);background:var(--panel-2);opacity:.85}
 </style>
 </head>
 <body>
@@ -2853,9 +2866,139 @@ function movingAverageDays(serie, dias) {
   });
 }
 
+/* ---------- core/io/devicestate.js ---------- */
+/* io/devicestate.js — estado do dispositivo como variável de primeira classe.
+
+   POR QUE ISTO EXISTE. Hammer et al. (Stereotact Funct Neurosurg 2022;100:168-183)
+   demonstraram que habilitar a estimulação MESMO A 0 mA já introduz artefatos
+   ausentes no estado OFF. Comparar espectros entre estados diferentes sem
+   declarar isso é erro metodológico — e até aqui o software tratava todos os
+   espectros como comparáveis.
+
+   `device_state` passa a ser coluna obrigatória em toda linha de métrica aguda,
+   e a inferência SEMPRE registra de onde veio (campo `evidence`), porque uma
+   inferência sem procedência não é melhor que um palpite.
+
+   Estados: 'OFF' | 'ON_0mA' | 'ON_THERAPEUTIC' | 'UNKNOWN'.                  */
+
+/* Amplitude somada dos programas de um grupo, por hemisfério. */
+function amplitudeDoGrupo(parsed, hemi) {
+  const ativo = (parsed.groups || []).find(g => g.active) || (parsed.groups || [])[0];
+  if (!ativo) return { ma: NaN, rate: NaN, pw: NaN, groupId: null };
+  const progs = (ativo.programs || []).filter(p => !hemi || p.hemisphere === hemi);
+  if (!progs.length) return { ma: NaN, rate: NaN, pw: NaN, groupId: ativo.id };
+  const ma = progs.reduce((a, p) => a + (isFinite(p.amplitude) ? p.amplitude : 0), 0);
+  return { ma, rate: progs[0].rate, pw: progs[0].pulseWidth, groupId: ativo.id };
+}
+
+/* Último TherapyStatus registrado antes de um instante. */
+function statusAntesDe(parsed, tMs) {
+  const logs = (parsed.eventLogs || [])
+    .filter(e => /TherapyStatus/i.test(e.kind || '') && isFinite(e.t) && (!isFinite(tMs) || e.t <= tMs))
+    .sort((a, b) => a.t - b.t);
+  if (!logs.length) return null;
+  const ultimo = logs[logs.length - 1];
+  return /ON/i.test(ultimo.detail || '') ? 'ON' : /OFF/i.test(ultimo.detail || '') ? 'OFF' : null;
+}
+
+/* inferDeviceState(record, parsed, opts)
+   `record` é uma série bruta (bsTimeDomain / montageTD / indefiniteStreaming) ou
+   uma entrada de bsLfp. `opts.modality` ajuda quando não há outra evidência.  */
+function inferDeviceState(record, parsed, opts) {
+  opts = opts || {};
+  const evidencia = [];
+  let estado = 'UNKNOWN';
+  let ma = NaN, rate = NaN, pw = NaN, groupId = null;
+  const hemi = record && record.hemisphere;
+
+  /* 1. TherapySnapshot do BrainSenseLfp é a evidência mais direta */
+  const ts = record && record.therapy;
+  if (ts && ts.perHemi) {
+    const h = ts.perHemi[hemi] || ts.perHemi.Left || ts.perHemi.Right;
+    if (h) {
+      rate = num(h.rate); pw = num(h.pulseWidth); groupId = ts.group || null;
+      evidencia.push('TherapySnapshot do BrainSenseLfp');
+    }
+  }
+  /* amplitude efetivamente registrada na série de estimulação */
+  if (record && record.series) {
+    const s = record.series[hemi] || record.series.Left || record.series.Right;
+    if (s && s.ma && s.ma.length) {
+      const validos = s.ma.filter(isFinite);
+      const maxMa = validos.length ? Math.max(...validos) : NaN;
+      if (isFinite(maxMa)) {
+        ma = maxMa;
+        evidencia.push(`amplitude registrada na série (máx. ${maxMa.toFixed(2)} mA)`);
+        estado = maxMa > 0.05 ? 'ON_THERAPEUTIC' : 'ON_0mA';
+      }
+    }
+  }
+
+  /* 2. amplitude somada do grupo ativo */
+  if (!isFinite(ma)) {
+    const g = amplitudeDoGrupo(parsed, hemi);
+    if (isFinite(g.ma)) {
+      ma = g.ma; groupId = groupId || g.groupId;
+      if (!isFinite(rate)) rate = g.rate;
+      if (!isFinite(pw)) pw = g.pw;
+      evidencia.push(`amplitude somada do grupo ativo ${g.groupId} (${g.ma.toFixed(2)} mA)`);
+    }
+  }
+
+  /* 3. TherapyStatus dos EventLogs */
+  const status = statusAntesDe(parsed, opts.tMs);
+  if (status) {
+    evidencia.push(`TherapyStatus ${status} nos EventLogs`);
+    if (estado === 'UNKNOWN') {
+      if (status === 'OFF') estado = 'OFF';
+      else if (status === 'ON') estado = isFinite(ma) && ma > 0.05 ? 'ON_THERAPEUTIC' : 'ON_0mA';
+    }
+  }
+
+  /* 4. a própria modalidade: Survey costuma ser OFF; Streaming, ON */
+  if (estado === 'UNKNOWN' && opts.modality) {
+    if (/survey|montage|signalcheck|calibration/i.test(opts.modality)) {
+      estado = 'OFF';
+      evidencia.push('modalidade Survey/Signal Test — tipicamente com estimulação desligada (inferência fraca)');
+    } else if (/stream/i.test(opts.modality)) {
+      estado = isFinite(ma) && ma > 0.05 ? 'ON_THERAPEUTIC' : 'ON_0mA';
+      evidencia.push('modalidade Streaming — tipicamente com estimulação ligada (inferência fraca)');
+    }
+  }
+  /* consistência: se há amplitude terapêutica, não pode estar OFF */
+  if (isFinite(ma) && ma > 0.05 && estado === 'OFF') {
+    estado = 'ON_THERAPEUTIC';
+    evidencia.push('corrigido para ON: amplitude > 0 contradiz o estado OFF');
+  }
+
+  return {
+    state: estado,
+    amplitudeMa: isFinite(ma) ? +ma.toFixed(3) : NaN,
+    rateHz: isFinite(rate) ? rate : NaN,
+    pulseWidthUs: isFinite(pw) ? pw : NaN,
+    groupId,
+    evidence: evidencia,
+    confidence: evidencia.length === 0 ? 'nenhuma'
+      : evidencia.some(e => /inferência fraca/.test(e)) ? 'fraca' : 'boa'
+  };
+}
+
+/* Dois espectros de estados diferentes não são diretamente comparáveis. */
+function statesComparable(a, b) {
+  if (!a || !b || a === 'UNKNOWN' || b === 'UNKNOWN')
+    return { comparable: false, reason: 'estado do dispositivo desconhecido em pelo menos um dos registros' };
+  if (a === b) return { comparable: true, reason: null };
+  return {
+    comparable: false,
+    reason: `espectros de estados de estimulação diferentes (${a} vs ${b}) não são diretamente comparáveis — ` +
+      'habilitar a estimulação mesmo a 0 mA já introduz artefato ausente no estado OFF (Hammer et al. 2022)'
+  };
+}
+
 /* ---------- core/metrics/acute.js ---------- */
 /* metrics/acute.js — métricas agudas por sessão × hemisfério (metrics)
    Gerado do refactor modular (Prompt 0.1). Ver docs/arquitetura.md. */
+
 
 
 
@@ -2994,6 +3137,27 @@ function ecgMetrics(parsed, hemi) {
     ecg_cleaning_window_s: rem.params.windowS,
     ecg_svd_components: rem.params.svdComponents
   });
+}
+
+/* Estado do dispositivo — coluna OBRIGATÓRIA em toda linha aguda (Hammer et al.:
+   ON a 0 mA já introduz artefato ausente no OFF, logo comparar sem declarar o
+   estado é erro metodológico). */
+function deviceStateMetrics(parsed, hemi) {
+  const bs = (parsed.bsLfp || []).find(b => b.series && b.series[hemi]);
+  const td = (parsed.bsTimeDomain || []).find(t => t.hemisphere === hemi)
+    || (parsed.montageTD || []).find(t => t.hemisphere === hemi);
+  const st = inferDeviceState(bs || td || { hemisphere: hemi }, parsed, {
+    modality: bs ? 'streaming' : (td ? 'survey' : null)
+  });
+  return {
+    device_state: st.state,
+    device_state_confidence: st.confidence,
+    device_state_evidence: st.evidence.join('; '),
+    stim_amplitude_ma: st.amplitudeMa,
+    stim_rate_hz: st.rateHz,
+    stim_pulse_width_us: st.pulseWidthUs,
+    stim_group: st.groupId
+  };
 }
 
 /* Curva dose-resposta (potência × amplitude de estimulação) do BrainSenseLfp. */
@@ -3163,7 +3327,7 @@ function extractMetrics(parsedList, offMin, opts) {
     const sdate = p.meta.sessionStart ? localDayKey(T(p.meta.sessionStart), offMin) : '';
     const dsi = (implant && p.meta.sessionStart) ? daysSince(implant, p.meta.sessionStart) : NaN;
     HEMIS.forEach(h => {
-      const spec = pickSpectrum(p, h), bu = burstMetrics(p, h, {}), dr = doseResponse(p, h), so = streamOnOff(p, h), eq = ecgMetrics(p, h);
+      const spec = pickSpectrum(p, h), bu = burstMetrics(p, h, {}), dr = doseResponse(p, h), so = streamOnOff(p, h), eq = ecgMetrics(p, h), dv = deviceStateMetrics(p, h);
       if (!spec && !bu && !dr && !so && !eq) return;
       const row = {
         subject_id: subject.id, diagnosis: subject.diagnosis, implant_date: implantDay,
@@ -3175,6 +3339,7 @@ function extractMetrics(parsedList, offMin, opts) {
       if (dr) Object.assign(row, dr);
       if (so) Object.assign(row, so);
       if (eq) Object.assign(row, eq);
+      if (dv) Object.assign(row, dv);
       acute.push(row);
     });
   });
@@ -3649,11 +3814,778 @@ function generateChecklist(prov, metrics, profile) {
 /* Documento .docx pronto para anexar como material suplementar. */
 function checklistDocx(checklist) { return makeDocx(checklist.docxBlocks); }
 
+/* ---------- core/io/timezone.js ---------- */
+/* io/timezone.js — fuso robusto: horário de verão e viagens como quebra.
+
+   POR QUE ISTO EXISTE. Os timestamps do Percept estão em UTC e o app aplicava um
+   único offset global. van Rheede et al. tiveram de corrigir manualmente as
+   transições de horário de verão; é fonte SILENCIOSA de erro em análise
+   circadiana — a acrofase sai deslocada em 1 h sem qualquer aviso.
+
+   A análise circadiana passa a rodar POR SEGMENTO de offset constante, nunca
+   cruzando uma quebra. Tabela de transições embutida (sem rede) para Brasil
+   (até 2019, quando o horário de verão foi extinto), União Europeia e EUA; para
+   o resto, entrada manual.                                                    */
+
+const DIA = 864e5;
+
+/* n-ésimo domingo de um mês (n = 1..5; -1 = último), às `horaUtc` UTC. */
+function domingoDe(ano, mes, n, horaUtc) {
+  if (n > 0) {
+    const d = new Date(Date.UTC(ano, mes, 1));
+    const desloc = (7 - d.getUTCDay()) % 7;
+    return Date.UTC(ano, mes, 1 + desloc + (n - 1) * 7, horaUtc);
+  }
+  const ultimo = new Date(Date.UTC(ano, mes + 1, 0));
+  return Date.UTC(ano, mes, ultimo.getUTCDate() - ultimo.getUTCDay(), horaUtc);
+}
+
+/* Transições conhecidas por região, no intervalo de anos pedido.
+   Cada transição: { t (ms UTC), deltaMin, label }.                           */
+function dstTransitions(regiao, anoIni, anoFim) {
+  const out = [];
+  for (let a = anoIni; a <= anoFim; a++) {
+    if (regiao === 'BR') {
+      /* Brasil: horário de verão extinto em 2019 (Decreto 9.772/2019).
+         Antes disso: início no 3º domingo de outubro, fim no 3º domingo de
+         fevereiro (adiado uma semana quando coincidia com o Carnaval). */
+      if (a <= 2018) out.push({ t: domingoDe(a, 9, 3, 3), deltaMin: +60, label: `início do horário de verão ${a}` });
+      if (a <= 2019) out.push({ t: domingoDe(a, 1, 3, 2), deltaMin: -60, label: `fim do horário de verão ${a}` });
+    } else if (regiao === 'EU') {
+      /* UE: último domingo de março e de outubro, às 01:00 UTC */
+      out.push({ t: domingoDe(a, 2, -1, 1), deltaMin: +60, label: `início do horário de verão ${a} (UE)` });
+      out.push({ t: domingoDe(a, 9, -1, 1), deltaMin: -60, label: `fim do horário de verão ${a} (UE)` });
+    } else if (regiao === 'US') {
+      /* EUA: 2º domingo de março e 1º domingo de novembro, 2h local (~7h UTC) */
+      out.push({ t: domingoDe(a, 2, 2, 7), deltaMin: +60, label: `início do horário de verão ${a} (EUA)` });
+      out.push({ t: domingoDe(a, 10, 1, 6), deltaMin: -60, label: `fim do horário de verão ${a} (EUA)` });
+    }
+  }
+  return out.filter(x => isFinite(x.t)).sort((a, b) => a.t - b.t);
+}
+
+/* Quebras candidatas detectadas a partir dos PRÓPRIOS dados: um salto na
+   distribuição de amostras por hora local sugere que o offset mudou (viagem
+   entre fusos, ou transição não prevista pela tabela).                        */
+function detectOffsetBreaks(rows, offMin, opts) {
+  opts = opts || {};
+  const minDias = opts.minDays || 3;
+  if (!rows || rows.length < 48 * minDias) return [];
+  /* centroide circular da hora local por dia; um degrau grande indica mudança */
+  const porDia = new Map();
+  rows.forEach(r => {
+    const dia = Math.floor((r.t + offMin * 60000) / DIA);
+    const h = ((r.t + offMin * 60000) % DIA) / 36e5;
+    if (!porDia.has(dia)) porDia.set(dia, []);
+    porDia.get(dia).push(h);
+  });
+  const dias = Array.from(porDia.keys()).sort((a, b) => a - b);
+  if (dias.length < 2 * minDias) return [];
+  /* usa a hora do MÍNIMO diário do sinal como âncora de fase (proxy estável) */
+  const fase = dias.map(d => {
+    const hs = porDia.get(d);
+    const ang = hs.map(h => 2 * Math.PI * h / 24);
+    const c = ang.reduce((a, x) => a + Math.cos(x), 0) / ang.length;
+    const s = ang.reduce((a, x) => a + Math.sin(x), 0) / ang.length;
+    let m = Math.atan2(s, c); if (m < 0) m += 2 * Math.PI;
+    return { dia: d, hora: m / (2 * Math.PI) * 24, n: hs.length };
+  });
+  const quebras = [];
+  for (let i = minDias; i < fase.length - minDias; i++) {
+    const antes = fase.slice(Math.max(0, i - minDias), i).map(x => x.hora);
+    const depois = fase.slice(i, i + minDias).map(x => x.hora);
+    const md = a => a.slice().sort((x, y) => x - y)[Math.floor(a.length / 2)];
+    let delta = md(depois) - md(antes);
+    while (delta > 12) delta -= 24; while (delta < -12) delta += 24;
+    if (Math.abs(delta) >= 0.75) {
+      const t = fase[i].dia * DIA - offMin * 60000;
+      if (!quebras.length || t - quebras[quebras.length - 1].t > 5 * DIA)
+        quebras.push({ t, deltaMin: Math.round(delta * 60), label: 'quebra detectada nos dados', source: 'dados' });
+    }
+  }
+  return quebras;
+}
+
+/* resolveOffsets(rows, {tzRegion, manualOffsetMin, breaks}) → offset por amostra
+   e a lista efetiva de quebras aplicadas.                                     */
+function resolveOffsets(rows, opts) {
+  opts = opts || {};
+  const base = isFinite(opts.manualOffsetMin) ? opts.manualOffsetMin : -180;
+  if (!rows || !rows.length) return { offsets: [], breaks: [], base };
+  const t0 = rows[0].t, t1 = rows[rows.length - 1].t;
+  const anoIni = new Date(t0).getUTCFullYear(), anoFim = new Date(t1).getUTCFullYear();
+  const tabela = opts.tzRegion ? dstTransitions(opts.tzRegion, anoIni, anoFim).filter(x => x.t > t0 && x.t < t1) : [];
+  const detectadas = opts.detect === false ? [] : detectOffsetBreaks(rows, base, opts);
+  /* quebras manuais do usuário têm precedência */
+  const todas = (opts.breaks || []).concat(tabela.map(x => Object.assign({ source: 'tabela' }, x)), detectadas)
+    .sort((a, b) => a.t - b.t);
+  /* remove duplicatas próximas (tabela e detecção apontando a mesma transição) */
+  const efetivas = [];
+  todas.forEach(q => {
+    const ult = efetivas[efetivas.length - 1];
+    if (ult && Math.abs(q.t - ult.t) < 3 * DIA) return;
+    efetivas.push(q);
+  });
+  const offsets = new Array(rows.length);
+  let acumulado = 0, qi = 0;
+  for (let i = 0; i < rows.length; i++) {
+    while (qi < efetivas.length && rows[i].t >= efetivas[qi].t) { acumulado += efetivas[qi].deltaMin; qi++; }
+    offsets[i] = base + acumulado;
+  }
+  return { offsets, breaks: efetivas, base };
+}
+
+/* segmentByOffset(rows, opts) → segmentos de offset constante.
+   A análise circadiana roda por segmento; nunca através de uma quebra.        */
+function segmentByOffset(rows, opts) {
+  const { offsets, breaks, base } = resolveOffsets(rows, opts);
+  if (!rows.length) return { segments: [], breaks, base };
+  const segments = [];
+  let ini = 0;
+  for (let i = 1; i <= rows.length; i++) {
+    if (i === rows.length || offsets[i] !== offsets[ini]) {
+      segments.push({
+        offsetMin: offsets[ini], rows: rows.slice(ini, i),
+        startT: rows[ini].t, endT: rows[i - 1].t,
+        nDays: Math.max(1, Math.round((rows[i - 1].t - rows[ini].t) / DIA))
+      });
+      ini = i;
+    }
+  }
+  return { segments, breaks, base };
+}
+
+/* ---------- core/artifact/ramp.js ---------- */
+/* artifact/ramp.js — artefato de rampa de estimulação e transientes polifásicos.
+
+   Referência: Hammer et al., Stereotact Funct Neurosurg 2022;100:168-183 — três
+   fontes de artefato removíveis por subtração de template: ECG (ver ecg.js),
+   artefatos polifásicos não fisiológicos, e artefatos de RAMPA ao alterar a
+   amplitude de estimulação.
+
+   Detalhe de implementação do DBSsync, adotado aqui: no LFP intracraniano a
+   4ª AMOSTRA após a mudança abrupta de amplitude é a que fornece melhor
+   alinhamento (validado contra artefatos cardíacos endógenos).
+
+   Default seguro: MASCARAR as janelas como NaN. Subtrair template é opção do
+   usuário — mascarar nunca inventa sinal, subtrair pode errar.               */
+
+
+const OFFSET_ALINHAMENTO = 4;      // 4ª amostra após o degrau (DBSsync)
+
+/* detectRampArtifacts(lfp, fs, {maSeries, maFs, minStepMa})
+   Identifica os instantes de mudança de amplitude — na série de mA quando ela
+   existe, senão por detecção de degrau na própria série de potência.
+   → { steps: [{idx, fromMa, toMa, deltaMa}], windows: [{start, end}], source } */
+function detectRampArtifacts(lfp, fs, opts) {
+  opts = opts || {};
+  const minStep = isFinite(opts.minStepMa) ? opts.minStepMa : 0.05;
+  const janelaS = isFinite(opts.windowS) ? opts.windowS : 0.5;
+  const steps = [];
+  let fonte = 'nenhuma';
+
+  if (opts.maSeries && opts.maSeries.length > 1) {
+    fonte = 'série de amplitude (BrainSenseLfp)';
+    const maFs = opts.maFs || 2;
+    const escala = fs / maFs;               // converte índice de mA para índice de LFP
+    for (let i = 1; i < opts.maSeries.length; i++) {
+      const de = opts.maSeries[i - 1], para = opts.maSeries[i];
+      if (isFinite(de) && isFinite(para) && Math.abs(para - de) >= minStep)
+        steps.push({
+          idx: Math.round(i * escala) + OFFSET_ALINHAMENTO,
+          fromMa: +de.toFixed(3), toMa: +para.toFixed(3), deltaMa: +(para - de).toFixed(3)
+        });
+    }
+  } else if (lfp && lfp.length > 8) {
+    /* sem série de mA: degrau na potência — diferença robusta sobre janelas de 0,5 s */
+    fonte = 'degrau detectado na série de potência';
+    const w = Math.max(4, Math.round(0.5 * fs));
+    const medias = [];
+    for (let s = 0; s + w <= lfp.length; s += w) {
+      const seg = [];
+      for (let i = s; i < s + w; i++) if (isFinite(lfp[i])) seg.push(lfp[i]);
+      medias.push({ idx: s, v: seg.length ? mean(seg) : NaN });
+    }
+    const difs = [];
+    for (let i = 1; i < medias.length; i++) difs.push(Math.abs(medias[i].v - medias[i - 1].v));
+    const escalaRobusta = mad(difs.filter(isFinite)) || 1e-9;
+    const limiar = 5 * escalaRobusta;
+    for (let i = 1; i < medias.length; i++) {
+      if (isFinite(medias[i].v) && isFinite(medias[i - 1].v) && Math.abs(medias[i].v - medias[i - 1].v) > limiar)
+        steps.push({ idx: medias[i].idx + OFFSET_ALINHAMENTO, fromMa: NaN, toMa: NaN, deltaMa: NaN });
+    }
+  }
+
+  const half = Math.max(2, Math.round(janelaS * fs));
+  const windows = steps.map(s => ({
+    start: Math.max(0, s.idx - half), end: Math.min((lfp ? lfp.length : 0), s.idx + half)
+  }));
+  return {
+    steps, windows, source: fonte,
+    alignmentOffsetSamples: OFFSET_ALINHAMENTO,
+    nSteps: steps.length,
+    pctAffected: lfp && lfp.length ? 100 * windows.reduce((a, w) => a + (w.end - w.start), 0) / lfp.length : 0
+  };
+}
+
+/* removeRampArtifact(x, fs, ramp, {mode})
+   mode: 'mask' (default, seguro) → NaN nas janelas
+         'template' → subtração do template médio dos transientes alinhados    */
+function removeRampArtifact(x, fs, ramp, opts) {
+  opts = opts || {};
+  const modo = opts.mode || 'mask';
+  const out = Float64Array.from(x);
+  if (!ramp || !ramp.windows.length)
+    return { cleaned: out, applied: false, mode: modo, nSteps: 0, reason: 'nenhuma mudança de amplitude detectada' };
+
+  if (modo === 'mask') {
+    ramp.windows.forEach(w => { for (let i = w.start; i < w.end; i++) out[i] = NaN; });
+    return {
+      cleaned: out, applied: true, mode: 'mask', nSteps: ramp.nSteps,
+      pctMasked: +ramp.pctAffected.toFixed(2),
+      note: 'janelas mascaradas como NaN — a lacuna é propagada com contabilidade, nunca preenchida'
+    };
+  }
+
+  /* template médio dos transientes, alinhado pela 4ª amostra após o degrau */
+  const L = ramp.windows[0].end - ramp.windows[0].start;
+  const validas = ramp.windows.filter(w => (w.end - w.start) === L &&
+    Array.from({ length: L }, (_, k) => x[w.start + k]).every(isFinite));
+  if (validas.length < 3)
+    return { cleaned: out, applied: false, mode: 'template', nSteps: ramp.nSteps, reason: 'transientes válidos insuficientes para formar template' };
+  const tpl = new Float64Array(L);
+  validas.forEach(w => { for (let k = 0; k < L; k++) tpl[k] += x[w.start + k]; });
+  for (let k = 0; k < L; k++) tpl[k] /= validas.length;
+  const m = mean(Array.from(tpl));
+  for (let k = 0; k < L; k++) tpl[k] -= m;
+  validas.forEach(w => { for (let k = 0; k < L; k++) out[w.start + k] -= tpl[k]; });
+  return { cleaned: out, applied: true, mode: 'template', nSteps: ramp.nSteps, nUsed: validas.length, template: tpl };
+}
+
+/* detectPolyphasic(x, fs, {k, maxDurationMs})
+   Transientes de alta amplitude e forma não fisiológica: amplitude acima de
+   k·MAD (default 6) com duração abaixo de 50 ms e cruzamentos de zero acima do
+   esperado para a banda. Marca como época excluída — NUNCA corrige em silêncio. */
+function detectPolyphasic(x, fs, opts) {
+  opts = opts || {};
+  const k = isFinite(opts.k) ? opts.k : 6;
+  const maxDurMs = isFinite(opts.maxDurationMs) ? opts.maxDurationMs : 50;
+  const validos = [];
+  for (let i = 0; i < x.length; i++) if (isFinite(x[i])) validos.push(x[i]);
+  if (validos.length < 16) return { events: [], nEvents: 0, pctAffected: 0, threshold: NaN };
+  const med = median(validos), escala = mad(validos) || 1e-9;
+  const limiar = k * escala;
+  const maxN = Math.round(maxDurMs * fs / 1000);
+
+  /* Regiões acima do limiar, FUNDIDAS quando separadas por menos de 5 ms: um
+     transiente polifásico oscila através da mediana, então ele aparece como
+     vários trechos curtos — avaliá-los isoladamente perderia justamente a
+     forma polifásica que se quer detectar. */
+  const brutos = [];
+  for (let j = 0; j < x.length; j++) {
+    if (!isFinite(x[j]) || Math.abs(x[j] - med) <= limiar) continue;
+    const ult = brutos[brutos.length - 1];
+    if (ult && j - ult.end <= Math.max(1, Math.round(0.005 * fs))) ult.end = j + 1;
+    else brutos.push({ start: j, end: j + 1 });
+  }
+
+  const eventos = [];
+  let bi = 0;
+  while (bi < brutos.length) {
+    { const reg = brutos[bi++]; const s = reg.start; const i = reg.end;
+      const n = i - s;
+      if (n <= maxN) {
+        /* cruzamentos de zero dentro do transiente: forma polifásica */
+        let cruz = 0;
+        for (let j = s + 1; j < i; j++)
+          if (isFinite(x[j]) && isFinite(x[j - 1]) && (x[j] - med) * (x[j - 1] - med) < 0) cruz++;
+        const durMs = n * 1000 / fs;
+        /* "polifásico" quer dizer literalmente mais de duas fases: três ou mais
+           inversões dentro de um transiente curto e de alta amplitude. Uma
+           oscilação fisiológica dessa duração não inverte tantas vezes. */
+        if (cruz >= 3) eventos.push({
+          start: s, end: i, startS: +(s / fs).toFixed(4), durationMs: +durMs.toFixed(1),
+          zeroCrossings: cruz, peak: +Math.max(...Array.from(x.slice(s, i)).map(v => Math.abs(v - med))).toFixed(3)
+        });
+      }
+    }
+  }
+  const nAfetadas = eventos.reduce((a, e) => a + (e.end - e.start), 0);
+  return {
+    events: eventos, nEvents: eventos.length, threshold: +limiar.toFixed(4),
+    k, maxDurationMs: maxDurMs,
+    pctAffected: x.length ? +(100 * nAfetadas / x.length).toFixed(3) : 0,
+    note: 'épocas marcadas para exclusão; o sinal NÃO é corrigido silenciosamente'
+  };
+}
+
+/* ---------- core/qc/harmonics.js ---------- */
+/* qc/harmonics.js — harmônicos como critério de artefato, e aliasing da
+   frequência de estimulação.
+
+   Referência: Swinnen et al., J Neural Eng 2025;22:014001 (checklist).
+
+   A ideia: uma oscilação neural genuína é aproximadamente senoidal e não
+   costuma trazer uma escada de harmônicos acima do fundo aperiódico. Um pico
+   que TEM harmônicos é suspeito de origem não oscilatória — tipicamente um
+   transiente periódico (estimulação, artefato mecânico) disfarçado de ritmo. */
+
+/* Valor do espectro na frequência mais próxima de `alvo`. */
+function em(f, p, alvo, tol) {
+  let melhor = -1, dist = Infinity;
+  for (let i = 0; i < f.length; i++) {
+    const d = Math.abs(f[i] - alvo);
+    if (d < dist && d <= (tol || 1.5)) { dist = d; melhor = i; }
+  }
+  return melhor >= 0 ? { f: f[melhor], v: p[melhor], idx: melhor } : null;
+}
+
+/* checkHarmonics(f, psd, peakHz, {stimRateHz, fs})
+   → { isSuspect, harmonicsFound, ratio, verdict, aliasing }                  */
+function checkHarmonics(f, psd, peakHz, opts) {
+  opts = opts || {};
+  if (!isFinite(peakHz) || !f || !f.length)
+    return { isSuspect: false, harmonicsFound: [], ratio: NaN, verdict: 'não avaliável', reason: 'sem pico informado' };
+
+  /* fundo aperiódico como referência: harmônico só conta se estiver ACIMA dele */
+  const ap = fitAperiodic(f, psd, { fmin: 2, fmax: 95 });
+  const fundoEm = alvo => {
+    if (!ap) return 0;
+    const i = ap.f.findIndex(x => Math.abs(x - alvo) <= 1.5);
+    return i >= 0 ? ap.aperiodic[i] : 0;
+  };
+  const base = em(f, psd, peakHz, 1.5);
+  if (!base) return { isSuspect: false, harmonicsFound: [], ratio: NaN, verdict: 'não avaliável', reason: 'pico não localizado no espectro' };
+
+  const candidatos = [
+    { nome: 'subharmônico ½', hz: peakHz / 2 },
+    { nome: 'subharmônico ⅓', hz: peakHz / 3 },
+    { nome: '2º harmônico', hz: 2 * peakHz },
+    { nome: '3º harmônico', hz: 3 * peakHz }
+  ];
+  const achados = [];
+  candidatos.forEach(c => {
+    if (c.hz < (f[1] || 1) || c.hz > f[f.length - 1]) return;
+    const pt = em(f, psd, c.hz, 1.5);
+    if (!pt) return;
+    const fundo = fundoEm(c.hz);
+    const excesso = fundo > 0 ? pt.v / fundo : NaN;
+    /* duas condições, e ambas importam: o harmônico precisa estar acima do
+       fundo aperiódico E ser uma fração relevante do fundamental. Só a primeira
+       não basta — num espectro de oscilação quase pura o fundo ajustado fica
+       ínfimo, e até vazamento numérico o ultrapassa. */
+    const fracao = base.v > 0 ? pt.v / base.v : NaN;
+    if (isFinite(excesso) && excesso > 1.5 && isFinite(fracao) && fracao > 0.01)
+      achados.push({
+        nome: c.nome, hz: +pt.f.toFixed(2),
+        excessoSobreFundo: +excesso.toFixed(2), fracaoDoFundamental: +fracao.toFixed(4)
+      });
+  });
+
+  const razao = achados.length ? achados.reduce((a, h) => a + h.excessoSobreFundo, 0) / achados.length : 0;
+  const suspeito = achados.length >= 2;
+
+  /* aliasing: com estimulação a fstim e Nyquist em fs/2, as frequências de
+     dobra caem em |fstim − k·fs| — picos sobre elas são suspeitos. */
+  let aliasing = null;
+  if (isFinite(opts.stimRateHz) && isFinite(opts.fs)) {
+    const nyq = opts.fs / 2;
+    const dobras = [];
+    for (let k = 0; k <= 6; k++) {
+      const d = Math.abs(opts.stimRateHz - k * opts.fs);
+      if (d > 0 && d <= nyq) dobras.push(+d.toFixed(2));
+      const d2 = Math.abs(k * opts.fs - opts.stimRateHz);
+      if (d2 > 0 && d2 <= nyq && !dobras.includes(+d2.toFixed(2))) dobras.push(+d2.toFixed(2));
+    }
+    const proximo = dobras.filter(d => Math.abs(d - peakHz) <= 2);
+    aliasing = {
+      stimRateHz: opts.stimRateHz, foldingFrequencies: dobras,
+      peakNearFolding: proximo.length > 0,
+      note: proximo.length
+        ? `o pico em ${peakHz.toFixed(1)} Hz coincide com uma frequência de dobra do aliasing da estimulação (${proximo.join(', ')} Hz)`
+        : null
+    };
+  }
+
+  const verdict = suspeito ? 'artefato provável'
+    : achados.length === 1 ? 'inconclusivo — um harmônico acima do fundo'
+      : 'oscilatório provável';
+  return {
+    peakHz: +peakHz.toFixed(2), isSuspect: suspeito || !!(aliasing && aliasing.peakNearFolding),
+    harmonicsFound: achados, nHarmonics: achados.length, ratio: +razao.toFixed(2),
+    verdict, aliasing,
+    reason: suspeito
+      ? `${achados.length} harmônicos acima do fundo aperiódico (${achados.map(h => h.nome).join(', ')}) — pico provavelmente não oscilatório`
+      : (aliasing && aliasing.peakNearFolding ? aliasing.note : null)
+  };
+}
+
+/* ---------- core/qc/reproducibility.js ---------- */
+/* qc/reproducibility.js — reprodutibilidade do pico entre registros
+   consecutivos, e triagem por ECG que exclui o hemisfério da série crônica.
+
+   POR QUE ISTO EXISTE.
+   • Thenaisie et al. (J Neural Eng 2021) reportaram que registros consecutivos
+     do MESMO paciente e MESMOS contatos foram classificados de forma
+     INCONSISTENTE entre sessões pelo próprio Percept, e que 27% dos pares de
+     contato foram rotulados como artefactuais em GPi. Um pico que não se repete
+     entre registros não é biomarcador — é ruído com sorte.
+   • van Rheede et al. (npj Parkinsons Dis 2022) rastrearam os streams do Signal
+     Test quanto a contaminação cardíaca e, quando havia artefato de ECG,
+     excluíram TODA a série crônica daquele STN (2 de 12 excluídos). É critério
+     conservador e defensável — e aqui é apresentado como DECISÃO EXPLÍCITA que
+     o usuário confirma, não como filtro silencioso.                          */
+
+
+
+/* peakReproducibility(records, {lo, hi})
+   `records`: [{ hemisphere, channel, label, f, p, sessionDate, artifact }]
+   → por canal: n, frequências, desvio máximo, CV da magnitude, concordância da
+     flag de artefato e um veredito.                                           */
+function peakReproducibility(records, opts) {
+  opts = opts || {};
+  const lo = isFinite(opts.lo) ? opts.lo : 13, hi = isFinite(opts.hi) ? opts.hi : 35;
+  const grupos = new Map();
+  (records || []).forEach(r => {
+    if (!r || !r.f || !r.f.length) return;
+    const chave = `${r.hemisphere}|${r.channel || r.label || '?'}`;
+    if (!grupos.has(chave)) grupos.set(chave, []);
+    grupos.get(chave).push(r);
+  });
+
+  const linhas = [];
+  grupos.forEach((rs, chave) => {
+    const [hemi, canal] = chave.split('|');
+    const picos = rs.map(r => {
+      const pk = peakInBand(r.f, r.p, lo, hi);
+      return { hz: pk.f, mag: pk.v, sessionDate: r.sessionDate || null, artifact: r.artifact || null };
+    }).filter(x => isFinite(x.hz));
+    if (!picos.length) return;
+    const hzs = picos.map(x => x.hz), mags = picos.map(x => x.mag);
+    const desvioMax = hzs.length > 1 ? Math.max(...hzs) - Math.min(...hzs) : 0;
+    const cv = mags.length > 1 && mean(mags) > 0 ? sd(mags) / mean(mags) : NaN;
+    const flags = picos.map(x => x.artifact).filter(Boolean);
+    const concordaFlag = flags.length > 1 ? new Set(flags).size === 1 : null;
+    const veredito = picos.length < 2 ? 'n insuficiente'
+      : desvioMax <= 1 ? 'reprodutível' : 'instável';
+    linhas.push({
+      hemisphere: hemi, channel: canal, n: picos.length,
+      peaks: picos.map(x => +x.hz.toFixed(2)),
+      medianHz: +median(hzs).toFixed(2),
+      maxDeviationHz: +desvioMax.toFixed(2),
+      magnitudeCV: isFinite(cv) ? +cv.toFixed(3) : NaN,
+      deviceArtifactFlags: flags,
+      artifactFlagAgrees: concordaFlag,
+      verdict: veredito
+    });
+  });
+
+  const reprod = linhas.filter(l => l.verdict === 'reprodutível').length;
+  const avaliaveis = linhas.filter(l => l.verdict !== 'n insuficiente').length;
+  return {
+    channels: linhas.sort((a, b) => a.hemisphere.localeCompare(b.hemisphere) || a.channel.localeCompare(b.channel)),
+    band: [lo, hi],
+    nChannels: linhas.length, nEvaluable: avaliaveis, nReproducible: reprod,
+    pctReproducible: avaliaveis ? +(100 * reprod / avaliaveis).toFixed(1) : NaN,
+    criterion: 'desvio ≤ 1 Hz entre registros do mesmo canal',
+    note: avaliaveis === 0
+      ? 'é preciso mais de um registro do mesmo canal para avaliar reprodutibilidade'
+      : null
+  };
+}
+
+/* screenChronicByEcg(parsed, opts)
+   Roda a detecção de picos R nos registros de Signal Test / Survey de cada
+   hemisfério e recomenda incluir, excluir a série crônica, ou inspecionar.    */
+function screenChronicByEcg(parsedList, opts) {
+  opts = opts || {};
+  const lista = Array.isArray(parsedList) ? parsedList : [parsedList];
+  const porHemi = {};
+  ['Left', 'Right'].forEach(h => {
+    const series = [];
+    lista.forEach(p => {
+      (p.montageTD || []).concat(p.bsTimeDomain || []).forEach(td => {
+        if (td.hemisphere === h && td.data && td.data.length > 8 * (td.fsEff || td.fs)) series.push(td);
+      });
+    });
+    if (!series.length) {
+      porHemi[h] = {
+        hemisphere: h, evaluated: false, ecgDetected: null, confidence: null,
+        recommendation: 'não avaliável', reason: 'sem sinal bruto para triagem neste hemisfério'
+      };
+      return;
+    }
+    const resultados = series.slice(0, 4).map(td => {
+      const fs = td.fsEff || td.fs;
+      const det = detectRPeaks(td.data, fs, {});
+      return { channel: td.label, nBeats: det.nDetected, confidence: det.confidence, bpm: det.bpm };
+    });
+    const comEcg = resultados.filter(r => r.nBeats >= 8 && r.confidence !== 'baixa');
+    const detectado = comEcg.length > 0;
+    const altaConf = comEcg.some(r => r.confidence === 'alta');
+    porHemi[h] = {
+      hemisphere: h, evaluated: true,
+      ecgDetected: detectado,
+      confidence: altaConf ? 'alta' : detectado ? 'média' : 'baixa',
+      channels: resultados,
+      recommendation: !detectado ? 'incluir'
+        : altaConf ? 'excluir série crônica' : 'inspeção visual necessária',
+      reason: !detectado
+        ? 'sem contaminação cardíaca detectável nos registros de triagem'
+        : `contaminação cardíaca detectada em ${comEcg.length} de ${resultados.length} registros de triagem` +
+          (altaConf ? ' com alta confiança' : '')
+    };
+  });
+  return {
+    hemispheres: porHemi,
+    criterion: 'van Rheede et al. 2022: com artefato de ECG no Signal Test, a série crônica daquele hemisfério é excluída por inteiro',
+    note: 'esta é uma DECISÃO que o usuário confirma; se aceita, o hemisfério aparece como excluído com o motivo, em vez de simplesmente omitido'
+  };
+}
+
+/* ---------- core/qc/panel.js ---------- */
+/* qc/panel.js — painel de controle de qualidade consolidado.
+
+   Reúne, por arquivo e hemisfério, o checklist de artefatos da revisão
+   (seção 4.4) como semáforo. É a peça que sustenta a alegação de rigor do
+   software: em vez de "confie, tratamos artefato", uma lista item a item do que
+   foi verificado, do que passou, do que passou com ressalva e — importante — do
+   que NÃO É VERIFICÁVEL com este dado, com o motivo.
+
+   Cores: 'verde' (verificado e aprovado), 'amarelo' (verificado com ressalva),
+   'vermelho' (problema), 'cinza' (não verificável — com o motivo).           */
+
+
+
+
+
+
+
+
+
+
+const item = (chave, rotulo, cor, valor, motivo) => ({ chave, rotulo, cor, valor, motivo: motivo || null });
+
+/* qcPanel(parsedList, opts) → { rows, summary } — uma linha por arquivo × hemisfério */
+function qcPanel(parsedList, opts) {
+  opts = opts || {};
+  const lista = Array.isArray(parsedList) ? parsedList : [parsedList];
+  const linhas = [];
+
+  /* reprodutibilidade é entre registros: calculada uma vez para todo o conjunto */
+  const registros = [];
+  lista.forEach(p => (p.montage || []).forEach(m => registros.push({
+    hemisphere: m.hemisphere, channel: m.label, f: m.f, p: m.mag,
+    sessionDate: p.meta.sessionStart, artifact: m.artifact
+  })));
+  const reprod = peakReproducibility(registros, opts.band ? { lo: opts.band[0], hi: opts.band[1] } : {});
+
+  lista.forEach(p => {
+    ['Left', 'Right'].forEach(hemi => {
+      const td = (p.bsTimeDomain || []).find(t => t.hemisphere === hemi)
+        || (p.montageTD || []).find(t => t.hemisphere === hemi);
+      const temAlgo = td || (p.montage || []).some(m => m.hemisphere === hemi) || (p.trend || {})[hemi];
+      if (!temAlgo) return;
+      const itens = [];
+      const fs = td ? (td.fsEff || td.fs) : NaN;
+
+      /* 1. perda de pacotes */
+      if (td) {
+        const pk = td.packets || {};
+        const est = nanStats(td.data);
+        if (!pk.reliable) itens.push(item('pacotes', 'Perda de pacotes tratada', 'cinza', 'não verificável',
+          'o registro não traz GlobalSequences nem TicksInMses'));
+        else if (pk.pctMissing === 0) itens.push(item('pacotes', 'Perda de pacotes tratada', 'verde', '0% perdido',
+          `verificado por ${pk.method}`));
+        else itens.push(item('pacotes', 'Perda de pacotes tratada', pk.pctMissing > 20 ? 'vermelho' : 'amarelo',
+          `${pk.pctMissing.toFixed(2)}% perdido`, `${est.nNan} amostras como NaN, sem interpolação`));
+      } else itens.push(item('pacotes', 'Perda de pacotes tratada', 'cinza', 'sem sinal bruto', null));
+
+      /* 2. fs efetiva */
+      if (td && td.timing && td.timing.reliable) {
+        const dr = td.timing.driftMsTotal;
+        itens.push(item('fs', 'fs efetiva recalculada', Math.abs(dr) > 20 ? 'amarelo' : 'verde',
+          `${td.fsEff.toFixed(4)} Hz`, `deriva de ${dr.toFixed(1)} ms no registro`));
+      } else itens.push(item('fs', 'fs efetiva recalculada', 'cinza', 'não verificável', 'sem TicksInMses'));
+
+      /* 3. artefato cardíaco */
+      if (td && td.data.length > 8 * fs) {
+        const det = detectRPeaks(td.data, fs, {});
+        if (det.nDetected < 5)
+          itens.push(item('ecg', 'Artefato cardíaco', 'verde', 'não detectado', det.reason));
+        else {
+          const rem = removeEcg(td.data, fs, det.peaks, { method: 'svd' });
+          const val = validateEcgRemoval(td.data, rem.cleaned, fs, {});
+          const ok = val.suppressionRatioDb > 0 && val.betaPeakRecovery >= 0.8 && val.betaPeakRecovery <= 1.2;
+          itens.push(item('ecg', 'Artefato cardíaco', det.confidence === 'alta' ? (ok ? 'amarelo' : 'vermelho') : 'amarelo',
+            `${det.nDetected} batimentos (${det.bpm.toFixed(0)} bpm)`,
+            `supressão ${val.suppressionRatioDb.toFixed(1)} dB; recuperação do pico ${val.betaPeakRecovery.toFixed(2)}; confiança ${det.confidence}`));
+        }
+      } else itens.push(item('ecg', 'Artefato cardíaco', 'cinza', 'não verificável', 'sem sinal bruto suficiente'));
+
+      /* 4. rampa de estimulação */
+      const bs = (p.bsLfp || []).find(b => b.series && b.series[hemi]);
+      if (bs) {
+        const r = detectRampArtifacts(td ? td.data : null, fs || 250, {
+          maSeries: bs.series[hemi].ma, maFs: bs.fsEff || bs.fs || 2
+        });
+        itens.push(item('rampa', 'Rampa de estimulação', r.nSteps ? 'amarelo' : 'verde',
+          `${r.nSteps} mudança(s) de amplitude`,
+          r.nSteps ? `${r.pctAffected.toFixed(1)}% do registro em janela de transiente (default: mascarar)` : null));
+      } else itens.push(item('rampa', 'Rampa de estimulação', 'cinza', 'não verificável', 'sem série de amplitude (BrainSenseLfp)'));
+
+      /* 5. transientes polifásicos */
+      if (td) {
+        const poly = detectPolyphasic(td.data, fs);
+        itens.push(item('polifasicos', 'Transientes polifásicos', poly.nEvents ? 'amarelo' : 'verde',
+          `${poly.nEvents} evento(s)`, poly.nEvents ? `${poly.pctAffected}% do registro afetado` : null));
+      } else itens.push(item('polifasicos', 'Transientes polifásicos', 'cinza', 'sem sinal bruto', null));
+
+      /* 6. movimento / tremor */
+      itens.push(item('movimento', 'Movimento / tremor', 'cinza', 'não verificável',
+        'exige canal de IMU ou EMG sincronizado — importação de sinal externo é da Onda 2.3'));
+
+      /* 7. estado do dispositivo declarado */
+      const st = inferDeviceState(bs || td, p, { modality: bs ? 'streaming' : (td ? 'survey' : null) });
+      itens.push(item('estado', 'Estado do dispositivo declarado',
+        st.state === 'UNKNOWN' ? 'vermelho' : st.confidence === 'fraca' ? 'amarelo' : 'verde',
+        st.state, st.evidence.join('; ') || 'sem evidência disponível'));
+
+      /* 8. harmônicos */
+      if (td && td.data.length > 4 * fs) {
+        const w = welchPSD(td.data, fs, { nperseg: 512, overlap: .5 });
+        if (w.p) {
+          const pico = peakInBand(w.f, w.p, opts.band ? opts.band[0] : 13, opts.band ? opts.band[1] : 35);
+          const h = checkHarmonics(Array.from(w.f), Array.from(w.p), pico.f, {
+            stimRateHz: st.rateHz, fs
+          });
+          itens.push(item('harmonicos', 'Harmônicos verificados',
+            h.verdict === 'artefato provável' ? 'vermelho' : h.isSuspect ? 'amarelo' : 'verde',
+            h.verdict, h.reason));
+        } else itens.push(item('harmonicos', 'Harmônicos verificados', 'cinza', 'espectro não estimável', w.reason));
+      } else itens.push(item('harmonicos', 'Harmônicos verificados', 'cinza', 'sem sinal bruto', null));
+
+      /* 9. reprodutibilidade do pico */
+      const rep = reprod.channels.filter(c => c.hemisphere === hemi);
+      if (!rep.length) itens.push(item('reprodutibilidade', 'Reprodutibilidade do pico', 'cinza', 'não verificável',
+        'é preciso mais de um registro do mesmo canal'));
+      else {
+        const avaliaveis = rep.filter(c => c.verdict !== 'n insuficiente');
+        const instaveis = avaliaveis.filter(c => c.verdict === 'instável').length;
+        if (!avaliaveis.length) itens.push(item('reprodutibilidade', 'Reprodutibilidade do pico', 'cinza',
+          'n insuficiente', 'apenas um registro por canal'));
+        else itens.push(item('reprodutibilidade', 'Reprodutibilidade do pico',
+          instaveis === 0 ? 'verde' : instaveis === avaliaveis.length ? 'vermelho' : 'amarelo',
+          `${avaliaveis.length - instaveis}/${avaliaveis.length} canais reprodutíveis`,
+          'critério: desvio ≤ 1 Hz entre registros'));
+      }
+
+      linhas.push({
+        file: p.fileName, subjectId: p.patient.idHash, hemisphere: hemi,
+        deviceState: st.state, items: itens
+      });
+    });
+  });
+
+  const todos = linhas.flatMap(l => l.items);
+  const conta = c => todos.filter(i => i.cor === c).length;
+  return {
+    rows: linhas,
+    reproducibility: reprod,
+    summary: {
+      nRows: linhas.length, nItems: todos.length,
+      verde: conta('verde'), amarelo: conta('amarelo'), vermelho: conta('vermelho'), cinza: conta('cinza'),
+      pctVerificado: todos.length ? +(100 * (todos.length - conta('cinza')) / todos.length).toFixed(1) : 0
+    }
+  };
+}
+
+/* ---------- core/dsp/notch.js ---------- */
+/* dsp/notch.js — filtro notch de rede, de fase zero, no domínio da frequência.
+
+   Coerente com bandpassFFT: mesma estratégia (FFT → zerar faixa → IFFT), mesmo
+   tratamento de lacunas (imputação temporária declarada, NaN reposto na saída).
+
+   Referência do item: Swinnen et al., J Neural Eng 2025 (checklist).
+   Unidades: x em µV, fs em Hz, saída em µV.                                  */
+
+
+
+/* notchFFT(x, fs, {freq, harmonics, halfWidth})
+   Remove `freq` e seus harmônicos até Nyquist.                                */
+function notchFFT(x, fs, opts) {
+  opts = opts || {};
+  const f0 = isFinite(opts.freq) ? opts.freq : 60;
+  const nHarm = isFinite(opts.harmonics) ? opts.harmonics : 4;
+  const hw = isFinite(opts.halfWidth) ? opts.halfWidth : 1.0;   // ±1 Hz
+  const { filled, mask, pctImputed } = interpolateForFilter(x);
+  const n = nextPow2(filled.length);
+  const re = new Float64Array(n), im = new Float64Array(n);
+  for (let i = 0; i < filled.length; i++) re[i] = filled[i];
+  fft(re, im, false);
+  const df = fs / n;
+  const alvos = [];
+  for (let h = 1; h <= nHarm; h++) { const f = h * f0; if (f < fs / 2) alvos.push(f); }
+  for (let k = 0; k <= n / 2; k++) {
+    const f = k * df;
+    if (alvos.some(a => Math.abs(f - a) <= hw)) {
+      re[k] = im[k] = 0;
+      if (k > 0 && k < n / 2) { re[n - k] = im[n - k] = 0; }
+    }
+  }
+  fft(re, im, true);
+  const out = re.slice(0, x.length);
+  if (pctImputed) restoreNaN(out, mask);
+  out.pctImputed = pctImputed;
+  out.notchedFrequencies = alvos;
+  return out;
+}
+
+/* suggestLineFrequency(x, fs) — compara a potência em 50 e 60 Hz e sugere a
+   frequência de rede. Reporta as duas, para o usuário decidir com evidência. */
+function suggestLineFrequency(x, fs) {
+  const w = welchPSD(x, fs, { nperseg: Math.min(2048, nextPow2(x.length)), overlap: .5 });
+  if (!w.p) return { suggestion: null, reason: w.reason || 'espectro não estimável' };
+  const potEm = alvo => {
+    let s = 0, n = 0;
+    for (let i = 0; i < w.f.length; i++)
+      if (Math.abs(w.f[i] - alvo) <= 1 && isFinite(w.p[i])) { s += w.p[i]; n++; }
+    return n ? s / n : NaN;
+  };
+  const vizinhanca = alvo => {
+    let s = 0, n = 0;
+    for (let i = 0; i < w.f.length; i++) {
+      const d = Math.abs(w.f[i] - alvo);
+      if (d >= 3 && d <= 8 && isFinite(w.p[i])) { s += w.p[i]; n++; }
+    }
+    return n ? s / n : NaN;
+  };
+  const r50 = potEm(50) / (vizinhanca(50) || NaN);
+  const r60 = potEm(60) / (vizinhanca(60) || NaN);
+  const claro = (r, outro) => isFinite(r) && r > 2 && (!isFinite(outro) || r > outro * 1.5);
+  const sugestao = claro(r50, r60) ? 50 : claro(r60, r50) ? 60 : null;
+  return {
+    suggestion: sugestao,
+    ratio50: isFinite(r50) ? +r50.toFixed(2) : NaN,
+    ratio60: isFinite(r60) ? +r60.toFixed(2) : NaN,
+    reason: sugestao
+      ? `pico de rede em ${sugestao} Hz destacado ${(sugestao === 50 ? r50 : r60).toFixed(1)}× sobre a vizinhança`
+      : 'nenhum pico de rede claramente destacado — o notch pode ser desnecessário'
+  };
+}
+
 /* ---------- core/index.js ---------- */
 /* core/index.js — barrel do núcleo.
    Monta o objeto PerceptCore com EXATAMENTE a mesma superfície pública de antes
    do refactor modular (Prompt 0.1), para que app.js e a suíte de testes não mudem.
    Ver docs/arquitetura.md para o mapa de módulos e a regra de dependência. */
+
+
+
+
+
+
+
 
 
 
@@ -3685,7 +4617,7 @@ const API = {
   mean, median, sd, variance, quantile, mad, removeOutliersMAD, linreg, pearson,
   cosinor, cosinorBootstrap, rayleigh, varianceByHour, diurnalProfile, eventAligned,
   permutationTest, thresholdSummary, histogram, ecdf, fPValue, tPValue, normCDF,
-  peakInBand, daysSince, pickSpectrum, spectralMetrics, burstMetrics, doseResponse, ecgMetrics,
+  peakInBand, daysSince, pickSpectrum, spectralMetrics, burstMetrics, doseResponse, ecgMetrics, deviceStateMetrics,
   mergeTrend, collectThresholds, chronicMetrics, extractMetrics,
   detectStates, betaEnvelopeSeries, streamOnOff, bimodalityCoefficient,
   /* integridade do sinal bruto (Onda 1 — L01, L02, L05, L07) */
@@ -3700,7 +4632,13 @@ const API = {
   /* proveniência e padrão de reporte (Onda 7.2 — L49, L50) */
   createProvenance, verifyManifest, sha256Hex, canonical,
   generateChecklist, checklistDocx, CHECKLIST_ITEMS,
-  makeZip, makeDocx, crc32
+  makeZip, makeDocx, crc32,
+  /* fidelidade e QC (Ondas 1.3 e 2.2 — L03, L04, L06, L13–L17, L19) */
+  inferDeviceState, statesComparable,
+  dstTransitions, detectOffsetBreaks, resolveOffsets, segmentByOffset,
+  detectRampArtifacts, removeRampArtifact, detectPolyphasic,
+  checkHarmonics, peakReproducibility, screenChronicByEcg, qcPanel,
+  notchFFT, suggestLineFrequency
 };
 if (typeof module !== "undefined" && module.exports) module.exports = API;
 root.PerceptCore = API;
@@ -5512,6 +6450,127 @@ const FIGURES = [
           `o artefato reduz a relação sinal-ruído e, portanto, a confiabilidade do LFP para físio-marcadores e para aDBS. ` +
           `Medidas: <b>posicionamento do gerador</b> (Neumann et al., Brain Stimul 2021 — a contaminação por ECG é sensível ao sítio cirúrgico de implante), ` +
           `verificação de impedância de leads e extensões, e <b>registro de ECG externo simultâneo</b> na próxima sessão, que resolve os casos em que o pico R é pequeno demais no LFP.`
+      }));
+    }
+  },
+
+  /* ----------------------------------------------------------------- F16 */
+  {
+    id: 'F16', title: 'QC — reprodutibilidade do pico entre registros',
+    sub: 'o mesmo canal, medido de novo, dá o mesmo pico?',
+    has: d => d.montage.length,
+    render(node, d) {
+      const pb = activeProfile().primaryBand;
+      const registros = d.all.flatMap(p => (p.montage || []).map(m => ({
+        hemisphere: m.hemisphere, channel: m.label, f: m.f, p: m.mag,
+        sessionDate: String(p.meta.sessionStart || '').slice(0, 10), artifact: m.artifact
+      })));
+      const r = C.peakReproducibility(registros, { lo: pb.lo, hi: pb.hi });
+      if (!r.channels.length) return node.appendChild(el('div', { class: 'empty', text: 'Sem espectros de Survey para avaliar.' }));
+
+      const avaliaveis = r.channels.filter(c => c.verdict !== 'n insuficiente');
+      if (avaliaveis.length) {
+        const box = plotBox(node, 260);
+        const ch = new P.Chart(box.canvas, {
+          width: box.width, height: box.height,
+          xlim: [-0.6, avaliaveis.length - 0.4], ylim: [pb.lo - 2, pb.hi + 2],
+          xlabel: 'canal', ylabel: 'frequência de pico (Hz)',
+          title: `pico por canal e registro — banda ${pb.label}`, pad: { l: 62, r: 14, t: 24, b: 56 }
+        });
+        ch.axes({ xticks: avaliaveis.map((_, i) => i), xfmt: v => (avaliaveis[v] || {}).channel || '' });
+        avaliaveis.forEach((c, i) => {
+          /* faixa de ±1 Hz ao redor da mediana = critério de reprodutibilidade */
+          ch.ctx.fillStyle = c.verdict === 'reprodutível' ? '#2C7A4B' : '#A8621B';
+          ch.ctx.globalAlpha = .14;
+          ch.ctx.fillRect(ch.X(i - 0.35), ch.Y(c.medianHz + 1), ch.X(i + 0.35) - ch.X(i - 0.35), ch.Y(c.medianHz - 1) - ch.Y(c.medianHz + 1));
+          ch.ctx.globalAlpha = 1;
+          c.peaks.forEach(hz => ch.marker(i, hz, { color: hcol(c.hemisphere), size: 3.4 }));
+        });
+      }
+      node.appendChild(table(['hemisfério', 'canal', 'n', 'picos (Hz)', 'desvio máx.', 'CV magnitude', 'veredito'],
+        r.channels.map(c => [
+          { html: `<span class="hemi-${c.hemisphere[0]}">${hname(c.hemisphere)}</span>` },
+          c.channel, c.n, c.peaks.join(' · '), c.maxDeviationHz, c.magnitudeCV,
+          { html: c.verdict === 'reprodutível' ? '<span class="sig">reprodutível</span>'
+            : c.verdict === 'instável' ? '<span style="color:var(--warn);font-weight:600">instável</span>'
+            : '<span class="ns">n insuficiente</span>' }
+        ])));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Por que isto importa.</b> Thenaisie et al. reportaram que registros consecutivos do mesmo paciente e mesmos contatos ` +
+          `foram classificados de forma <b>inconsistente entre sessões</b> pelo próprio Percept, e que 27% dos pares de contato foram rotulados como ` +
+          `artefactuais em GPi. Um pico que não se repete entre registros não é biomarcador. Critério: ${r.criterion}.` +
+          (r.note ? ` <b>${r.note}</b>` : '')
+      }));
+      node.appendChild(exportRow([
+        { label: '⤓ CSV', fn: () => P.downloadText(P.toCSV(r.channels.map(c => ({
+          hemisferio: c.hemisphere, canal: c.channel, n: c.n, picos_Hz: c.peaks.join(' '),
+          desvio_max_Hz: c.maxDeviationHz, cv_magnitude: c.magnitudeCV, veredito: c.verdict
+        }))), 'F16_reprodutibilidade.csv', 'text/csv') }
+      ]));
+    }
+  },
+
+  /* ----------------------------------------------------------------- F17 */
+  {
+    id: 'F17', title: 'Painel de controle de qualidade',
+    sub: 'semáforo do checklist de artefatos, por arquivo e hemisfério',
+    has: d => d.all.length,
+    render(node, d) {
+      const pb = activeProfile().primaryBand;
+      const qc = C.qcPanel(d.all, { band: [pb.lo, pb.hi] });
+      const s = qc.summary;
+
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>${s.verde}</b> verificados e aprovados · <b>${s.amarelo}</b> com ressalva · ` +
+          `<b>${s.vermelho}</b> com problema · <b>${s.cinza}</b> não verificáveis com este dado — ` +
+          `<b>${s.pctVerificado}%</b> dos itens puderam ser verificados.`
+      }));
+
+      qc.rows.forEach(linha => {
+        node.appendChild(el('h4', {
+          class: 'qc-title',
+          html: `<span class="hemi-${linha.hemisphere[0]}">STN ${hname(linha.hemisphere)}</span> · ` +
+            `<span style="color:var(--ink-3)">${linha.file.replace(/^Report_Json_Session_Report_/, '').replace(/\.json$/, '')}</span> · ` +
+            `estado do dispositivo: <b>${linha.deviceState}</b>`
+        }));
+        const grid = el('div', { class: 'qcgrid' });
+        linha.items.forEach(i => {
+          const cel = el('div', { class: 'qcitem ' + i.cor });
+          cel.appendChild(el('b', { text: i.rotulo }));
+          cel.appendChild(el('span', { class: 'v', text: String(i.valor) }));
+          if (i.motivo) cel.appendChild(el('span', { class: 'm', text: i.motivo }));
+          grid.appendChild(cel);
+        });
+        node.appendChild(grid);
+      });
+
+      /* triagem por ECG que exclui hemisfério da série crônica */
+      const tri = C.screenChronicByEcg(d.all);
+      const linhasTri = Object.values(tri.hemispheres).filter(h => h.evaluated);
+      if (linhasTri.length) {
+        node.appendChild(el('h4', { class: 'qc-title', html: '<b>Triagem por ECG para a série crônica</b>' }));
+        node.appendChild(table(['hemisfério', 'ECG detectado', 'confiança', 'recomendação', 'motivo'],
+          linhasTri.map(h => [
+            { html: `<span class="hemi-${h.hemisphere[0]}">${hname(h.hemisphere)}</span>` },
+            h.ecgDetected ? 'sim' : 'não', h.confidence,
+            { html: h.recommendation === 'incluir' ? '<span class="sig">incluir</span>'
+              : `<span style="color:var(--warn);font-weight:600">${h.recommendation}</span>` },
+            h.reason
+          ])));
+        node.appendChild(el('div', {
+          class: 'note', html: `<b>Critério.</b> ${tri.criterion}. ${tri.note}`
+        }));
+      }
+
+      node.appendChild(exportRow([
+        { label: '⤓ CSV do painel', fn: () => P.downloadText(P.toCSV(qc.rows.flatMap(l => l.items.map(i => ({
+          arquivo: l.file, hemisferio: l.hemisphere, estado_dispositivo: l.deviceState,
+          item: i.rotulo, status: i.cor, valor: i.valor, motivo: i.motivo || ''
+        })))), 'F17_qc.csv', 'text/csv') }
+      ]));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Leitura.</b> Cinza não é falha do software: é a declaração honesta de que <b>este dado não permite verificar</b> o item, com o motivo. ` +
+          `A alternativa — omitir o item — daria a impressão de que tudo foi checado.`
       }));
     }
   }

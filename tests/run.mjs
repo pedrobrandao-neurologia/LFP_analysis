@@ -914,6 +914,175 @@ sec('proveniência auditável e checklist de reporte');
   });
 }
 
+/* -------------------- 13. estado do dispositivo, fuso e QC (Ondas 1.3/2.2) -- */
+sec('estado do dispositivo, fuso robusto e controle de qualidade');
+{
+  t('inferDeviceState distingue OFF, ON-0 mA e ON-terapêutico com evidência', () => {
+    const base = { groups: [], eventLogs: [] };
+    const on0 = C.inferDeviceState({ hemisphere: 'Left', series: { Left: { ma: [0, 0, 0] } }, therapy: { perHemi: { Left: { rate: 130 } } } }, base, { modality: 'streaming' });
+    assert(on0.state === 'ON_0mA', 'ON a 0 mA não reconhecido: ' + on0.state);
+    const onT = C.inferDeviceState({ hemisphere: 'Left', series: { Left: { ma: [0, 1.5, 2.7] } } }, base, { modality: 'streaming' });
+    assert(onT.state === 'ON_THERAPEUTIC', 'ON terapêutico não reconhecido: ' + onT.state);
+    assert(onT.amplitudeMa === 2.7, 'amplitude: ' + onT.amplitudeMa);
+    const off = C.inferDeviceState({ hemisphere: 'Left' }, base, { modality: 'survey' });
+    assert(off.state === 'OFF' && off.confidence === 'fraca', 'Survey deveria inferir OFF com confiança fraca');
+    [on0, onT, off].forEach(r => assert(r.evidence.length > 0, 'inferência sem evidência registrada'));
+    return `ON_0mA · ON_THERAPEUTIC (${onT.amplitudeMa} mA) · OFF (${off.confidence})`;
+  });
+  t('estados diferentes são declarados como não comparáveis (Hammer et al.)', () => {
+    assert(C.statesComparable('OFF', 'OFF').comparable, 'mesmo estado deveria ser comparável');
+    const r = C.statesComparable('OFF', 'ON_0mA');
+    assert(!r.comparable, 'OFF vs ON-0 mA não pode ser comparável');
+    assert(/0 mA/.test(r.reason), 'motivo não cita o achado de Hammer et al.');
+    assert(!C.statesComparable('OFF', 'UNKNOWN').comparable, 'desconhecido não é comparável');
+    return r.reason.slice(0, 58) + '…';
+  });
+  t('device_state entra como coluna obrigatória nas métricas agudas', () => {
+    const b = C.extractMetrics(parsed, null, { profileId: 'pd' });
+    b.acute.forEach(r => {
+      assert('device_state' in r, 'sem device_state');
+      assert(['OFF', 'ON_0mA', 'ON_THERAPEUTIC', 'UNKNOWN'].includes(r.device_state), 'estado inválido: ' + r.device_state);
+      assert('device_state_evidence' in r, 'sem a evidência da inferência');
+    });
+    return b.acute.map(r => `${r.hemisphere[0]}:${r.device_state}`).join(' · ');
+  });
+  t('tabela de horário de verão gera transições corretas', () => {
+    const br = C.dstTransitions('BR', 2017, 2019);
+    assert(br.length >= 4, 'poucas transições no Brasil: ' + br.length);
+    assert(br.every(x => Math.abs(x.deltaMin) === 60), 'delta diferente de 60 min');
+    /* o horário de verão brasileiro foi extinto em 2019: sem início em 2019 */
+    assert(!br.some(x => x.deltaMin === 60 && new Date(x.t).getUTCFullYear() === 2019),
+      'não deveria haver início de horário de verão no Brasil em 2019');
+    const eu = C.dstTransitions('EU', 2025, 2025);
+    assert(eu.length === 2, 'UE deveria ter 2 transições por ano');
+    assert(new Date(eu[0].t).getUTCMonth() === 2 && new Date(eu[0].t).getUTCDay() === 0, 'início da UE não é domingo de março');
+    return `BR ${br.length} transições (extinto em 2019) · UE ${eu.length}/ano`;
+  });
+  t('série que atravessa transição é segmentada em dois', () => {
+    /* 40 dias cruzando o fim do horário de verão brasileiro de 2018 */
+    const fim = C.dstTransitions('BR', 2018, 2018).find(x => x.deltaMin === -60);
+    const rows = [];
+    for (let i = -20 * 144; i < 20 * 144; i++) rows.push({ t: fim.t + i * 10 * 60000, lfp: 40 });
+    const seg = C.segmentByOffset(rows, { manualOffsetMin: -120, tzRegion: 'BR', detect: false });
+    assert(seg.segments.length === 2, 'esperava 2 segmentos, veio ' + seg.segments.length);
+    assert(seg.segments[0].offsetMin !== seg.segments[1].offsetMin, 'offsets iguais nos dois segmentos');
+    assert(seg.segments[1].offsetMin === seg.segments[0].offsetMin - 60, 'delta aplicado incorreto');
+    return `${seg.segments.length} segmentos: UTC${seg.segments[0].offsetMin / 60}h → UTC${seg.segments[1].offsetMin / 60}h`;
+  });
+  t('artefato de rampa é detectado nos instantes de mudança de amplitude', () => {
+    const FS = 250, N = FS * 20;
+    const x = new Float64Array(N);
+    for (let i = 0; i < N; i++) x[i] = Math.sin(2 * Math.PI * 20 * i / FS);
+    const ma = []; for (let i = 0; i < 40; i++) ma.push(i < 10 ? 0 : i < 25 ? 1.5 : 2.5);   // 2 degraus
+    const r = C.detectRampArtifacts(x, FS, { maSeries: ma, maFs: 2 });
+    assert(r.nSteps === 2, 'esperava 2 degraus, veio ' + r.nSteps);
+    assert(r.alignmentOffsetSamples === 4, 'offset de alinhamento deveria ser a 4ª amostra (DBSsync)');
+    const idxEsperado = Math.round(10 * FS / 2) + 4;
+    assert(Math.abs(r.steps[0].idx - idxEsperado) <= 1, `degrau em ${r.steps[0].idx}, esperado ~${idxEsperado}`);
+    const rem = C.removeRampArtifact(x, FS, r, { mode: 'mask' });
+    assert(rem.applied && Array.from(rem.cleaned).some(Number.isNaN), 'mascaramento não aplicou NaN');
+    return `${r.nSteps} degraus, alinhamento na 4ª amostra, ${rem.pctMasked}% mascarado`;
+  });
+  t('transientes polifásicos são marcados, não corrigidos', () => {
+    const FS = 250, N = FS * 20;
+    const x = new Float64Array(N);
+    for (let i = 0; i < N; i++) x[i] = Math.sin(2 * Math.PI * 20 * i / FS);
+    /* transiente polifásico de 40 ms (10 amostras) com 5 inversões de fase */
+    for (let k = 0; k < 6; k++) for (let i = 0; i < 2; i++) x[1000 + k * 2 + i] += (k % 2 ? -1 : 1) * 12;
+    const r = C.detectPolyphasic(x, FS, { k: 6 });
+    assert(r.nEvents >= 1, 'nenhum transiente detectado');
+    assert(/não é corrigido/i.test(r.note), 'nota não deixa claro que não corrige');
+    return `${r.nEvents} evento(s), ${r.pctAffected}% do registro`;
+  });
+  t('harmônicos identificam onda quadrada como artefato provável', () => {
+    const FS = 250, N = FS * 30;
+    const quad = new Float64Array(N), seno = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      quad[i] = Math.sign(Math.sin(2 * Math.PI * 10 * i / FS)) * 2 + 0.3 * Math.sin(2 * Math.PI * 3.3 * i / FS);
+      seno[i] = 2 * Math.sin(2 * Math.PI * 10 * i / FS) + 0.3 * Math.sin(2 * Math.PI * 3.3 * i / FS);
+    }
+    const wq = C.welchPSD(quad, FS, { nperseg: 2048, overlap: .5 });
+    const ws = C.welchPSD(seno, FS, { nperseg: 2048, overlap: .5 });
+    const hq = C.checkHarmonics(Array.from(wq.f), Array.from(wq.p), 10, {});
+    const hs = C.checkHarmonics(Array.from(ws.f), Array.from(ws.p), 10, {});
+    assert(hq.verdict === 'artefato provável', 'onda quadrada deveria ser artefato provável: ' + hq.verdict);
+    assert(hs.verdict !== 'artefato provável', 'senoide pura não deveria ser artefato: ' + hs.verdict);
+    return `quadrada: ${hq.nHarmonics} harmônicos → "${hq.verdict}" · senoide → "${hs.verdict}"`;
+  });
+  t('aliasing da estimulação é sinalizado quando o pico cai na dobra', () => {
+    const h = C.checkHarmonics([1, 10, 20, 30], [1, 5, 1, 1], 30, { stimRateHz: 280, fs: 250 });
+    assert(h.aliasing && h.aliasing.foldingFrequencies.includes(30), 'dobra de 280 Hz a 250 Hz deveria ser 30 Hz');
+    assert(h.aliasing.peakNearFolding && h.isSuspect, 'pico sobre a dobra não foi sinalizado');
+    return `fstim 280 Hz a 250 Hz → dobra em ${h.aliasing.foldingFrequencies.join(', ')} Hz`;
+  });
+  t('notch de 60 Hz reduz >20 dB em 60 sem alterar 20 Hz em mais de 1%', () => {
+    const FS = 250, N = FS * 30;
+    const x = new Float64Array(N);
+    for (let i = 0; i < N; i++) x[i] = Math.sin(2 * Math.PI * 20 * i / FS) + 0.8 * Math.sin(2 * Math.PI * 60 * i / FS);
+    const y = C.notchFFT(x, FS, { freq: 60, harmonics: 1 });
+    const pot = (s, f0) => {
+      const w = C.welchPSD(s, FS, { nperseg: 2048, overlap: .5 });
+      let m = 0, n = 0;
+      for (let i = 0; i < w.f.length; i++) if (Math.abs(w.f[i] - f0) <= 0.5) { m += w.p[i]; n++; }
+      return n ? m / n : NaN;
+    };
+    const red = 10 * Math.log10(pot(x, 60) / pot(y, 60));
+    const alt = Math.abs(pot(y, 20) / pot(x, 20) - 1) * 100;
+    assert(red > 20, `redução em 60 Hz de apenas ${red.toFixed(1)} dB`);
+    assert(alt < 1, `20 Hz alterado em ${alt.toFixed(2)}%`);
+    return `−${red.toFixed(0)} dB em 60 Hz, 20 Hz alterado ${alt.toFixed(3)}%`;
+  });
+  t('reprodutibilidade classifica desvio de 0,5 Hz e de 4 Hz corretamente', () => {
+    const f = []; for (let i = 0; i < 100; i++) f.push(i * 0.5);
+    const espectro = pico => f.map(x => 1 / (1 + x) + (Math.abs(x - pico) < 0.6 ? 5 : 0));
+    const estavel = [
+      { hemisphere: 'Left', channel: '0-2', f, p: espectro(18.0) },
+      { hemisphere: 'Left', channel: '0-2', f, p: espectro(18.5) }
+    ];
+    const instavel = [
+      { hemisphere: 'Right', channel: '1-3', f, p: espectro(16.0) },
+      { hemisphere: 'Right', channel: '1-3', f, p: espectro(20.0) }
+    ];
+    const r = C.peakReproducibility(estavel.concat(instavel), { lo: 13, hi: 35 });
+    const e = r.channels.find(c => c.channel === '0-2'), i = r.channels.find(c => c.channel === '1-3');
+    assert(e.verdict === 'reprodutível', 'desvio de 0,5 Hz deveria ser reprodutível: ' + e.verdict);
+    assert(i.verdict === 'instável', 'desvio de 4 Hz deveria ser instável: ' + i.verdict);
+    return `0,5 Hz → ${e.verdict} · 4 Hz → ${i.verdict}`;
+  });
+  t('painel de QC cobre o checklist e declara o que não é verificável', () => {
+    const qc = C.qcPanel(parsed, { band: [13, 35] });
+    assert(qc.rows.length > 0, 'painel vazio');
+    const chaves = new Set(qc.rows[0].items.map(i => i.chave));
+    ['pacotes', 'fs', 'ecg', 'rampa', 'polifasicos', 'movimento', 'estado', 'harmonicos', 'reprodutibilidade']
+      .forEach(k => assert(chaves.has(k), 'item ausente do checklist: ' + k));
+    qc.rows.flatMap(r => r.items).forEach(i => {
+      assert(['verde', 'amarelo', 'vermelho', 'cinza'].includes(i.cor), 'cor inválida: ' + i.cor);
+      /* cinza SEMPRE precisa dizer por que não foi verificável */
+      if (i.cor === 'cinza') assert(i.motivo || i.valor, 'item cinza sem motivo: ' + i.chave);
+    });
+    const s = qc.summary;
+    assert(s.verde + s.amarelo + s.vermelho + s.cinza === s.nItems, 'contagem do resumo não fecha');
+    return `${s.nRows} linhas × ${chaves.size} itens — ${s.verde}✓ ${s.amarelo}⚠ ${s.vermelho}✗ ${s.cinza}○ (${s.pctVerificado}% verificável)`;
+  });
+  t('triagem por ECG recomenda incluir, excluir ou inspecionar', () => {
+    const tri = C.screenChronicByEcg(parsed);
+    const hs = Object.values(tri.hemispheres);
+    assert(hs.length === 2, 'deveria avaliar os dois hemisférios');
+    hs.forEach(h => assert(['incluir', 'excluir série crônica', 'inspeção visual necessária', 'não avaliável']
+      .includes(h.recommendation), 'recomendação inválida: ' + h.recommendation));
+    assert(/van Rheede/.test(tri.criterion), 'critério não cita a referência');
+    return hs.map(h => `${h.hemisphere[0]}:${h.recommendation}`).join(' · ');
+  });
+  t('build detecta colisão de identificadores entre módulos', () => {
+    /* garantia estrutural: o bundle é um escopo só, e o build precisa acusar
+       colisão em tempo de build em vez de gerar bundle quebrado */
+    const b = fs.readFileSync(path.join(RAIZ, 'src/build.mjs'), 'utf8');
+    assert(/Colisão de identificadores/.test(b), 'build sem detecção de colisão');
+    assert(/process\.exit\(1\)/.test(b), 'build não falha na colisão');
+    return 'build falha alto em colisão de nomes';
+  });
+}
+
 /* ------------------------------------------------------------- resultado -- */
 console.log(`\n${'='.repeat(58)}`);
 console.log(`  ${ok} passaram   ${falhas} falharam   ${pulados} sem dados`);

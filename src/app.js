@@ -1392,6 +1392,127 @@ const FIGURES = [
           `verificação de impedância de leads e extensões, e <b>registro de ECG externo simultâneo</b> na próxima sessão, que resolve os casos em que o pico R é pequeno demais no LFP.`
       }));
     }
+  },
+
+  /* ----------------------------------------------------------------- F16 */
+  {
+    id: 'F16', title: 'QC — reprodutibilidade do pico entre registros',
+    sub: 'o mesmo canal, medido de novo, dá o mesmo pico?',
+    has: d => d.montage.length,
+    render(node, d) {
+      const pb = activeProfile().primaryBand;
+      const registros = d.all.flatMap(p => (p.montage || []).map(m => ({
+        hemisphere: m.hemisphere, channel: m.label, f: m.f, p: m.mag,
+        sessionDate: String(p.meta.sessionStart || '').slice(0, 10), artifact: m.artifact
+      })));
+      const r = C.peakReproducibility(registros, { lo: pb.lo, hi: pb.hi });
+      if (!r.channels.length) return node.appendChild(el('div', { class: 'empty', text: 'Sem espectros de Survey para avaliar.' }));
+
+      const avaliaveis = r.channels.filter(c => c.verdict !== 'n insuficiente');
+      if (avaliaveis.length) {
+        const box = plotBox(node, 260);
+        const ch = new P.Chart(box.canvas, {
+          width: box.width, height: box.height,
+          xlim: [-0.6, avaliaveis.length - 0.4], ylim: [pb.lo - 2, pb.hi + 2],
+          xlabel: 'canal', ylabel: 'frequência de pico (Hz)',
+          title: `pico por canal e registro — banda ${pb.label}`, pad: { l: 62, r: 14, t: 24, b: 56 }
+        });
+        ch.axes({ xticks: avaliaveis.map((_, i) => i), xfmt: v => (avaliaveis[v] || {}).channel || '' });
+        avaliaveis.forEach((c, i) => {
+          /* faixa de ±1 Hz ao redor da mediana = critério de reprodutibilidade */
+          ch.ctx.fillStyle = c.verdict === 'reprodutível' ? '#2C7A4B' : '#A8621B';
+          ch.ctx.globalAlpha = .14;
+          ch.ctx.fillRect(ch.X(i - 0.35), ch.Y(c.medianHz + 1), ch.X(i + 0.35) - ch.X(i - 0.35), ch.Y(c.medianHz - 1) - ch.Y(c.medianHz + 1));
+          ch.ctx.globalAlpha = 1;
+          c.peaks.forEach(hz => ch.marker(i, hz, { color: hcol(c.hemisphere), size: 3.4 }));
+        });
+      }
+      node.appendChild(table(['hemisfério', 'canal', 'n', 'picos (Hz)', 'desvio máx.', 'CV magnitude', 'veredito'],
+        r.channels.map(c => [
+          { html: `<span class="hemi-${c.hemisphere[0]}">${hname(c.hemisphere)}</span>` },
+          c.channel, c.n, c.peaks.join(' · '), c.maxDeviationHz, c.magnitudeCV,
+          { html: c.verdict === 'reprodutível' ? '<span class="sig">reprodutível</span>'
+            : c.verdict === 'instável' ? '<span style="color:var(--warn);font-weight:600">instável</span>'
+            : '<span class="ns">n insuficiente</span>' }
+        ])));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Por que isto importa.</b> Thenaisie et al. reportaram que registros consecutivos do mesmo paciente e mesmos contatos ` +
+          `foram classificados de forma <b>inconsistente entre sessões</b> pelo próprio Percept, e que 27% dos pares de contato foram rotulados como ` +
+          `artefactuais em GPi. Um pico que não se repete entre registros não é biomarcador. Critério: ${r.criterion}.` +
+          (r.note ? ` <b>${r.note}</b>` : '')
+      }));
+      node.appendChild(exportRow([
+        { label: '⤓ CSV', fn: () => P.downloadText(P.toCSV(r.channels.map(c => ({
+          hemisferio: c.hemisphere, canal: c.channel, n: c.n, picos_Hz: c.peaks.join(' '),
+          desvio_max_Hz: c.maxDeviationHz, cv_magnitude: c.magnitudeCV, veredito: c.verdict
+        }))), 'F16_reprodutibilidade.csv', 'text/csv') }
+      ]));
+    }
+  },
+
+  /* ----------------------------------------------------------------- F17 */
+  {
+    id: 'F17', title: 'Painel de controle de qualidade',
+    sub: 'semáforo do checklist de artefatos, por arquivo e hemisfério',
+    has: d => d.all.length,
+    render(node, d) {
+      const pb = activeProfile().primaryBand;
+      const qc = C.qcPanel(d.all, { band: [pb.lo, pb.hi] });
+      const s = qc.summary;
+
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>${s.verde}</b> verificados e aprovados · <b>${s.amarelo}</b> com ressalva · ` +
+          `<b>${s.vermelho}</b> com problema · <b>${s.cinza}</b> não verificáveis com este dado — ` +
+          `<b>${s.pctVerificado}%</b> dos itens puderam ser verificados.`
+      }));
+
+      qc.rows.forEach(linha => {
+        node.appendChild(el('h4', {
+          class: 'qc-title',
+          html: `<span class="hemi-${linha.hemisphere[0]}">STN ${hname(linha.hemisphere)}</span> · ` +
+            `<span style="color:var(--ink-3)">${linha.file.replace(/^Report_Json_Session_Report_/, '').replace(/\.json$/, '')}</span> · ` +
+            `estado do dispositivo: <b>${linha.deviceState}</b>`
+        }));
+        const grid = el('div', { class: 'qcgrid' });
+        linha.items.forEach(i => {
+          const cel = el('div', { class: 'qcitem ' + i.cor });
+          cel.appendChild(el('b', { text: i.rotulo }));
+          cel.appendChild(el('span', { class: 'v', text: String(i.valor) }));
+          if (i.motivo) cel.appendChild(el('span', { class: 'm', text: i.motivo }));
+          grid.appendChild(cel);
+        });
+        node.appendChild(grid);
+      });
+
+      /* triagem por ECG que exclui hemisfério da série crônica */
+      const tri = C.screenChronicByEcg(d.all);
+      const linhasTri = Object.values(tri.hemispheres).filter(h => h.evaluated);
+      if (linhasTri.length) {
+        node.appendChild(el('h4', { class: 'qc-title', html: '<b>Triagem por ECG para a série crônica</b>' }));
+        node.appendChild(table(['hemisfério', 'ECG detectado', 'confiança', 'recomendação', 'motivo'],
+          linhasTri.map(h => [
+            { html: `<span class="hemi-${h.hemisphere[0]}">${hname(h.hemisphere)}</span>` },
+            h.ecgDetected ? 'sim' : 'não', h.confidence,
+            { html: h.recommendation === 'incluir' ? '<span class="sig">incluir</span>'
+              : `<span style="color:var(--warn);font-weight:600">${h.recommendation}</span>` },
+            h.reason
+          ])));
+        node.appendChild(el('div', {
+          class: 'note', html: `<b>Critério.</b> ${tri.criterion}. ${tri.note}`
+        }));
+      }
+
+      node.appendChild(exportRow([
+        { label: '⤓ CSV do painel', fn: () => P.downloadText(P.toCSV(qc.rows.flatMap(l => l.items.map(i => ({
+          arquivo: l.file, hemisferio: l.hemisphere, estado_dispositivo: l.deviceState,
+          item: i.rotulo, status: i.cor, valor: i.valor, motivo: i.motivo || ''
+        })))), 'F17_qc.csv', 'text/csv') }
+      ]));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Leitura.</b> Cinza não é falha do software: é a declaração honesta de que <b>este dado não permite verificar</b> o item, com o motivo. ` +
+          `A alternativa — omitir o item — daria a impressão de que tudo foi checado.`
+      }));
+    }
   }
 ];
 
