@@ -4574,11 +4574,550 @@ function suggestLineFrequency(x, fs) {
   };
 }
 
+/* ---------- core/adbs/eligibility.js ---------- */
+/* adbs/eligibility.js — relatório de elegibilidade a aDBS.
+
+   POR QUE ISTO IMPORTA. No ADAPT-START (Cascino et al., npj Parkinsons Dis
+   2026), de 20 pacientes consecutivos com Percept e cDBS otimizada, apenas
+   NOVE foram elegíveis; as exclusões decorreram de artefatos de sinal, ausência
+   de pico beta distinto, ou parâmetros de estimulação incompatíveis. Saber
+   disso ANTES da consulta de programação é o que este relatório entrega.
+
+   Cada critério devolve veredito, evidência e — quando pendente — O QUE
+   CAPTURAR para resolvê-lo. Contexto regulatório: em fevereiro de 2025 o FDA
+   aprovou o BrainSense Adaptive DBS (Percept RC) para DP com flutuações
+   motoras, com base no ADAPT-PD; o algoritmo usa atividade alfa-beta (~8–30 Hz).
+
+   Prevalência do pico beta, para o usuário saber que ausência é comum:
+     • 64–69,5% por hemisfério em coortes pequenas;
+     • 84,8% (64,2% bilateral, n = 51) no ADAPT-PD;
+     • 89,0% (69,4% bilateral, n = 113) no registro de vigilância BrainSense.  */
+
+
+
+
+
+
+
+
+
+
+
+
+const PREVALENCIA_BETA = {
+  coortesPequenas: '64–69,5% por hemisfério',
+  adaptPd: '84,8% por hemisfério; 64,2% bilateral (n = 51)',
+  registroBrainSense: '89,0% por hemisfério; 69,4% bilateral (n = 113)',
+  nota: 'uma proporção substancial de pacientes simplesmente não expressa beta — isso precisa entrar no cálculo amostral'
+};
+
+const crit = (id, rotulo, veredito, evidencia, pendencia) =>
+  ({ id, rotulo, veredito, evidencia, pendencia: pendencia || null });
+
+/* assessEligibility(parsedList, opts) → por hemisfério */
+function assessEligibility(parsedList, opts) {
+  opts = opts || {};
+  const lista = Array.isArray(parsedList) ? parsedList : [parsedList];
+  const perfil = getProfile(opts.profileId || 'pd');
+  const pb = perfil.primaryBand;
+  const offMin = isFinite(opts.offMin) ? opts.offMin : -180;
+  const merged = mergeTrend(lista);
+
+  /* reprodutibilidade é entre registros: uma vez para o conjunto */
+  const registros = [];
+  lista.forEach(p => (p.montage || []).forEach(m => registros.push({
+    hemisphere: m.hemisphere, channel: m.label, f: m.f, p: m.mag,
+    sessionDate: p.meta.sessionStart, artifact: m.artifact
+  })));
+  const reprod = peakReproducibility(registros, { lo: pb.lo, hi: pb.hi });
+
+  const hemis = ['Left', 'Right'].map(hemi => {
+    const criterios = [];
+    const p0 = lista[0];
+
+    /* 1. pico na banda primária, distinto após correção aperiódica ---------- */
+    let picoHz = NaN, temPico = false;
+    const spec = pickSpectrum(p0, hemi);
+    if (!spec) criterios.push(crit('pico', `Pico ${pb.label} distinto`, 'dados insuficientes',
+      'nenhum espectro disponível para este hemisfério',
+      'executar BrainSense Survey bilateral com estimulação desligada'));
+    else {
+      const ap = fitAperiodic(spec.f, spec.p, { fmin: 2, fmax: 95 });
+      const picos = ap ? ap.peaks.filter(pk => pk.cf >= pb.lo && pk.cf <= pb.hi) : [];
+      const bruto = peakInBand(spec.f, spec.p, pb.lo, pb.hi);
+      picoHz = picos.length ? picos[0].cf : bruto.f;
+      /* verificação contra harmônicos: pico com escada de harmônicos é suspeito */
+      const st0 = inferDeviceState(null, p0, { modality: 'survey' });
+      const h = checkHarmonics(spec.f, spec.p, picoHz, { stimRateHz: st0.rateHz, fs: 250 });
+      temPico = picos.length > 0 && h.verdict !== 'artefato provável';
+      criterios.push(crit('pico', `Pico ${pb.label} distinto`,
+        temPico ? 'atende' : picos.length ? 'não atende' : 'não atende',
+        picos.length
+          ? `pico em ${picoHz.toFixed(1)} Hz (fonte ${spec.source}); verificação de harmônicos: ${h.verdict}`
+          : `nenhum pico destacado do fundo aperiódico em ${pb.lo}–${pb.hi} Hz`,
+        temPico ? null : 'sem pico distinto o aDBS guiado por essa banda não é programável neste hemisfério'));
+    }
+
+    /* 2. ausência de artefato relevante ------------------------------------ */
+    const td = (p0.bsTimeDomain || []).find(t => t.hemisphere === hemi)
+      || (p0.montageTD || []).find(t => t.hemisphere === hemi);
+    if (!td) criterios.push(crit('artefato', 'Ausência de artefato relevante', 'dados insuficientes',
+      'sem sinal bruto para avaliar contaminação', 'registrar BrainSense Streaming ou Survey neste hemisfério'));
+    else {
+      const fs = td.fsEff || td.fs;
+      const det = detectRPeaks(td.data, fs, {});
+      const pk = td.packets || {};
+      const problemas = [];
+      if (det.nDetected >= 8 && det.confidence === 'alta') problemas.push('contaminação cardíaca detectada com alta confiança');
+      if (pk.reliable && pk.pctMissing > 10) problemas.push(`${pk.pctMissing.toFixed(1)}% de perda de pacotes`);
+      criterios.push(crit('artefato', 'Ausência de artefato relevante',
+        problemas.length ? 'não atende' : 'atende',
+        problemas.length ? problemas.join('; ') : 'sem artefato relevante detectado nos registros disponíveis',
+        problemas.length ? 'artefato é causa reconhecida de maladaptação em aDBS (Busch et al.) — ver F15 e F17' : null));
+    }
+
+    /* 3. reprodutibilidade do pico ----------------------------------------- */
+    const rep = reprod.channels.filter(c => c.hemisphere === hemi && c.verdict !== 'n insuficiente');
+    if (!rep.length) criterios.push(crit('reprodutibilidade', 'Reprodutibilidade do pico', 'dados insuficientes',
+      'é preciso mais de um registro do mesmo canal',
+      'repetir o BrainSense Survey numa segunda sessão para verificar se o pico se mantém'));
+    else {
+      const instaveis = rep.filter(c => c.verdict === 'instável').length;
+      criterios.push(crit('reprodutibilidade', 'Reprodutibilidade do pico',
+        instaveis === 0 ? 'atende' : instaveis === rep.length ? 'não atende' : 'atende com ressalva',
+        `${rep.length - instaveis}/${rep.length} canais com desvio ≤ 1 Hz entre registros`,
+        instaveis ? 'pico que muda entre registros não sustenta um limiar fixo' : null));
+    }
+
+    /* 4. parâmetros de estimulação compatíveis ------------------------------ */
+    const st = inferDeviceState(
+      (p0.bsLfp || []).find(b => b.series && b.series[hemi]) || td || { hemisphere: hemi },
+      p0, { modality: 'streaming' });
+    const incompat = [];
+    if (isFinite(st.rateHz) && st.rateHz > 0) {
+      /* o sensing é censurado perto da frequência de estimulação e de suas dobras */
+      if (st.rateHz < 100) incompat.push(`frequência de estimulação baixa (${st.rateHz} Hz) — maior censura espectral`);
+    }
+    if (isFinite(st.pulseWidthUs) && st.pulseWidthUs > 90)
+      incompat.push(`largura de pulso alta (${st.pulseWidthUs} µs) — mais artefato no sensing`);
+    criterios.push(crit('parametros', 'Parâmetros de estimulação compatíveis',
+      st.state === 'UNKNOWN' ? 'dados insuficientes' : incompat.length ? 'atende com ressalva' : 'atende',
+      st.state === 'UNKNOWN' ? 'estado do dispositivo não determinável'
+        : `${st.state}; ${isFinite(st.rateHz) ? st.rateHz + ' Hz' : 'freq. ?'}, ` +
+          `${isFinite(st.pulseWidthUs) ? st.pulseWidthUs + ' µs' : 'PW ?'}, ${isFinite(st.amplitudeMa) ? st.amplitudeMa + ' mA' : 'amp. ?'}`,
+      incompat.length ? incompat.join('; ') : null));
+
+    /* 5. dados crônicos suficientes ---------------------------------------- */
+    const rows = merged[hemi] || [];
+    const dias = new Set(rows.map(r => localDayKey(r.t, offMin))).size;
+    /* ADAPT-START usou 5 dias e sugere que 3 possam bastar; uma única sessão
+       in-clinic é insuficiente para o modo de limiar duplo */
+    const vered5 = dias >= 5 ? 'atende' : dias >= 3 ? 'atende com ressalva' : 'não atende';
+    criterios.push(crit('cronico', 'Dados crônicos suficientes', rows.length ? vered5 : 'não atende',
+      rows.length ? `${dias} dia(s) de Timeline, ${rows.length} pontos` : 'sem Timeline registrado',
+      dias >= 5 ? null
+        : `ADAPT-START usou 5 dias de registro e sugere que 3 possam bastar para avaliar a variabilidade circadiana; ` +
+          `uma única sessão de consultório é insuficiente para o modo de limiar duplo` +
+          (rows.length ? '' : ' — habilitar BrainSense Timeline nos dois hemisférios')));
+
+    /* 6. variabilidade circadiana detectável -------------------------------- */
+    if (rows.length < 24) criterios.push(crit('circadiano', 'Variabilidade circadiana detectável',
+      'dados insuficientes', 'Timeline curto demais para ajustar o cosinor',
+      'ao menos alguns dias de registro domiciliar'));
+    else {
+      const limpo = removeOutliersMAD(rows, 'lfp', 4).kept;
+      const cos = cosinor(limpo.map(r => localHour(r.t, offMin)), limpo.map(r => r.lfp), [24, 12]);
+      const rel = cos ? cos.components[0].amplitude / (cos.mesor || 1) : NaN;
+      const ok = cos && cos.pAdjustedAR1 < 0.05 && rel > 0.05;
+      criterios.push(crit('circadiano', 'Variabilidade circadiana detectável',
+        ok ? 'atende' : 'atende com ressalva',
+        cos ? `amplitude de 24 h = ${(100 * rel).toFixed(1)}% do MESOR; p corrigido para AR(1) = ${cos.pAdjustedAR1.toExponential(1)}`
+          : 'cosinor não ajustável',
+        ok ? null : 'variabilidade circadiana fraca reduz o ganho esperado do limiar duplo'));
+    }
+
+    /* veredito global ------------------------------------------------------- */
+    const naoAtende = criterios.filter(c => c.veredito === 'não atende');
+    const insuf = criterios.filter(c => c.veredito === 'dados insuficientes');
+    const ressalva = criterios.filter(c => c.veredito === 'atende com ressalva');
+    const global = naoAtende.length ? 'não elegível'
+      : insuf.length ? 'dados insuficientes'
+        : ressalva.length ? 'elegível com ressalva' : 'elegível';
+
+    return {
+      hemisphere: hemi, verdict: global, criteria: criterios,
+      peakHz: isFinite(picoHz) ? +picoHz.toFixed(2) : NaN, hasPeak: temPico,
+      nDaysChronic: dias,
+      blockers: naoAtende.map(c => c.rotulo),
+      missing: criterios.filter(c => c.pendencia).map(c => ({ criterio: c.rotulo, pendencia: c.pendencia }))
+    };
+  });
+
+  return {
+    hemispheres: hemis,
+    profile: perfil.id, band: [pb.lo, pb.hi],
+    prevalence: PREVALENCIA_BETA,
+    context: 'ADAPT-START: de 20 pacientes consecutivos com Percept e cDBS otimizada, apenas 9 foram elegíveis',
+    bilateral: hemis.every(h => h.verdict === 'elegível' || h.verdict === 'elegível com ressalva')
+  };
+}
+
+/* ---------- core/adbs/simulate.js ---------- */
+/* adbs/simulate.js — simulador de aDBS de limiar único e duplo.
+
+   Dada a série crônica (ou o envelope de beta do streaming) e um par de
+   limiares, simula o comportamento do aDBS e devolve as métricas que a decisão
+   de programação exige: % do tempo em cada nível, transições por hora, duração
+   mediana de cada estado, duty cycle, amplitude média entregue e energia
+   relativa à cDBS.
+
+   DETALHE QUE MUDA O RESULTADO: o dispositivo suaviza o sinal antes de decidir,
+   com a constante `AveragingDurationInMilliSeconds` do SensingSetup (tipicamente
+   3000 ms), e sobe/desce por rampa configurada. Sem aplicar isso, a simulação
+   SUPERESTIMA o número de transições — o aparelho não persegue cada oscilação.
+
+   Referências: ADAPT-PD; Busch et al., npj Parkinsons Dis 2025;11:264
+   (limiar duplo, 8 pacientes, avaliação ecológica em casa);
+   Cascino et al., npj Parkinsons Dis 2026 (ADAPT-START).                      */
+
+/* Média móvel causal de `ms` milissegundos — é como o dispositivo enxerga. */
+function suavizaCausal(serie, ms) {
+  if (!(ms > 0)) return serie.map(p => p.v);
+  const out = new Array(serie.length);
+  let acc = 0, ini = 0;
+  for (let i = 0; i < serie.length; i++) {
+    acc += isFinite(serie[i].v) ? serie[i].v : 0;
+    while (serie[i].t - serie[ini].t > ms) { acc -= isFinite(serie[ini].v) ? serie[ini].v : 0; ini++; }
+    out[i] = acc / Math.max(1, i - ini + 1);
+  }
+  return out;
+}
+
+/* simulateAdbs(series, {mode, lower, upper, minMa, maxMa, averagingMs, rampMaPerSec})
+   `series`: [{t (ms), v}] — potência do Timeline ou envelope de beta.        */
+function simulateAdbs(series, opts) {
+  opts = opts || {};
+  const pts = (series || []).filter(p => p && isFinite(p.v) && isFinite(p.t)).sort((a, b) => a.t - b.t);
+  if (pts.length < 8) return null;
+  const modo = opts.mode || 'dual';
+  const minMa = isFinite(opts.minMa) ? opts.minMa : 1.0;
+  const maxMa = isFinite(opts.maxMa) ? opts.maxMa : 3.0;
+  const mediaMs = isFinite(opts.averagingMs) ? opts.averagingMs : 3000;
+  const rampa = isFinite(opts.rampMaPerSec) ? opts.rampMaPerSec : 0.2;
+  const vals = pts.map(p => p.v);
+  const lower = isFinite(opts.lower) ? opts.lower : quantile(vals, 0.25);
+  const upper = isFinite(opts.upper) ? opts.upper : quantile(vals, 0.75);
+
+  const suave = suavizaCausal(pts, mediaMs);
+
+  /* amplitude ALVO em cada instante, conforme o modo */
+  const alvo = suave.map(v => {
+    if (modo === 'single') return v > upper ? maxMa : minMa;
+    /* duplo: abaixo → mínima; entre → rampa proporcional; acima → máxima */
+    if (v <= lower) return minMa;
+    if (v >= upper) return maxMa;
+    const fr = (v - lower) / ((upper - lower) || 1);
+    return minMa + fr * (maxMa - minMa);
+  });
+
+  /* amplitude ENTREGUE, limitada pela taxa de rampa do dispositivo */
+  const entregue = new Array(pts.length);
+  entregue[0] = alvo[0];
+  for (let i = 1; i < pts.length; i++) {
+    const dt = Math.max(0, (pts[i].t - pts[i - 1].t) / 1000);
+    const passoMax = rampa * dt;
+    const d = alvo[i] - entregue[i - 1];
+    entregue[i] = entregue[i - 1] + Math.max(-passoMax, Math.min(passoMax, d));
+  }
+
+  /* estados e transições sobre a amplitude entregue */
+  const estadoDe = a => a >= maxMa - 1e-9 ? 'alta' : a <= minMa + 1e-9 ? 'baixa' : 'intermediária';
+  const estados = entregue.map(estadoDe);
+  let transicoes = 0;
+  const episodios = [];
+  let ini = 0;
+  for (let i = 1; i <= estados.length; i++) {
+    if (i === estados.length || estados[i] !== estados[ini]) {
+      episodios.push({ state: estados[ini], durMs: pts[Math.min(i, pts.length - 1)].t - pts[ini].t });
+      if (i < estados.length) transicoes++;
+      ini = i;
+    }
+  }
+  const spanMs = pts[pts.length - 1].t - pts[0].t;
+  const horas = spanMs / 36e5;
+  const fracao = e => estados.filter(s => s === e).length / estados.length;
+  const durDe = e => { const d = episodios.filter(x => x.state === e).map(x => x.durMs).filter(v => v > 0); return d.length ? median(d) : NaN; };
+  const mediaEntregue = entregue.reduce((a, b) => a + b, 0) / entregue.length;
+
+  return {
+    mode: modo, lower: +lower.toFixed(4), upper: +upper.toFixed(4),
+    minMa, maxMa, averagingMs: mediaMs, rampMaPerSec: rampa,
+    nPoints: pts.length, spanHours: +horas.toFixed(2),
+    pctLow: +(100 * fracao('baixa')).toFixed(1),
+    pctMid: +(100 * fracao('intermediária')).toFixed(1),
+    pctHigh: +(100 * fracao('alta')).toFixed(1),
+    transitions: transicoes,
+    transitionsPerHour: horas > 0 ? +(transicoes / horas).toFixed(2) : NaN,
+    medianLowMin: +(durDe('baixa') / 60000).toFixed(1),
+    medianHighMin: +(durDe('alta') / 60000).toFixed(1),
+    dutyCycle: +(fracao('alta') + 0.5 * fracao('intermediária')).toFixed(3),
+    meanAmplitudeMa: +mediaEntregue.toFixed(3),
+    /* energia ∝ amplitude²; referência: cDBS na amplitude máxima */
+    energyVsContinuous: +(entregue.reduce((a, b) => a + b * b, 0) / entregue.length / (maxMa * maxMa)).toFixed(3),
+    delivered: entregue, smoothed: suave, times: pts.map(p => p.t)
+  };
+}
+
+/* Varredura de pares de limiares — é como o usuário escolhe visualmente. */
+function thresholdSweep(series, opts) {
+  opts = opts || {};
+  const pts = (series || []).filter(p => p && isFinite(p.v));
+  if (pts.length < 8) return null;
+  const vals = pts.map(p => p.v);
+  const n = opts.n || 12;
+  const lo = quantile(vals, 0.05), hi = quantile(vals, 0.95);
+  const eixo = Array.from({ length: n }, (_, i) => lo + (hi - lo) * i / (n - 1));
+  const grade = [];
+  eixo.forEach((L, i) => eixo.forEach((U, j) => {
+    if (U <= L) { grade.push({ i, j, lower: L, upper: U, valid: false }); return; }
+    const s = simulateAdbs(series, Object.assign({}, opts, { lower: L, upper: U }));
+    grade.push({
+      i, j, lower: +L.toFixed(3), upper: +U.toFixed(3), valid: true,
+      pctHigh: s.pctHigh, transitionsPerHour: s.transitionsPerHour,
+      dutyCycle: s.dutyCycle, energyVsContinuous: s.energyVsContinuous
+    });
+  }));
+  return { axis: eixo.map(v => +v.toFixed(3)), grid: grade };
+}
+
+/* Três critérios de sugestão de limiares — a escolha continua do usuário. */
+function suggestThresholds(series, opts) {
+  opts = opts || {};
+  const vals = (series || []).map(p => p.v).filter(isFinite);
+  if (vals.length < 8) return null;
+  const sugestoes = [];
+
+  sugestoes.push({
+    criterion: 'percentis empíricos (p10/p90)',
+    lower: +quantile(vals, 0.10).toFixed(3), upper: +quantile(vals, 0.90).toFixed(3),
+    rationale: 'usa a distribuição real do próprio paciente; ponto de partida conservador'
+  });
+
+  /* separação dos estados ON/OFF, quando existirem dois patamares */
+  if (opts.states && isFinite(opts.states.threshold)) {
+    const t = opts.states.threshold;
+    const meia = (opts.states.betaHigh - opts.states.betaLow) / 4;
+    sugestoes.push({
+      criterion: 'separação dos estados ON/OFF (F13)',
+      lower: +(t - meia).toFixed(3), upper: +(t + meia).toFixed(3),
+      rationale: `centrados no limiar que separa os dois estados de beta` +
+        (isFinite(opts.states.bimodality) ? ` (bimodalidade ${opts.states.bimodality.toFixed(3)})` : ''),
+      caveat: opts.states.bimodality > 0.555 ? null
+        : 'a distribuição é praticamente unimodal — esta sugestão é apenas descritiva'
+    });
+  }
+
+  /* duty cycle alvo definido pelo usuário */
+  const alvoDuty = isFinite(opts.targetDutyCycle) ? opts.targetDutyCycle : 0.5;
+  const q = 1 - alvoDuty;
+  sugestoes.push({
+    criterion: `duty cycle alvo de ${(alvoDuty * 100).toFixed(0)}%`,
+    lower: +quantile(vals, Math.max(0.02, q - 0.15)).toFixed(3),
+    upper: +quantile(vals, Math.min(0.98, q + 0.15)).toFixed(3),
+    rationale: 'limiares que colocam aproximadamente a fração desejada do tempo em amplitude alta'
+  });
+
+  return { suggestions: sugestoes, note: 'a escolha final é do usuário; cada critério responde a uma pergunta diferente' };
+}
+
+/* ---------- core/adbs/doseresponse.js ---------- */
+/* adbs/doseresponse.js — predição de parâmetros ótimos por ajuste dose-resposta.
+
+   Até aqui a dose-resposta era regressão LINEAR, o que não descreve supressão
+   que satura. Referência de implementação: BRAVO `extractPredictionModel`, que
+   ajusta DOIS modelos e escolhe o de menor erro:
+     • decaimento de potência:  y = L·exp(−k(x − x0)) + L0
+     • sigmoide inversa:        y = L / (1 + exp(k(x − x0))) + L0
+
+   Heurística de artefato, também do BRAVO: se a curva ajustada for CRESCENTE com
+   a amplitude, a "resposta" é provavelmente artefato de estimulação, não
+   supressão beta — e isso é sinalizado, não escondido.
+
+   Unidades: x em mA, y em potência de LFP (u.a.).                            */
+
+/* Resolve A·δ = b por Gauss-Jordan (matrizes pequenas: ≤ 4 parâmetros). */
+function solve(A, b) {
+  const n = b.length;
+  const M = A.map((linha, i) => linha.concat([b[i]]));
+  for (let c = 0; c < n; c++) {
+    let piv = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[piv][c])) piv = r;
+    if (Math.abs(M[piv][c]) < 1e-14) return null;
+    [M[c], M[piv]] = [M[piv], M[c]];
+    const d = M[c][c];
+    for (let j = c; j <= n; j++) M[c][j] /= d;
+    for (let r = 0; r < n; r++) if (r !== c) {
+      const f = M[r][c];
+      for (let j = c; j <= n; j++) M[r][j] -= f * M[c][j];
+    }
+  }
+  return M.map(l => l[n]);
+}
+
+/* Levenberg-Marquardt com Jacobiano numérico. */
+function levenbergMarquardt(x, y, modelo, p0, opts) {
+  opts = opts || {};
+  const maxIter = opts.maxIter || 200;
+  const tol = opts.tol || 1e-10;
+  let p = p0.slice(), lambda = opts.lambda0 || 1e-3;
+  const n = x.length, k = p.length;
+  const sse = par => {
+    let s = 0;
+    for (let i = 0; i < n; i++) { const r = y[i] - modelo(x[i], par); s += r * r; }
+    return s;
+  };
+  let erro = sse(p);
+  let iter = 0, convergiu = false;
+  for (; iter < maxIter; iter++) {
+    /* Jacobiano por diferenças centrais */
+    const J = [];
+    for (let i = 0; i < n; i++) {
+      const linha = new Array(k);
+      for (let j = 0; j < k; j++) {
+        const h = Math.max(1e-7, Math.abs(p[j]) * 1e-6);
+        const pm = p.slice(), pp = p.slice();
+        pm[j] -= h; pp[j] += h;
+        linha[j] = (modelo(x[i], pp) - modelo(x[i], pm)) / (2 * h);
+      }
+      J.push(linha);
+    }
+    const JtJ = Array.from({ length: k }, () => new Array(k).fill(0));
+    const Jtr = new Array(k).fill(0);
+    for (let i = 0; i < n; i++) {
+      const r = y[i] - modelo(x[i], p);
+      for (let a = 0; a < k; a++) {
+        Jtr[a] += J[i][a] * r;
+        for (let b = 0; b < k; b++) JtJ[a][b] += J[i][a] * J[i][b];
+      }
+    }
+    const A = JtJ.map((l, i) => l.map((v, j) => i === j ? v * (1 + lambda) : v));
+    const delta = solve(A, Jtr);
+    if (!delta) break;
+    const novo = p.map((v, i) => v + delta[i]);
+    const erroNovo = sse(novo);
+    if (erroNovo < erro) {
+      const ganho = (erro - erroNovo) / (erro || 1);
+      p = novo; erro = erroNovo; lambda = Math.max(1e-9, lambda / 3);
+      if (ganho < tol) { convergiu = true; break; }
+    } else {
+      lambda *= 4;
+      if (lambda > 1e10) break;
+    }
+  }
+  const my = mean(y);
+  const sst = y.reduce((a, v) => a + (v - my) * (v - my), 0);
+  return {
+    params: p, sse: erro, mse: erro / n,
+    r2: sst > 0 ? 1 - erro / sst : NaN,
+    iterations: iter, converged: convergiu
+  };
+}
+
+/* Os dois modelos do BRAVO. */
+const MODELOS = {
+  decay: {
+    label: 'decaimento de potência',
+    fn: (x, p) => p[0] * Math.exp(-p[1] * (x - p[2])) + p[3],
+    formula: 'y = L·exp(−k(x − x₀)) + L₀'
+  },
+  inverseSigmoid: {
+    label: 'sigmoide inversa',
+    fn: (x, p) => p[0] / (1 + Math.exp(p[1] * (x - p[2]))) + p[3],
+    formula: 'y = L / (1 + exp(k(x − x₀))) + L₀'
+  }
+};
+
+/* fitDoseResponse(ma, power, opts) → melhor modelo, com IC por bootstrap. */
+function fitDoseResponse(ma, power, opts) {
+  opts = opts || {};
+  const pares = [];
+  for (let i = 0; i < Math.min(ma.length, power.length); i++)
+    if (isFinite(ma[i]) && isFinite(power[i])) pares.push([ma[i], power[i]]);
+  if (pares.length < 4) return null;
+  pares.sort((a, b) => a[0] - b[0]);
+  const x = pares.map(p => p[0]), y = pares.map(p => p[1]);
+
+  const yMax = Math.max(...y), yMin = Math.min(...y);
+  const xMed = median(x);
+  const chutes = {
+    decay: [Math.max(1e-6, yMax - yMin), 1 / Math.max(0.1, (Math.max(...x) - Math.min(...x)) || 1), Math.min(...x), yMin],
+    inverseSigmoid: [Math.max(1e-6, yMax - yMin), 2 / Math.max(0.1, (Math.max(...x) - Math.min(...x)) || 1), xMed, yMin]
+  };
+
+  const ajustes = {};
+  Object.keys(MODELOS).forEach(k => {
+    const r = levenbergMarquardt(x, y, MODELOS[k].fn, chutes[k]);
+    ajustes[k] = Object.assign({ model: k, label: MODELOS[k].label, formula: MODELOS[k].formula }, r);
+  });
+  const melhorNome = Object.keys(ajustes).reduce((a, b) => ajustes[a].mse <= ajustes[b].mse ? a : b);
+  const melhor = ajustes[melhorNome];
+  const fn = MODELOS[melhorNome].fn;
+
+  /* a curva ajustada é crescente com a amplitude? então é artefato provável */
+  const xIni = Math.min(...x), xFim = Math.max(...x);
+  const yIni = fn(xIni, melhor.params), yFim = fn(xFim, melhor.params);
+  const artefato = yFim > yIni * 1.05;
+
+  /* ponto de meia-supressão e supressão máxima */
+  const supressaoMax = 100 * (yIni - yFim) / (yIni || 1);
+  let meia = NaN;
+  const alvo = (yIni + yFim) / 2;
+  for (let s = 0; s <= 200; s++) {
+    const xv = xIni + (xFim - xIni) * s / 200;
+    if ((yIni > yFim && fn(xv, melhor.params) <= alvo) || (yIni < yFim && fn(xv, melhor.params) >= alvo)) { meia = xv; break; }
+  }
+
+  /* IC dos parâmetros por bootstrap determinístico de resíduos */
+  let semente = 987654321;
+  const prox = () => { semente = (semente * 1103515245 + 12345) & 0x7fffffff; return semente / 0x7fffffff; };
+  const resid = x.map((xv, i) => y[i] - fn(xv, melhor.params));
+  const amostras = [];
+  for (let b = 0; b < (opts.nBoot || 200); b++) {
+    const yb = x.map((xv, i) => fn(xv, melhor.params) + resid[Math.floor(prox() * resid.length)]);
+    const r = levenbergMarquardt(x, yb, fn, melhor.params.slice(), { maxIter: 60 });
+    if (r.converged || isFinite(r.mse)) amostras.push(r.params);
+  }
+  const ic = j => {
+    const v = amostras.map(p => p[j]).filter(isFinite).sort((a, b) => a - b);
+    return v.length ? [quantile(v, 0.025), quantile(v, 0.975)] : [NaN, NaN];
+  };
+
+  return {
+    best: melhorNome, label: melhor.label, formula: melhor.formula,
+    params: melhor.params.map(v => +v.toFixed(5)),
+    paramNames: ['L', 'k', 'x0', 'L0'],
+    paramCI: melhor.params.map((_, j) => ic(j).map(v => +v.toFixed(4))),
+    r2: +melhor.r2.toFixed(4), mse: +melhor.mse.toFixed(6),
+    fits: Object.keys(ajustes).map(k => ({ model: k, label: ajustes[k].label, mse: +ajustes[k].mse.toFixed(6), r2: +ajustes[k].r2.toFixed(4) })),
+    halfSuppressionMa: isFinite(meia) ? +meia.toFixed(3) : NaN,
+    maxSuppressionPct: +supressaoMax.toFixed(1),
+    nLevels: pares.length,
+    predict: xv => fn(xv, melhor.params),
+    stimulationArtifactSuspected: artefato,
+    reason: artefato
+      ? 'a curva ajustada CRESCE com a amplitude — a "resposta" é provavelmente artefato de estimulação, não supressão beta (heurística do BRAVO)'
+      : null
+  };
+}
+
 /* ---------- core/index.js ---------- */
 /* core/index.js — barrel do núcleo.
    Monta o objeto PerceptCore com EXATAMENTE a mesma superfície pública de antes
    do refactor modular (Prompt 0.1), para que app.js e a suíte de testes não mudem.
    Ver docs/arquitetura.md para o mapa de módulos e a regra de dependência. */
+
+
+
 
 
 
@@ -4638,7 +5177,11 @@ const API = {
   dstTransitions, detectOffsetBreaks, resolveOffsets, segmentByOffset,
   detectRampArtifacts, removeRampArtifact, detectPolyphasic,
   checkHarmonics, peakReproducibility, screenChronicByEcg, qcPanel,
-  notchFFT, suggestLineFrequency
+  notchFFT, suggestLineFrequency,
+  /* aDBS: elegibilidade, simulação e predição (Onda 4.2 — L34, L35, L36) */
+  assessEligibility, PREVALENCIA_BETA,
+  simulateAdbs, thresholdSweep, suggestThresholds,
+  fitDoseResponse, levenbergMarquardt, MODELOS
 };
 if (typeof module !== "undefined" && module.exports) module.exports = API;
 root.PerceptCore = API;
@@ -5745,10 +6288,31 @@ const FIGURES = [
         ch2.area(keys, q1, q3, { color: hcol(cur.h), alpha: .18, label: 'IQR' });
         ch2.line(keys, meds, { color: hcol(cur.h), width: 2 });
         ch2.scatter(keys, meds, { color: COL.ink, size: 3.4 });
+        /* dois modelos não lineares (decaimento e sigmoide inversa), com o de
+           menor erro em destaque — a regressão linear não descreve saturação */
+        const dr = C.fitDoseResponse(keys, meds, { nBoot: 120 });
+        if (dr) {
+          const xx = Array.from({ length: 60 }, (_, i) => keys[0] + (keys[keys.length - 1] - keys[0]) * i / 59);
+          ch2.line(xx, xx.map(dr.predict), {
+            color: dr.stimulationArtifactSuspected ? COL.right : COL.warn, width: 1.8,
+            label: `${dr.label} · R²=${f(dr.r2, 2)}`
+          });
+          if (isFinite(dr.halfSuppressionMa))
+            ch2.vline(dr.halfSuppressionMa, { color: COL.ink, dash: [3, 3], label: `x₀=${f(dr.halfSuppressionMa, 2)} mA` });
+        }
         const lr = C.linreg(keys, meds);
-        ch2.line([keys[0], keys[keys.length - 1]], [lr.intercept + lr.slope * keys[0], lr.intercept + lr.slope * keys[keys.length - 1]],
-          { color: COL.warn, width: 1.4, dash: [5, 3], label: `β=${f(lr.slope, 1)}/mA · R²=${f(lr.r2, 2)}` });
         ch2.legend({ x: ch2.x0 + 8, y: ch2.y1 + 6 });
+        if (dr) {
+          node.appendChild(table(['modelo', 'MSE', 'R²', 'seleção'],
+            dr.fits.map(x => [x.label, x.mse, x.r2, { html: x.model === dr.best ? '<span class="sig">escolhido</span>' : '<span class="ns">—</span>' }])));
+          node.appendChild(table(['parâmetro', 'valor', 'IC 95%'],
+            dr.paramNames.map((nm, j) => [nm, dr.params[j], `[${dr.paramCI[j][0]}; ${dr.paramCI[j][1]}]`])
+              .concat([['meia-supressão (x₀)', isFinite(dr.halfSuppressionMa) ? dr.halfSuppressionMa + ' mA' : '—', ''],
+                       ['supressão máxima', f(dr.maxSuppressionPct, 1) + ' %', '']])));
+          if (dr.stimulationArtifactSuspected) node.appendChild(el('div', {
+            class: 'warnbox', html: `<b>Artefato de estimulação suspeito.</b> ${dr.reason}`
+          }));
+        }
 
         /* boxplot por nível */
         const b3 = plotBox(grid, 240);
@@ -6571,6 +7135,135 @@ const FIGURES = [
       node.appendChild(el('div', {
         class: 'note', html: `<b>Leitura.</b> Cinza não é falha do software: é a declaração honesta de que <b>este dado não permite verificar</b> o item, com o motivo. ` +
           `A alternativa — omitir o item — daria a impressão de que tudo foi checado.`
+      }));
+    }
+  },
+
+  /* ----------------------------------------------------------------- F23 */
+  {
+    id: 'F23', title: 'aDBS — elegibilidade e simulador de limiar',
+    sub: 'o documento que se leva para a consulta de programação',
+    has: d => Object.keys(d.trend).length || d.montage.length,
+    render(node, d) {
+      /* ---------- A. elegibilidade ---------- */
+      const el2 = C.assessEligibility(d.all, { profileId: activeProfileId(), offMin: offMin() });
+      node.appendChild(table(['hemisfério', 'veredito', `pico ${activeProfile().primaryBand.label}`, 'dias de Timeline', 'bloqueios'],
+        el2.hemispheres.map(h => [
+          { html: `<span class="hemi-${h.hemisphere[0]}">${hname(h.hemisphere)}</span>` },
+          { html: h.verdict === 'elegível' ? '<span class="sig">elegível</span>'
+            : h.verdict === 'não elegível' ? '<span style="color:var(--right);font-weight:600">não elegível</span>'
+            : `<span style="color:var(--warn);font-weight:600">${h.verdict}</span>` },
+          isFinite(h.peakHz) ? f(h.peakHz, 1) + ' Hz' : '—',
+          h.nDaysChronic, h.blockers.join('; ') || '—'
+        ])));
+
+      el2.hemispheres.forEach(h => {
+        node.appendChild(el('h4', { class: 'qc-title', html: `<b>STN ${hname(h.hemisphere)}</b> — critérios` }));
+        const grid = el('div', { class: 'qcgrid' });
+        h.criteria.forEach(c => {
+          const cor = c.veredito === 'atende' ? 'verde'
+            : c.veredito === 'não atende' ? 'vermelho'
+            : c.veredito === 'dados insuficientes' ? 'cinza' : 'amarelo';
+          const cel = el('div', { class: 'qcitem ' + cor });
+          cel.appendChild(el('b', { text: c.rotulo }));
+          cel.appendChild(el('span', { class: 'v', text: c.veredito }));
+          cel.appendChild(el('span', { class: 'm', text: c.evidencia }));
+          if (c.pendencia) cel.appendChild(el('span', { class: 'm', text: '→ ' + c.pendencia }));
+          grid.appendChild(cel);
+        });
+        node.appendChild(grid);
+      });
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Contexto.</b> ${el2.context}. Prevalência do pico beta na literatura: ` +
+          `${el2.prevalence.adaptPd} no ADAPT-PD; ${el2.prevalence.registroBrainSense} no registro de vigilância BrainSense. ` +
+          `<i>${el2.prevalence.nota}.</i>`
+      }));
+
+      /* ---------- B. simulador ---------- */
+      const hemis = Object.keys(d.trend);
+      if (!hemis.length) {
+        node.appendChild(el('div', { class: 'warnbox', html: 'Sem <b>BrainSense Timeline</b>, não é possível simular o comportamento do aDBS. Habilite o Timeline nos dois hemisférios e registre ao menos 3–5 dias.' }));
+        return;
+      }
+      const h = opt('F23', 'hemi', hemis[0]);
+      const modo = opt('F23', 'modo', 'dual');
+      const minMa = opt('F23', 'min', 1.0), maxMa = opt('F23', 'max', 3.0);
+      const avg = opt('F23', 'avg', 3000);
+      const limpo = C.removeOutliersMAD(d.trend[h], 'lfp', 4).kept;
+      const serie = limpo.map(r => ({ t: r.t, v: r.lfp }));
+      const sug = C.suggestThresholds(serie, {
+        states: C.detectStates(serie, { minDur: 30 * 60000 }) || undefined,
+        targetDutyCycle: 0.5
+      });
+      const lo = opt('F23', 'lo', sug ? sug.suggestions[0].lower : NaN);
+      const hi = opt('F23', 'hi', sug ? sug.suggestions[0].upper : NaN);
+
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: 'STN ' + hname(x) })), h, v => setOpt('F23', 'hemi', v)),
+        ctrlSelect('modo', [{ value: 'single', label: 'limiar único' }, { value: 'dual', label: 'limiar duplo' }], modo, v => setOpt('F23', 'modo', v)),
+        ctrlNumber('limiar inferior', lo, 0, 1e6, 1, v => setOpt('F23', 'lo', v)),
+        ctrlNumber('limiar superior', hi, 0, 1e6, 1, v => setOpt('F23', 'hi', v)),
+        ctrlNumber('mA mín.', minMa, 0, 10, .1, v => setOpt('F23', 'min', v)),
+        ctrlNumber('mA máx.', maxMa, 0, 10, .1, v => setOpt('F23', 'max', v)),
+        ctrlNumber('constante do aparelho (ms)', avg, 0, 10000, 500, v => setOpt('F23', 'avg', v))
+      ]));
+
+      const sim = C.simulateAdbs(serie, { mode: modo, lower: lo, upper: hi, minMa, maxMa, averagingMs: avg });
+      const instant = C.simulateAdbs(serie, { mode: modo, lower: lo, upper: hi, minMa, maxMa, averagingMs: 0 });
+      if (!sim) return node.appendChild(el('div', { class: 'empty', text: 'Série curta demais para simular.' }));
+
+      const box = plotBox(node, 280);
+      const xs = sim.times, ys = serie.map(p => p.v);
+      const ch = new P.Chart(box.canvas, {
+        width: box.width, height: box.height, xlim: [xs[0], xs[xs.length - 1]],
+        ylim: [0, Math.max(...ys) * 1.12],
+        xlabel: 'data local', ylabel: 'potência LFP (u.a.)',
+        title: `simulação de aDBS — ${modo === 'single' ? 'limiar único' : 'limiar duplo'}`, pad: { l: 62, r: 52, t: 24, b: 42 }
+      });
+      ch.axes({ nx: 7, xfmt: v => new Date(v + offMin() * 60000).toISOString().slice(5, 10).split('-').reverse().join('/') });
+      ch.span(xs[0], xs[xs.length - 1], { color: '#93A7B5', alpha: 0 });
+      ch.hline(lo, { color: COL.muted, dash: [4, 3], label: 'inf.' });
+      ch.hline(hi, { color: COL.muted, dash: [4, 3], label: 'sup.' });
+      ch.line(xs, ys, { color: hcol(h), width: .8 });
+      /* amplitude entregue, reescalada para o mesmo eixo */
+      const escala = Math.max(...ys) * .9 / (maxMa || 1);
+      ch.line(xs, sim.delivered.map(v => v * escala), { color: COL.accent, width: 1.6, label: 'amplitude simulada' });
+      ch.legend({ x: ch.x0 + 8, y: ch.y1 + 6 });
+
+      node.appendChild(table(['métrica', 'com a constante do aparelho', 'decisão instantânea', 'o que significa'], [
+        ['% do tempo em amplitude alta', f(sim.pctHigh, 1) + ' %', f(instant.pctHigh, 1) + ' %', 'quanto o paciente passa na amplitude máxima'],
+        ['% em amplitude mínima', f(sim.pctLow, 1) + ' %', f(instant.pctLow, 1) + ' %', 'quanto passa no piso'],
+        ['transições por hora', f(sim.transitionsPerHour, 2), f(instant.transitionsPerHour, 2), 'a suavização do aparelho reduz o troca-troca'],
+        ['duração mediana em alta', f(sim.medianHighMin, 1) + ' min', f(instant.medianHighMin, 1) + ' min', 'persistência de cada estado'],
+        ['duty cycle', f(sim.dutyCycle, 3), f(instant.dutyCycle, 3), 'fração efetiva de estimulação alta'],
+        ['amplitude média entregue', f(sim.meanAmplitudeMa, 2) + ' mA', f(instant.meanAmplitudeMa, 2) + ' mA', 'média ao longo do período'],
+        ['energia vs. cDBS contínua', f(sim.energyVsContinuous, 3), f(instant.energyVsContinuous, 3), '1,0 = mesma energia da estimulação contínua na amplitude máxima']
+      ]));
+
+      if (sug) {
+        node.appendChild(el('h4', { class: 'qc-title', html: '<b>Sugestões de limiar</b> — cada critério responde a uma pergunta diferente' }));
+        node.appendChild(table(['critério', 'inferior', 'superior', 'racional'],
+          sug.suggestions.map(x => [x.criterion, x.lower, x.upper,
+            x.rationale + (x.caveat ? ` — ${x.caveat}` : '')])));
+      }
+
+      node.appendChild(exportRow([
+        { label: '⤓ PNG', fn: () => P.downloadCanvas(box.canvas, 'F23_simulador_adbs') },
+        { label: '⤓ CSV elegibilidade', fn: () => P.downloadText(P.toCSV(el2.hemispheres.flatMap(x => x.criteria.map(c => ({
+          hemisferio: x.hemisphere, veredito_global: x.verdict, criterio: c.rotulo,
+          veredito: c.veredito, evidencia: c.evidencia, pendencia: c.pendencia || ''
+        })))), 'F23_elegibilidade_adbs.csv', 'text/csv') },
+        { label: '⤓ CSV simulação', fn: () => P.downloadText(P.toCSV(sim.times.map((t, i) => ({
+          utc: new Date(t).toISOString(), potencia: serie[i].v,
+          suavizada: +sim.smoothed[i].toFixed(4), amplitude_mA: +sim.delivered[i].toFixed(4)
+        }))), 'F23_simulacao_adbs.csv', 'text/csv') }
+      ]));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Por que a constante do aparelho importa.</b> O dispositivo suaviza o sinal antes de decidir ` +
+          `(<code>AveragingDurationInMilliSeconds</code>, tipicamente 3000 ms) e sobe/desce por rampa. Sem aplicar isso, a simulação ` +
+          `<b>superestima</b> o número de transições — a coluna "decisão instantânea" mostra exatamente essa diferença. ` +
+          `<b>Desafios de programação</b> nomeados por Busch et al. (8 pacientes em limiar duplo, avaliação ecológica em casa por 2 semanas em cada modo): ` +
+          `seleção do biomarcador, definição do limiar e <b>maladaptação relacionada a artefato</b> — verifique a F17 antes de fixar limiares.`
       }));
     }
   }

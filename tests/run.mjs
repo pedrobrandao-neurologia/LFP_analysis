@@ -1083,6 +1083,120 @@ sec('estado do dispositivo, fuso robusto e controle de qualidade');
   });
 }
 
+/* ------------------------------- 14. aDBS: elegibilidade e simulação (4.2) -- */
+sec('aDBS — elegibilidade, simulador de limiar e predição dose-resposta');
+{
+  t('Levenberg-Marquardt recupera parâmetros de curva sintética', () => {
+    const p = [10, 1.5, 0.5, 2];                        // L, k, x0, L0
+    const x = [], y = [];
+    for (let i = 0; i <= 20; i++) { const xv = i * 0.25; x.push(xv); y.push(C.MODELOS.decay.fn(xv, p)); }
+    const r = C.levenbergMarquardt(x, y, C.MODELOS.decay.fn, [5, 1, 0, 0]);
+    assert(r.r2 > 0.999, 'R² baixo: ' + r.r2);
+    assert(Math.abs(r.params[1] - 1.5) < 0.05, 'k recuperado: ' + r.params[1]);
+    return `R² ${r.r2.toFixed(5)}, k ${r.params[1].toFixed(3)} (verdadeiro 1,5), ${r.iterations} iterações`;
+  });
+  t('ajuste sigmoide recupera x0 de curva sintética com erro < 5%', () => {
+    const p = [8, 3, 1.8, 1];
+    const x = [], y = [];
+    for (let i = 0; i <= 24; i++) { const xv = i * 0.15; x.push(xv); y.push(C.MODELOS.inverseSigmoid.fn(xv, p)); }
+    const r = C.fitDoseResponse(x, y, { nBoot: 60 });
+    assert(r, 'sem ajuste');
+    const erro = 100 * Math.abs(r.halfSuppressionMa - 1.8) / 1.8;
+    assert(erro < 5, `x0 = ${r.halfSuppressionMa}, erro ${erro.toFixed(1)}%`);
+    assert(!r.stimulationArtifactSuspected, 'curva decrescente marcada como artefato');
+    return `x₀ ${r.halfSuppressionMa} mA (verdadeiro 1,8; erro ${erro.toFixed(1)}%), modelo "${r.label}", R² ${r.r2}`;
+  });
+  t('curva CRESCENTE é sinalizada como artefato de estimulação', () => {
+    const x = [], y = [];
+    for (let i = 0; i <= 12; i++) { x.push(i * 0.2); y.push(2 + 1.5 * i * 0.2); }   // cresce com mA
+    const r = C.fitDoseResponse(x, y, { nBoot: 40 });
+    assert(r && r.stimulationArtifactSuspected, 'não sinalizou artefato numa curva crescente');
+    assert(/artefato de estimulação/.test(r.reason), 'motivo não explica a heurística');
+    return r.reason.slice(0, 60) + '…';
+  });
+  t('simulador: limiar no ponto médio dá duty cycle próximo de 50%', () => {
+    /* série bimodal, metade do tempo em cada patamar */
+    const serie = [];
+    for (let i = 0; i < 600; i++) serie.push({ t: i * 600000, v: (Math.floor(i / 50) % 2) ? 80 : 20 });
+    const s = C.simulateAdbs(serie, { mode: 'single', lower: 50, upper: 50, minMa: 1, maxMa: 3, averagingMs: 0 });
+    assert(s, 'sem simulação');
+    assert(Math.abs(s.dutyCycle - 0.5) < 0.1, 'duty cycle: ' + s.dutyCycle);
+    assert(s.pctHigh > 40 && s.pctHigh < 60, '% em alta: ' + s.pctHigh);
+    return `duty cycle ${s.dutyCycle}, ${s.pctHigh}% em amplitude alta`;
+  });
+  t('constante de tempo do aparelho reduz substancialmente as transições', () => {
+    /* tendência lenta + ruído rápido, com o limiar deslocado da média — é o
+       caso real: sem suavização o aparelho persegue cada oscilação */
+    const serie = [];
+    for (let i = 0; i < 800; i++)
+      serie.push({ t: i * 600000, v: 50 + 25 * Math.sin(i / 60) + 18 * Math.sin(i * 2.3) });
+    const comum = { mode: 'single', lower: 55, upper: 55, minMa: 1, maxMa: 3, rampMaPerSec: 10 };
+    const instant = C.simulateAdbs(serie, Object.assign({ averagingMs: 0 }, comum));
+    const suave = C.simulateAdbs(serie, Object.assign({ averagingMs: 1800000 }, comum));
+    const reducao = 100 * (1 - suave.transitions / instant.transitions);
+    assert(reducao > 30, `redução de apenas ${reducao.toFixed(0)}% nas transições`);
+    assert(Math.abs(suave.dutyCycle - instant.dutyCycle) < 0.1, 'a suavização não deveria mudar muito o duty cycle');
+    return `${instant.transitions} → ${suave.transitions} transições (−${reducao.toFixed(0)}%), duty cycle preservado`;
+  });
+  t('varredura de limiares cobre a grade e sugere por três critérios', () => {
+    const serie = [];
+    for (let i = 0; i < 400; i++) serie.push({ t: i * 600000, v: 40 + 20 * Math.sin(i / 20) });
+    const sw = C.thresholdSweep(serie, { n: 6, minMa: 1, maxMa: 3 });
+    assert(sw && sw.grid.length === 36, 'grade incompleta: ' + (sw ? sw.grid.length : 0));
+    assert(sw.grid.some(c => c.valid), 'nenhuma célula válida');
+    const sug = C.suggestThresholds(serie, { targetDutyCycle: 0.4 });
+    assert(sug.suggestions.length >= 2, 'poucas sugestões');
+    sug.suggestions.forEach(x => assert(x.upper > x.lower, 'sugestão com limiares invertidos: ' + x.criterion));
+    return `${sw.grid.filter(c => c.valid).length} pares válidos · ${sug.suggestions.length} critérios de sugestão`;
+  });
+  t('elegibilidade avalia os seis critérios e diz o que falta capturar', () => {
+    const e = C.assessEligibility(parsed, { profileId: 'pd', offMin: -180 });
+    assert(e.hemispheres.length === 2, 'deveria avaliar os dois hemisférios');
+    e.hemispheres.forEach(h => {
+      const ids = h.criteria.map(c => c.id);
+      ['pico', 'artefato', 'reprodutibilidade', 'parametros', 'cronico', 'circadiano']
+        .forEach(k => assert(ids.includes(k), `critério ausente: ${k}`));
+      assert(['elegível', 'elegível com ressalva', 'não elegível', 'dados insuficientes'].includes(h.verdict),
+        'veredito inválido: ' + h.verdict);
+      h.criteria.forEach(c => assert(c.evidencia && c.evidencia.length, 'critério sem evidência: ' + c.id));
+      /* todo critério não atendido precisa dizer o que fazer a respeito */
+      h.criteria.filter(c => c.veredito !== 'atende').forEach(c =>
+        assert(c.pendencia || c.veredito === 'atende com ressalva', 'pendência não explicada: ' + c.id));
+    });
+    assert(/ADAPT-START/.test(e.context), 'contexto não cita o ADAPT-START');
+    assert(e.prevalence && /84,8/.test(e.prevalence.adaptPd), 'prevalência do ADAPT-PD ausente');
+    return e.hemispheres.map(h => `${h.hemisphere[0]}:${h.verdict}`).join(' · ');
+  });
+  t('sem pico na banda primária o hemisfério não é elegível', () => {
+    /* espectro plano: nenhum pico destacado do fundo */
+    const falso = JSON.parse(JSON.stringify({
+      fileName: 'x.json',
+      meta: { sessionStart: '2025-01-06T12:00:00Z', utcOffsetMin: -180 },
+      patient: { idHash: 'sub-00000000', diagnosis: 'ParkinsonsDisease' },
+      device: { implantDate: '2024-09-12' }, leads: [{ hemisphere: 'Left', target: 'Stn' }],
+      groups: [], eventLogs: [], sensingSetup: [], signalCheck: [], bsTimeDomain: [], bsLfp: [],
+      montageTD: [], snapshots: [], trend: {}, availability: {},
+      montage: [{ hemisphere: 'Left', label: '0-2', f: Array.from({ length: 100 }, (_, i) => i * 0.5),
+        mag: Array.from({ length: 100 }, (_, i) => 1 / (1 + i * 0.5)), artifact: 'ARTIFACT_NOT_PRESENT' }]
+    }));
+    const e = C.assessEligibility([falso], { profileId: 'pd', offMin: -180 });
+    const L = e.hemispheres.find(h => h.hemisphere === 'Left');
+    assert(!L.hasPeak, 'não deveria encontrar pico num espectro plano');
+    assert(L.verdict === 'não elegível', 'veredito: ' + L.verdict);
+    assert(L.blockers.length > 0, 'sem bloqueios listados');
+    return `veredito "${L.verdict}", bloqueios: ${L.blockers.join('; ')}`;
+  });
+  t('com menos de 3 dias de Timeline o critério crônico não é atendido', () => {
+    const e = C.assessEligibility(parsed, { profileId: 'pd', offMin: -180 });
+    const h = e.hemispheres[0];
+    const cr = h.criteria.find(c => c.id === 'cronico');
+    assert(cr, 'critério crônico ausente');
+    if (h.nDaysChronic >= 5) assert(cr.veredito === 'atende', 'com ≥5 dias deveria atender');
+    else assert(cr.pendencia && /ADAPT-START/.test(cr.pendencia), 'pendência não cita o número de dias do ADAPT-START');
+    return `${h.nDaysChronic} dias → "${cr.veredito}"`;
+  });
+}
+
 /* ------------------------------------------------------------- resultado -- */
 console.log(`\n${'='.repeat(58)}`);
 console.log(`  ${ok} passaram   ${falhas} falharam   ${pulados} sem dados`);

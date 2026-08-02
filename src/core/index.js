@@ -34,6 +34,9 @@ import { checkHarmonics } from './qc/harmonics.js';
 import { peakReproducibility, screenChronicByEcg } from './qc/reproducibility.js';
 import { qcPanel } from './qc/panel.js';
 import { notchFFT, suggestLineFrequency } from './dsp/notch.js';
+import { assessEligibility, PREVALENCIA_BETA } from './adbs/eligibility.js';
+import { simulateAdbs, thresholdSweep, suggestThresholds } from './adbs/simulate.js';
+import { fitDoseResponse, levenbergMarquardt, MODELOS } from './adbs/doseresponse.js';
 
 const API = {
   parsePercept, MODALITIES, BANDS, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId,
@@ -63,7 +66,11 @@ const API = {
   dstTransitions, detectOffsetBreaks, resolveOffsets, segmentByOffset,
   detectRampArtifacts, removeRampArtifact, detectPolyphasic,
   checkHarmonics, peakReproducibility, screenChronicByEcg, qcPanel,
-  notchFFT, suggestLineFrequency
+  notchFFT, suggestLineFrequency,
+  /* aDBS: elegibilidade, simulação e predição (Onda 4.2 — L34, L35, L36) */
+  assessEligibility, PREVALENCIA_BETA,
+  simulateAdbs, thresholdSweep, suggestThresholds,
+  fitDoseResponse, levenbergMarquardt, MODELOS
 };
 
 export default API;
