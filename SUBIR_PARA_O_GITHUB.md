@@ -60,7 +60,7 @@ git push -u origin main
 - Ajuste `repository-code` em `CITATION.cff` com a URL real.
 - Se quiser DOI para citar em artigo: conecte o repositório ao Zenodo
   (https://zenodo.org/account/settings/github/) e publique um *release* — o DOI sai automático.
-- A integração contínua (`.github/workflows/ci.yml`) roda os 118 testes a cada push e
+- A integração contínua (`.github/workflows/ci.yml`) roda os 128 testes a cada push e
   verifica que `index.html` está sincronizado com `src/`.
 
 ## Instalar a proteção contra vazamento

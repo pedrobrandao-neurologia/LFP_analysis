@@ -685,10 +685,31 @@ const FIGURES = [
         ch2.area(keys, q1, q3, { color: hcol(cur.h), alpha: .18, label: 'IQR' });
         ch2.line(keys, meds, { color: hcol(cur.h), width: 2 });
         ch2.scatter(keys, meds, { color: COL.ink, size: 3.4 });
+        /* dois modelos não lineares (decaimento e sigmoide inversa), com o de
+           menor erro em destaque — a regressão linear não descreve saturação */
+        const dr = C.fitDoseResponse(keys, meds, { nBoot: 120 });
+        if (dr) {
+          const xx = Array.from({ length: 60 }, (_, i) => keys[0] + (keys[keys.length - 1] - keys[0]) * i / 59);
+          ch2.line(xx, xx.map(dr.predict), {
+            color: dr.stimulationArtifactSuspected ? COL.right : COL.warn, width: 1.8,
+            label: `${dr.label} · R²=${f(dr.r2, 2)}`
+          });
+          if (isFinite(dr.halfSuppressionMa))
+            ch2.vline(dr.halfSuppressionMa, { color: COL.ink, dash: [3, 3], label: `x₀=${f(dr.halfSuppressionMa, 2)} mA` });
+        }
         const lr = C.linreg(keys, meds);
-        ch2.line([keys[0], keys[keys.length - 1]], [lr.intercept + lr.slope * keys[0], lr.intercept + lr.slope * keys[keys.length - 1]],
-          { color: COL.warn, width: 1.4, dash: [5, 3], label: `β=${f(lr.slope, 1)}/mA · R²=${f(lr.r2, 2)}` });
         ch2.legend({ x: ch2.x0 + 8, y: ch2.y1 + 6 });
+        if (dr) {
+          node.appendChild(table(['modelo', 'MSE', 'R²', 'seleção'],
+            dr.fits.map(x => [x.label, x.mse, x.r2, { html: x.model === dr.best ? '<span class="sig">escolhido</span>' : '<span class="ns">—</span>' }])));
+          node.appendChild(table(['parâmetro', 'valor', 'IC 95%'],
+            dr.paramNames.map((nm, j) => [nm, dr.params[j], `[${dr.paramCI[j][0]}; ${dr.paramCI[j][1]}]`])
+              .concat([['meia-supressão (x₀)', isFinite(dr.halfSuppressionMa) ? dr.halfSuppressionMa + ' mA' : '—', ''],
+                       ['supressão máxima', f(dr.maxSuppressionPct, 1) + ' %', '']])));
+          if (dr.stimulationArtifactSuspected) node.appendChild(el('div', {
+            class: 'warnbox', html: `<b>Artefato de estimulação suspeito.</b> ${dr.reason}`
+          }));
+        }
 
         /* boxplot por nível */
         const b3 = plotBox(grid, 240);
@@ -1511,6 +1532,135 @@ const FIGURES = [
       node.appendChild(el('div', {
         class: 'note', html: `<b>Leitura.</b> Cinza não é falha do software: é a declaração honesta de que <b>este dado não permite verificar</b> o item, com o motivo. ` +
           `A alternativa — omitir o item — daria a impressão de que tudo foi checado.`
+      }));
+    }
+  },
+
+  /* ----------------------------------------------------------------- F23 */
+  {
+    id: 'F23', title: 'aDBS — elegibilidade e simulador de limiar',
+    sub: 'o documento que se leva para a consulta de programação',
+    has: d => Object.keys(d.trend).length || d.montage.length,
+    render(node, d) {
+      /* ---------- A. elegibilidade ---------- */
+      const el2 = C.assessEligibility(d.all, { profileId: activeProfileId(), offMin: offMin() });
+      node.appendChild(table(['hemisfério', 'veredito', `pico ${activeProfile().primaryBand.label}`, 'dias de Timeline', 'bloqueios'],
+        el2.hemispheres.map(h => [
+          { html: `<span class="hemi-${h.hemisphere[0]}">${hname(h.hemisphere)}</span>` },
+          { html: h.verdict === 'elegível' ? '<span class="sig">elegível</span>'
+            : h.verdict === 'não elegível' ? '<span style="color:var(--right);font-weight:600">não elegível</span>'
+            : `<span style="color:var(--warn);font-weight:600">${h.verdict}</span>` },
+          isFinite(h.peakHz) ? f(h.peakHz, 1) + ' Hz' : '—',
+          h.nDaysChronic, h.blockers.join('; ') || '—'
+        ])));
+
+      el2.hemispheres.forEach(h => {
+        node.appendChild(el('h4', { class: 'qc-title', html: `<b>STN ${hname(h.hemisphere)}</b> — critérios` }));
+        const grid = el('div', { class: 'qcgrid' });
+        h.criteria.forEach(c => {
+          const cor = c.veredito === 'atende' ? 'verde'
+            : c.veredito === 'não atende' ? 'vermelho'
+            : c.veredito === 'dados insuficientes' ? 'cinza' : 'amarelo';
+          const cel = el('div', { class: 'qcitem ' + cor });
+          cel.appendChild(el('b', { text: c.rotulo }));
+          cel.appendChild(el('span', { class: 'v', text: c.veredito }));
+          cel.appendChild(el('span', { class: 'm', text: c.evidencia }));
+          if (c.pendencia) cel.appendChild(el('span', { class: 'm', text: '→ ' + c.pendencia }));
+          grid.appendChild(cel);
+        });
+        node.appendChild(grid);
+      });
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Contexto.</b> ${el2.context}. Prevalência do pico beta na literatura: ` +
+          `${el2.prevalence.adaptPd} no ADAPT-PD; ${el2.prevalence.registroBrainSense} no registro de vigilância BrainSense. ` +
+          `<i>${el2.prevalence.nota}.</i>`
+      }));
+
+      /* ---------- B. simulador ---------- */
+      const hemis = Object.keys(d.trend);
+      if (!hemis.length) {
+        node.appendChild(el('div', { class: 'warnbox', html: 'Sem <b>BrainSense Timeline</b>, não é possível simular o comportamento do aDBS. Habilite o Timeline nos dois hemisférios e registre ao menos 3–5 dias.' }));
+        return;
+      }
+      const h = opt('F23', 'hemi', hemis[0]);
+      const modo = opt('F23', 'modo', 'dual');
+      const minMa = opt('F23', 'min', 1.0), maxMa = opt('F23', 'max', 3.0);
+      const avg = opt('F23', 'avg', 3000);
+      const limpo = C.removeOutliersMAD(d.trend[h], 'lfp', 4).kept;
+      const serie = limpo.map(r => ({ t: r.t, v: r.lfp }));
+      const sug = C.suggestThresholds(serie, {
+        states: C.detectStates(serie, { minDur: 30 * 60000 }) || undefined,
+        targetDutyCycle: 0.5
+      });
+      const lo = opt('F23', 'lo', sug ? sug.suggestions[0].lower : NaN);
+      const hi = opt('F23', 'hi', sug ? sug.suggestions[0].upper : NaN);
+
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: 'STN ' + hname(x) })), h, v => setOpt('F23', 'hemi', v)),
+        ctrlSelect('modo', [{ value: 'single', label: 'limiar único' }, { value: 'dual', label: 'limiar duplo' }], modo, v => setOpt('F23', 'modo', v)),
+        ctrlNumber('limiar inferior', lo, 0, 1e6, 1, v => setOpt('F23', 'lo', v)),
+        ctrlNumber('limiar superior', hi, 0, 1e6, 1, v => setOpt('F23', 'hi', v)),
+        ctrlNumber('mA mín.', minMa, 0, 10, .1, v => setOpt('F23', 'min', v)),
+        ctrlNumber('mA máx.', maxMa, 0, 10, .1, v => setOpt('F23', 'max', v)),
+        ctrlNumber('constante do aparelho (ms)', avg, 0, 10000, 500, v => setOpt('F23', 'avg', v))
+      ]));
+
+      const sim = C.simulateAdbs(serie, { mode: modo, lower: lo, upper: hi, minMa, maxMa, averagingMs: avg });
+      const instant = C.simulateAdbs(serie, { mode: modo, lower: lo, upper: hi, minMa, maxMa, averagingMs: 0 });
+      if (!sim) return node.appendChild(el('div', { class: 'empty', text: 'Série curta demais para simular.' }));
+
+      const box = plotBox(node, 280);
+      const xs = sim.times, ys = serie.map(p => p.v);
+      const ch = new P.Chart(box.canvas, {
+        width: box.width, height: box.height, xlim: [xs[0], xs[xs.length - 1]],
+        ylim: [0, Math.max(...ys) * 1.12],
+        xlabel: 'data local', ylabel: 'potência LFP (u.a.)',
+        title: `simulação de aDBS — ${modo === 'single' ? 'limiar único' : 'limiar duplo'}`, pad: { l: 62, r: 52, t: 24, b: 42 }
+      });
+      ch.axes({ nx: 7, xfmt: v => new Date(v + offMin() * 60000).toISOString().slice(5, 10).split('-').reverse().join('/') });
+      ch.span(xs[0], xs[xs.length - 1], { color: '#93A7B5', alpha: 0 });
+      ch.hline(lo, { color: COL.muted, dash: [4, 3], label: 'inf.' });
+      ch.hline(hi, { color: COL.muted, dash: [4, 3], label: 'sup.' });
+      ch.line(xs, ys, { color: hcol(h), width: .8 });
+      /* amplitude entregue, reescalada para o mesmo eixo */
+      const escala = Math.max(...ys) * .9 / (maxMa || 1);
+      ch.line(xs, sim.delivered.map(v => v * escala), { color: COL.accent, width: 1.6, label: 'amplitude simulada' });
+      ch.legend({ x: ch.x0 + 8, y: ch.y1 + 6 });
+
+      node.appendChild(table(['métrica', 'com a constante do aparelho', 'decisão instantânea', 'o que significa'], [
+        ['% do tempo em amplitude alta', f(sim.pctHigh, 1) + ' %', f(instant.pctHigh, 1) + ' %', 'quanto o paciente passa na amplitude máxima'],
+        ['% em amplitude mínima', f(sim.pctLow, 1) + ' %', f(instant.pctLow, 1) + ' %', 'quanto passa no piso'],
+        ['transições por hora', f(sim.transitionsPerHour, 2), f(instant.transitionsPerHour, 2), 'a suavização do aparelho reduz o troca-troca'],
+        ['duração mediana em alta', f(sim.medianHighMin, 1) + ' min', f(instant.medianHighMin, 1) + ' min', 'persistência de cada estado'],
+        ['duty cycle', f(sim.dutyCycle, 3), f(instant.dutyCycle, 3), 'fração efetiva de estimulação alta'],
+        ['amplitude média entregue', f(sim.meanAmplitudeMa, 2) + ' mA', f(instant.meanAmplitudeMa, 2) + ' mA', 'média ao longo do período'],
+        ['energia vs. cDBS contínua', f(sim.energyVsContinuous, 3), f(instant.energyVsContinuous, 3), '1,0 = mesma energia da estimulação contínua na amplitude máxima']
+      ]));
+
+      if (sug) {
+        node.appendChild(el('h4', { class: 'qc-title', html: '<b>Sugestões de limiar</b> — cada critério responde a uma pergunta diferente' }));
+        node.appendChild(table(['critério', 'inferior', 'superior', 'racional'],
+          sug.suggestions.map(x => [x.criterion, x.lower, x.upper,
+            x.rationale + (x.caveat ? ` — ${x.caveat}` : '')])));
+      }
+
+      node.appendChild(exportRow([
+        { label: '⤓ PNG', fn: () => P.downloadCanvas(box.canvas, 'F23_simulador_adbs') },
+        { label: '⤓ CSV elegibilidade', fn: () => P.downloadText(P.toCSV(el2.hemispheres.flatMap(x => x.criteria.map(c => ({
+          hemisferio: x.hemisphere, veredito_global: x.verdict, criterio: c.rotulo,
+          veredito: c.veredito, evidencia: c.evidencia, pendencia: c.pendencia || ''
+        })))), 'F23_elegibilidade_adbs.csv', 'text/csv') },
+        { label: '⤓ CSV simulação', fn: () => P.downloadText(P.toCSV(sim.times.map((t, i) => ({
+          utc: new Date(t).toISOString(), potencia: serie[i].v,
+          suavizada: +sim.smoothed[i].toFixed(4), amplitude_mA: +sim.delivered[i].toFixed(4)
+        }))), 'F23_simulacao_adbs.csv', 'text/csv') }
+      ]));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Por que a constante do aparelho importa.</b> O dispositivo suaviza o sinal antes de decidir ` +
+          `(<code>AveragingDurationInMilliSeconds</code>, tipicamente 3000 ms) e sobe/desce por rampa. Sem aplicar isso, a simulação ` +
+          `<b>superestima</b> o número de transições — a coluna "decisão instantânea" mostra exatamente essa diferença. ` +
+          `<b>Desafios de programação</b> nomeados por Busch et al. (8 pacientes em limiar duplo, avaliação ecológica em casa por 2 semanas em cada modo): ` +
+          `seleção do biomarcador, definição do limiar e <b>maladaptação relacionada a artefato</b> — verifique a F17 antes de fixar limiares.`
       }));
     }
   }
