@@ -56,9 +56,15 @@ Estado atual (verificado):
 | `artifact/ecg.js` | `dsp`, `stats` |
 | `stats/circadian.js`, `stats/events.js`, `stats/states.js` | `stats`, `dsp`, `io` |
 | `metrics/**` | `dsp`, `stats`, `io` |
+| `report/reading.js` | `profiles` (só o perfil; nenhuma dependência de DSP) |
 
 A camada de apresentação (`src/app.js`, `src/percept-plot.js`) é consumidora do núcleo e nunca é
 importada por ele.
+
+Corolário que a Onda 8.1 tornou explícito: **as frases em linguagem clínica também são núcleo**.
+`report/reading.js` recebe a saída de `extractMetrics` e o painel de QC e devolve texto com
+parâmetro e ressalva embutidos; `src/app.js` apenas o exibe. Interpretar dentro da interface
+tornaria a leitura impossível de testar — e é justamente ela que o médico lê primeiro.
 
 ## Como o bundle único é gerado
 

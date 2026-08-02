@@ -1310,6 +1310,106 @@ sec('desempenho e retorno de processo');
   });
 }
 
+/* ------------------------- modo clínico e leituras em prosa (Onda 8.1) ----- */
+sec('modo clínico, leituras em linguagem simples e pipelines');
+{
+  const b81 = C.extractMetrics(parsed, -180, { profileId: 'pd' });
+  const painel81 = C.qcPanel(parsed, { band: [13, 35] });
+  const r81 = C.clinicalReadings(b81, { profileId: 'pd', qcPanel: painel81 });
+
+  t('leituras cobrem os seis domínios, por hemisfério', () => {
+    assert(r81, 'sem leituras');
+    const ids = new Set(r81.readings.map(l => l.id));
+    ['pico', 'aperiodico', 'bursts', 'circadiano', 'limiares', 'estados'].forEach(k =>
+      assert(ids.has(k), 'domínio ausente: ' + k));
+    return `${r81.readings.length} leituras · domínios: ${Array.from(ids).join(', ')}`;
+  });
+
+  t('toda leitura com número declara o parâmetro que o produziu', () => {
+    const semParam = r81.readings.filter(l => l.numeros && !l.parametro);
+    assert(!semParam.length, 'sem parâmetro declarado: ' + semParam.map(l => l.id).join(', '));
+    return `${r81.readings.filter(l => l.parametro).length} leituras declaram parâmetro`;
+  });
+
+  t('toda leitura conclusiva traz ressalva explícita', () => {
+    const semRessalva = r81.readings.filter(l => l.nivel === 'ok' && !l.ressalva);
+    assert(!semRessalva.length, 'sem ressalva: ' + semRessalva.map(l => l.id).join(', '));
+    return `${r81.readings.filter(l => l.ressalva).length}/${r81.readings.length} com ressalva`;
+  });
+
+  t('nenhuma leitura sugere uso diagnóstico ou substituição do software regulado', () => {
+    /* invariante 6 do contrato: não é dispositivo médico. O teste varre TODO o
+       texto exposto ao usuário, não só o disclaimer. */
+    const proibido = /\b(diagnostic[ao]|diagnostica(?:r|do)|cura|prognóstico|substitui\s+o\s+(?:julgamento|software)|indica(?:do|ção)\s+terapêutic)/i;
+    const texto = r81.readings.map(l => [l.titulo, l.frase, l.numeros, l.parametro, l.ressalva].join(' ')).join('\n');
+    const achado = texto.split('\n').find(linha => proibido.test(linha));
+    assert(!achado, 'termo proibido em: ' + String(achado).slice(0, 120));
+    assert(/não substituem o julgamento clínico/.test(r81.disclaimer), 'disclaimer sem a ressalva obrigatória');
+    return 'nenhum termo diagnóstico nas leituras; disclaimer presente';
+  });
+
+  t('dado ausente vira "não é possível determinar", nunca um número inventado', () => {
+    const vazio = { subject: { id: 'sub-0', profile_id: 'pd' }, acute: [{ hemisphere: 'Left', target: 'Stn' }], chronic: [] };
+    const r = C.clinicalReadings(vazio, { profileId: 'pd' });
+    const insuf = r.readings.filter(l => l.nivel === 'insuficiente');
+    assert(insuf.length >= 2, 'esperava leituras insuficientes, veio ' + insuf.length);
+    assert(insuf.every(l => !/\d+,\d/.test(l.numeros || '')), 'leitura insuficiente trouxe número');
+    return `${insuf.length} leituras declaram dado insuficiente, sem números`;
+  });
+
+  t('semáforo de QC resume sem esconder o que não é verificável', () => {
+    const sf = C.qcTrafficLight(painel81);
+    assert(['verde', 'amarelo', 'vermelho', 'cinza'].includes(sf.cor), 'cor inválida: ' + sf.cor);
+    if (sf.naoVerificaveis > 0) assert(/não são verificáveis/.test(sf.frase), 'não declarou itens não verificáveis');
+    const semPainel = C.qcTrafficLight(null);
+    assert(semPainel.cor === 'cinza', 'sem painel deveria ser cinza');
+    return `${sf.cor} — ${sf.rotulo} · ${sf.naoVerificaveis} item(ns) não verificáveis`;
+  });
+
+  t('modo clínico mostra as figuras do perfil; modo pesquisa mostra todas', () => {
+    const antes = H.S.mode, perfilAntes = H.S.profile;
+    H.S.profile = 'pd'; H.S.mode = 'clinico';
+    const clin = H.figurasVisiveis().map(f => f.id);
+    H.S.mode = 'pesquisa';
+    const pesq = H.figurasVisiveis().map(f => f.id);
+    H.S.mode = antes; H.S.profile = perfilAntes;
+    assert(clin.length === 6, 'modo clínico com ' + clin.length + ' figuras');
+    assert(pesq.length === H.FIGURES.length, 'modo pesquisa deveria mostrar todas');
+    return `clínico: ${clin.join(' ')} · pesquisa: ${pesq.length} figuras`;
+  });
+
+  t('toda figura declarada nos perfis existe de fato', () => {
+    const ids = new Set(H.FIGURES.map(f => f.id));
+    const faltando = [];
+    C.PROFILE_IDS.forEach(pid => (C.PROFILES[pid].clinicalFigures || []).forEach(fid => {
+      if (!ids.has(fid)) faltando.push(pid + ':' + fid);
+    }));
+    assert(!faltando.length, 'figura inexistente: ' + faltando.join(', '));
+    return `${C.PROFILE_IDS.length} perfis, todas as figuras clínicas existem`;
+  });
+
+  t('trocar de modo não muda nenhum número calculado', () => {
+    const antes = H.S.mode;
+    H.S.mode = 'clinico';
+    const a = JSON.stringify(H.exportBundle().chronic);
+    H.S.mode = 'pesquisa';
+    const b = JSON.stringify(H.exportBundle().chronic);
+    H.S.mode = antes;
+    assert(a === b, 'as métricas mudaram com o modo');
+    return 'métricas crônicas idênticas nos dois modos';
+  });
+
+  t('pipelines apontam para figuras existentes e trazem uma exportação', () => {
+    const ids = new Set(H.FIGURES.map(f => f.id));
+    H.PIPELINES.forEach(pl => {
+      assert(pl.figs.length && pl.figs.every(x => ids.has(x)), 'figura inexistente no pipeline ' + pl.id);
+      assert(typeof pl.exportar === 'function', 'pipeline sem exportação: ' + pl.id);
+      assert(pl.desc && pl.desc.length > 20, 'pipeline sem descrição: ' + pl.id);
+    });
+    return `${H.PIPELINES.length} pipelines: ${H.PIPELINES.map(p => p.id).join(', ')}`;
+  });
+}
+
 /* ------------------------------------------------------------- resultado -- */
 console.log(`\n${'='.repeat(58)}`);
 console.log(`  ${ok} passaram   ${falhas} falharam   ${pulados} sem dados`);

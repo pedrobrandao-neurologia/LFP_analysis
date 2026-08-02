@@ -20,6 +20,12 @@
     <span>STN · potenciais de campo local · análise local</span>
   </div>
   <div class="tools">
+    <!-- Onda 8.1: modo clínico mostra seis figuras com leitura em linguagem
+         simples e uma exportação; modo pesquisa mostra tudo. -->
+    <div class="modeswitch" role="group" aria-label="modo de uso">
+      <button type="button" id="modoClinico" data-modo="clinico">clínico</button>
+      <button type="button" id="modoPesquisa" data-modo="pesquisa">pesquisa</button>
+    </div>
     <label class="field">fuso
       <select id="tz">
         <option value="auto">do arquivo</option>

@@ -159,7 +159,46 @@ const S = {
   opts: {},             // opções por figura
   profile: null,        // id do perfil de doença; null = sugerir pelo JSON
   symptomSeries: null,  // série clínica importada (distonia): [{t, v}]
+  mode: 'clinico',      // 'clinico' | 'pesquisa' (Onda 8.1)
 };
+
+/* ============================================= preferências de interface ==
+   APENAS preferências de interface — o modo de uso e a dispensa do tutorial.
+   Nenhum dado de paciente, nome de arquivo ou métrica é gravado: o
+   armazenamento local nunca vê o conteúdo do JSON. Se o navegador bloquear o
+   armazenamento (janela anônima, política restritiva), tudo continua
+   funcionando com os padrões. */
+const PREF_KEY = 'pls.prefs.v1';
+function lerPrefs() {
+  try { return JSON.parse(localStorage.getItem(PREF_KEY) || '{}') || {}; } catch (e) { return {}; }
+}
+function salvarPref(chave, valor) {
+  try { const o = lerPrefs(); o[chave] = valor; localStorage.setItem(PREF_KEY, JSON.stringify(o)); } catch (e) { /* sem armazenamento: segue com o padrão */ }
+}
+
+/* ============================================================== modos ====
+   Modo CLÍNICO: as seis figuras que respondem às perguntas de consultório
+   (definidas por perfil de doença, em profiles/index.js), cada uma com a
+   leitura em linguagem simples no topo, um semáforo de qualidade e um botão de
+   exportação. Modo PESQUISA: todas as figuras, todos os controles, todas as
+   exportações e os pipelines de um clique.
+
+   O modo muda O QUE É MOSTRADO, nunca COMO É CALCULADO: os mesmos números, as
+   mesmas ressalvas, os mesmos parâmetros declarados. */
+function modoAtual() { return S.mode === 'pesquisa' ? 'pesquisa' : 'clinico'; }
+function ehClinico() { return modoAtual() === 'clinico'; }
+function setModo(m) {
+  if (modoAtual() === m) return;
+  S.mode = m; salvarPref('modo', m);
+  marcarModo();
+  renderAll(m === 'clinico' ? 'Modo clínico' : 'Modo pesquisa');
+}
+function marcarModo() {
+  ['clinico', 'pesquisa'].forEach(m => {
+    const b = document.getElementById('modo' + m[0].toUpperCase() + m.slice(1));
+    if (b) b.setAttribute('aria-pressed', String(modoAtual() === m));
+  });
+}
 
 /* Perfil de doença ativo (Onda 5). Sugerido a partir de Diagnosis e
    LeadLocation, confirmado ou trocado pelo usuário, e persistido. Nenhuma banda
@@ -225,7 +264,7 @@ function offMin() {
 let _dsCache = null, _dsChave = null, _dsVersao = 0;
 /* Invalidação explícita: trocar o conteúdo de um arquivo pelo mesmo nome não
    muda a chave textual, então quem mexe em S.files avisa aqui. */
-function invalidarDs() { _dsVersao++; _dsCache = null; }
+function invalidarDs() { _dsVersao++; _dsCache = null; _bundleCache = null; _leiturasCache = null; }
 function ds() {
   const chave = _dsVersao + "|" + S.files.length + "|" + S.files.map(x => x.name).join("~") + "|" + (S.subject || "");
   if (_dsCache && _dsChave === chave) return _dsCache;
@@ -1865,8 +1904,9 @@ function renderRail() {
     cr.appendChild(br); rail.appendChild(cr);
   }
 
-  /* matriz de disponibilidade */
-  if (S.files.length) {
+  /* matriz de disponibilidade — detalhe de pesquisa; no modo clínico o que
+     interessa é o semáforo de qualidade, não a contagem por modalidade */
+  if (S.files.length && !ehClinico()) {
     const cm = el('div', { class: 'card' }, [el('h3', {}, ['Matriz de dados'])]);
     const b = el('div', { class: 'body' });
     const t = el('table', { class: 'matrix' });
@@ -1889,6 +1929,16 @@ function renderRail() {
       el('span', { html: '<i style="background:var(--panel-2);border:1px solid var(--rule-2)"></i>ausente' })
     ]));
     cm.appendChild(b); rail.appendChild(cm);
+  }
+
+  if (S.files.length) {
+    /* semáforo de qualidade (modo clínico) — versão de uma linha do painel F17 */
+    if (ehClinico()) {
+      const cq = el('div', { class: 'card' }, [el('h3', {}, ['Qualidade do sinal'])]);
+      const bq = el('div', { class: 'body', id: 'semaforoBody' });
+      bq.appendChild(el('div', { class: 'note', text: 'calculando…' }));
+      cq.appendChild(bq); rail.appendChild(cq);
+    }
 
     /* resumo do caso */
     const p0 = (activeFiles()[0] || S.files[0]).parsed;
@@ -1933,6 +1983,23 @@ function renderRail() {
     /* exportação */
     const ce = el('div', { class: 'card' }, [el('h3', {}, ['Exportar'])]);
     const be = el('div', { class: 'body' });
+    if (ehClinico()) {
+      /* um botão. O relatório já leva a capa com as leituras, as figuras e as
+         ressalvas — é o que sai da consulta. */
+      const grid1 = el('div', { class: 'exportgrid' });
+      grid1.appendChild(el('div', { class: 'exportitem' }, [
+        el('button', { class: 'btn primary', text: '⤓ Relatório clínico (PDF)', onclick: generateReport }),
+        el('span', { class: 'exphint', text: 'capa com as leituras em linguagem simples, as seis figuras e as ressalvas de cada número' })
+      ]));
+      be.appendChild(grid1);
+      be.appendChild(el('div', {
+        class: 'note', style: 'margin-top:9px',
+        html: 'CSV, JSON para estatística, PNG individuais, checklist PERCEPT-REPORT e manifesto de ' +
+          'proveniência estão no <b>modo pesquisa</b>.'
+      }));
+      ce.appendChild(be); rail.appendChild(ce);
+      return;
+    }
     const grid = el('div', { class: 'exportgrid' });
     [
       ['⤓ Relatório PDF', 'todas as figuras + resumo de métricas', generateReport, 'primary'],
@@ -1952,7 +2019,97 @@ function renderRail() {
     });
     be.appendChild(grid);
     ce.appendChild(be); rail.appendChild(ce);
+
+    /* pipelines de um clique */
+    const cpl = el('div', { class: 'card' }, [el('h3', {}, ['Pipelines de um clique'])]);
+    const bpl = el('div', { class: 'body' });
+    const pipes = el('div', { class: 'pipes' });
+    PIPELINES.forEach(pl => pipes.appendChild(el('div', { class: 'pipe' }, [
+      el('button', { class: 'btn', text: '▶ ' + pl.label, onclick: () => rodarPipeline(pl) }),
+      el('span', { text: pl.desc })
+    ])));
+    bpl.appendChild(pipes);
+    bpl.appendChild(el('div', {
+      class: 'note', style: 'margin-top:9px',
+      html: 'Cada pipeline abre as figuras da pergunta, calcula e entrega o arquivo correspondente. ' +
+        'Nada é decidido por você: os parâmetros continuam os das figuras, e ficam declarados na exportação.'
+    }));
+    cpl.appendChild(bpl); rail.appendChild(cpl);
   }
+}
+
+/* ------------------------------------------------ pipelines de um clique */
+/* Sequências prontas para as três perguntas mais frequentes. Existem porque a
+   ordem certa de olhar as figuras é conhecimento embutido — e porque, com o
+   painel de processo, uma sequência longa passou a ser legível. */
+const PIPELINES = [
+  {
+    id: 'adbs', label: 'Triagem de elegibilidade a aDBS',
+    desc: 'abre F23 (elegibilidade e simulador), F16 (reprodutibilidade do pico) e F17 (QC), e exporta o CSV crônico',
+    figs: ['F23', 'F16', 'F17'], exportar: () => exportChronicCSV()
+  },
+  {
+    id: 'circadiano', label: 'Perfil circadiano completo',
+    desc: 'abre F8, F9, F11 e F12, e exporta o CSV de métricas crônicas',
+    figs: ['F8', 'F9', 'F11', 'F12'], exportar: () => exportChronicCSV()
+  },
+  {
+    id: 'qualidade', label: 'Auditoria de qualidade do sinal',
+    desc: 'abre F15, F16 e F17, e exporta o manifesto de proveniência com o hash citável',
+    figs: ['F15', 'F16', 'F17'], exportar: () => exportManifest()
+  }
+];
+
+async function rodarPipeline(pl) {
+  if (!S.files.length) return alert('Carregue ao menos um arquivo antes de rodar um pipeline.');
+  const d = ds();
+  const alvos = pl.figs.map(id => FIGURES.find(f => f.id === id)).filter(f => f && f.has(d));
+  const ausentes = pl.figs.filter(id => !alvos.some(f => f.id === id));
+  Prog.begin('Pipeline — ' + pl.label).expect(alvos.length + 1);
+  try {
+    for (const fig of alvos) {
+      const det = document.getElementById('fig-' + fig.id);
+      if (det) det.open = true;
+      if (_renderizadas.has(fig.id)) { await Prog.step(`figura ${fig.id} — já calculada`); continue; }
+      await Prog.step(`figura ${fig.id} — ${fig.title}`);
+      renderFigure(fig.id);
+    }
+    await Prog.step('gerando o arquivo de saída');
+    await Prog.finish(ausentes.length
+      ? `pipeline concluído — sem dados para ${ausentes.join(', ')}`
+      : 'pipeline concluído');
+    if (alvos.length) {
+      const primeiro = document.getElementById('fig-' + alvos[0].id);
+      if (primeiro && primeiro.scrollIntoView) primeiro.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    await pl.exportar();
+  } catch (e) { Prog.fail(e); }
+}
+
+/* Preenche o semáforo de qualidade do modo clínico. Roda depois das figuras,
+   porque o painel de QC é caro — e por isso também é uma etapa anunciada. */
+function preencherSemaforo() {
+  const alvo = document.getElementById('semaforoBody');
+  if (!alvo || !S.files.length) return null;
+  const r = leiturasClinicas();
+  alvo.innerHTML = '';
+  if (!r) { alvo.appendChild(el('div', { class: 'note', text: 'sem métricas para avaliar.' })); return null; }
+  const sf = r.semaforo;
+  const bloco = el('div', { class: 'semaforo ' + sf.cor }, [
+    el('i', {}),
+    el('div', {}, [el('b', { text: sf.rotulo }), el('span', { text: sf.frase })])
+  ]);
+  if (sf.bloqueios.length) {
+    const ul = el('ul', {});
+    sf.bloqueios.forEach(x => ul.appendChild(el('li', { text: x })));
+    bloco.lastChild.appendChild(ul);
+  }
+  alvo.appendChild(bloco);
+  alvo.appendChild(el('div', {
+    class: 'note', style: 'margin-top:9px',
+    html: 'O item a item de cada verificação está no <b>painel F17</b>, no modo pesquisa.'
+  }));
+  return r;
 }
 
 /* Figuras abertas automaticamente ao carregar. São as de leitura imediata; as
@@ -1962,9 +2119,18 @@ function renderRail() {
 const AUTO_ABRIR = ['F1', 'F8', 'F9'];
 const _renderizadas = new Set();
 
+/* Conjunto de figuras visível no modo corrente. No modo clínico vem do perfil
+   de doença (declarativo, em profiles/index.js); no modo pesquisa, tudo. */
+function figurasVisiveis() {
+  if (!ehClinico()) return FIGURES;
+  const ids = activeProfile().clinicalFigures || AUTO_ABRIR;
+  return FIGURES.filter(f => ids.includes(f.id));
+}
+
 async function renderFigures() {
   const main = $('#figs'); main.innerHTML = '';
   _renderizadas.clear();
+  if (primeiraVisita()) main.appendChild(cartaoPrimeirosPassos());
   if (!S.files.length) {
     main.appendChild(el('div', { class: 'card' }, [el('div', {
       class: 'body', html:
@@ -1975,11 +2141,14 @@ async function renderFigures() {
     return;
   }
   const d = ds();
+  const visiveis = figurasVisiveis();
   const abrir = [];
-  FIGURES.forEach(fig => {
+  visiveis.forEach(fig => {
     const ok = !!fig.has(d);
     const det = el('details', { class: 'fig ' + (ok ? 'ready' : 'na'), id: 'fig-' + fig.id });
-    if (ok && AUTO_ABRIR.includes(fig.id)) abrir.push(fig);
+    /* no modo clínico as seis figuras já vêm abertas: são poucas e é o que a
+       pessoa veio ver. No modo pesquisa só as três de leitura imediata. */
+    if (ok && (ehClinico() || AUTO_ABRIR.includes(fig.id))) abrir.push(fig);
     det.appendChild(el('summary', {}, [el('header', {}, [
       el('span', { class: 'chev', text: '▸' }),
       el('span', { class: 'id', text: fig.id }),
@@ -2006,6 +2175,65 @@ async function renderFigures() {
     if (det) det.open = true;
     renderFigure(fig.id);
   }
+  /* leituras e semáforo são caros (métricas + painel de QC) e por isso vêm
+     depois das figuras, como etapa própria e anunciada */
+  if (ehClinico() && S.files.length) {
+    if (Prog.ativo) await Prog.step('leituras em linguagem clínica e semáforo de qualidade');
+    else await proximoQuadro();
+    try {
+      preencherSemaforo();
+      abrir.forEach(fig => inserirLeituras(fig.id));
+    } catch (e) { Prog.falhaEtapa(String(e && e.message || e)); }
+  }
+}
+
+/* Insere, no topo da figura, as leituras em linguagem simples que pertencem a
+   ela. O texto vem do núcleo (report/reading.js): a interface não interpreta
+   nada por conta própria. */
+function inserirLeituras(id) {
+  const node = document.getElementById('content-' + id);
+  if (!node) return;
+  const r = leiturasClinicas();
+  if (!r) return;
+  const minhas = r.readings.filter(l => l.figura === id);
+  if (!minhas.length) return;
+  const caixa = el('div', {});
+  minhas.forEach(l => caixa.appendChild(caixaLeitura(l)));
+  if (node.firstChild) node.insertBefore(caixa, node.firstChild);
+  else node.appendChild(caixa);
+}
+
+function caixaLeitura(l) {
+  const n = el('div', { class: 'leitura ' + l.nivel }, [
+    el('h4', { text: l.titulo }),
+    el('p', { text: l.frase })
+  ]);
+  if (l.numeros) n.appendChild(el('span', { class: 'num', text: l.numeros }));
+  if (l.parametro) n.appendChild(el('span', { class: 'par', text: 'parâmetros usados: ' + l.parametro }));
+  if (l.ressalva) n.appendChild(el('p', { class: 'res', html: '<b>Ressalva.</b> ' + l.ressalva }));
+  return n;
+}
+
+/* ------------------------------------------------------- primeiros passos */
+function primeiraVisita() { return !lerPrefs().tutorialVisto; }
+function cartaoPrimeirosPassos() {
+  const c = el('div', { class: 'onboard', id: 'onboard' }, [
+    el('h3', { text: 'Primeiros passos' }),
+    el('ol', {}, [
+      el('li', { html: 'Baixe do programador Percept o <b>Session Report em JSON</b> — não o PDF — e solte o arquivo aqui. Pode soltar vários da mesma pessoa de uma vez.' }),
+      el('li', { html: 'No <b>modo clínico</b> (atual) aparecem seis figuras com a leitura em linguagem simples no topo de cada uma, um semáforo de qualidade do sinal e um botão de relatório.' }),
+      el('li', { html: 'No <b>modo pesquisa</b> aparecem todas as figuras, todos os controles de parâmetro, as exportações em CSV/JSON/PNG, o checklist PERCEPT-REPORT e o manifesto de proveniência.' }),
+      el('li', { html: 'Cada número vem com o <b>parâmetro que o produziu</b> e a <b>ressalva</b> que ele exige. Quando o dado não sustenta uma conclusão, o texto diz isso em vez de inventar um valor.' })
+    ]),
+    el('p', { html: 'Nenhum dado sai deste dispositivo: leitura, cálculo e figuras acontecem no navegador. ' +
+      'Nome, data de nascimento e número de série nunca passam do leitor de arquivo. ' +
+      'Ferramenta de pesquisa e apoio à decisão — não substitui o julgamento clínico nem o software regulado do fabricante.' })
+  ]);
+  c.appendChild(el('button', {
+    class: 'btn primary', text: 'entendi',
+    onclick: () => { salvarPref('tutorialVisto', true); const o = document.getElementById('onboard'); if (o && o.remove) o.remove(); }
+  }));
+  return c;
 }
 
 function renderFigure(id) {
@@ -2027,7 +2255,12 @@ function renderFigure(id) {
     node.appendChild(el('div', { class: 'warnbox', html: `<b>Falha ao gerar a figura.</b> ${String(e && e.message || e)}` }));
     console.error(id, e);
   }
+  /* redesenhar a figura (troca de parâmetro, redimensionamento) não pode perder
+     a leitura clínica. Só reinsere se as leituras JÁ estiverem calculadas — o
+     primeiro cálculo é uma etapa anunciada, não um efeito colateral daqui. */
+  if (ehClinico() && leiturasProntas()) inserirLeituras(id);
 }
+function leiturasProntas() { return !!(_leiturasCache && _leiturasChave === chaveAnalise()); }
 
 /* Mesma coisa, mas anunciando o cálculo antes de bloquear a thread. */
 async function renderFigureAsync(id) {
@@ -2132,9 +2365,40 @@ function exportSession() {
 }
 
 /* ---------------------------------------------- exportação de métricas -- */
+/* extractMetrics custa mais de um segundo em registros longos e é chamado por
+   toda exportação, pelo relatório e pelas leituras clínicas. Memoizado pela
+   mesma chave do agregado, mais o que muda o resultado: perfil e fuso. */
+let _bundleCache = null, _bundleChave = null;
+function chaveAnalise() {
+  return _dsVersao + '|' + S.files.map(x => x.name).join('~') + '|' + (S.subject || '') +
+    '|' + activeProfileId() + '|' + offMin();
+}
 function exportBundle() {
   const ps = activeFiles().map(x => x.parsed);
-  return ps.length ? C.extractMetrics(ps, offMin(), { profileId: activeProfileId() }) : null;
+  if (!ps.length) return null;
+  const chave = chaveAnalise();
+  if (_bundleCache && _bundleChave === chave) return _bundleCache;
+  _bundleCache = C.extractMetrics(ps, offMin(), { profileId: activeProfileId() });
+  _bundleChave = chave;
+  return _bundleCache;
+}
+
+/* Leituras em linguagem clínica + semáforo de QC. Também memoizadas: o painel
+   de QC roda detecção de picos R e validação de artefato, e não pode ser
+   refeito a cada figura. */
+let _leiturasCache = null, _leiturasChave = null;
+function leiturasClinicas() {
+  const ps = activeFiles().map(x => x.parsed);
+  if (!ps.length) return null;
+  const chave = chaveAnalise();
+  if (_leiturasCache && _leiturasChave === chave) return _leiturasCache;
+  const b = exportBundle();
+  const pb = activeProfile().primaryBand;
+  let painel = null;
+  try { painel = C.qcPanel(ps, { band: [pb.lo, pb.hi] }); } catch (e) { painel = null; }
+  _leiturasCache = C.clinicalReadings(b, { profileId: activeProfileId(), qcPanel: painel });
+  _leiturasChave = chave;
+  return _leiturasCache;
 }
 function unionKeys(rows) {
   const seen = new Set(), out = [];
@@ -2176,7 +2440,7 @@ async function exportChronicCSV() {
    calculadas não são refeitas. */
 async function renderAllReady(titulo) {
   const d = ds();
-  const pendentes = FIGURES.filter(fig => fig.has(d));
+  const pendentes = figurasVisiveis().filter(fig => fig.has(d));
   const proprio = !Prog.ativo;
   if (proprio) Prog.begin(titulo || 'Preparando todas as figuras');
   Prog.expect(pendentes.length);
@@ -2200,7 +2464,7 @@ async function downloadAllFigures() {
   await renderAllReady('Exportando todas as figuras (PNG)');
   setTimeout(() => {
     const d = ds(), jobs = [];
-    FIGURES.forEach(fig => {
+    figurasVisiveis().forEach(fig => {
       if (!fig.has(d)) return;
       const node = document.getElementById('content-' + fig.id);
       const cvs = node ? Array.from(node.querySelectorAll('canvas')) : [];
@@ -2379,6 +2643,19 @@ function buildReportCover(b) {
       ])
     ));
   }
+  /* Leituras em linguagem clínica — o que o médico lê primeiro. Vêm do núcleo
+     (report/reading.js), com o parâmetro usado e a ressalva de cada número. */
+  const lc = leiturasProntas() ? _leiturasCache : null;
+  if (lc) {
+    wrap.appendChild(el('h3', { class: 'rc-h', text: 'Leitura em linguagem clínica' }));
+    const sf = lc.semaforo;
+    wrap.appendChild(el('div', { class: 'semaforo ' + sf.cor, style: 'margin:0 0 12px' }, [
+      el('i', {}), el('div', {}, [el('b', { text: 'Qualidade do sinal — ' + sf.rotulo }), el('span', { text: sf.frase })])
+    ]));
+    lc.readings.forEach(l => wrap.appendChild(caixaLeitura(l)));
+    wrap.appendChild(el('div', { class: 'note rc-note', text: lc.disclaimer }));
+  }
+
   wrap.appendChild(el('h3', { class: 'rc-h', text: 'Como ler estas métricas' }));
   const gl = el('dl', { class: 'kv rc-gloss' });
   const g = (k, v) => { gl.appendChild(el('dt', { text: k })); gl.appendChild(el('dd', { html: v })); };
@@ -2411,9 +2688,11 @@ async function generateReport() {
   if (!S.files.length) return alert('Carregue ao menos um Session Report antes de gerar o relatório.');
   Prog.begin('Gerando relatório PDF');
   await renderAllReady();
-  Prog.expect(2);
+  Prog.expect(3);
   await Prog.step('calculando o resumo de métricas da capa');
   const bundle = exportBundle();
+  await Prog.step('escrevendo as leituras em linguagem clínica');
+  try { leiturasClinicas(); } catch (e) { Prog.falhaEtapa(String(e && e.message || e)); }
   await Prog.step('montando a capa e abrindo a caixa de impressão');
   const main = $('#figs');
   const old = document.getElementById('report-cover'); if (old) old.remove();
@@ -2430,6 +2709,9 @@ async function generateReport() {
 }
 
 function init() {
+  const prefs = lerPrefs();
+  if (prefs.modo === 'clinico' || prefs.modo === 'pesquisa') S.mode = prefs.modo;
+  marcarModo();
   $('#fileInput').addEventListener('change', e => { handleFiles(e.target.files); e.target.value = ''; });
   $('#btnExport').addEventListener('click', exportSession);
   $('#btnPrint').addEventListener('click', generateReport);
@@ -2439,6 +2721,10 @@ function init() {
   });
   const px = document.getElementById('procX');
   if (px) px.addEventListener('click', () => { const p = document.getElementById('proc'); if (p) p.hidden = true; });
+  ['clinico', 'pesquisa'].forEach(m => {
+    const b = document.getElementById('modo' + m[0].toUpperCase() + m.slice(1));
+    if (b) b.addEventListener('click', () => setModo(m));
+  });
   ['dragover', 'drop'].forEach(ev => document.addEventListener(ev, e => e.preventDefault()));
   document.addEventListener('drop', e => { if (e.dataTransfer && e.dataTransfer.files.length) handleFiles(e.dataTransfer.files); });
   let rt; window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => { if (S.files.length) $$('.fig[open]').forEach(f => renderFigure(f.id.replace('fig-', ''))); }, 260); });
@@ -2457,5 +2743,5 @@ function init() {
 }
 document.addEventListener('DOMContentLoaded', init);
 /* hook de depuração (usado pela suíte de testes; inerte em produção) */
-window.__PLS__ = { FIGURES, ds, invalidarDs, S, renderRail, renderFigure, renderFigureAsync, renderAllReady, handleFiles, offMin, exportBundle, buildReportCover, Prog, proximoQuadro };
+window.__PLS__ = { FIGURES, ds, invalidarDs, S, renderRail, renderFigure, renderFigureAsync, renderAllReady, handleFiles, offMin, exportBundle, buildReportCover, Prog, proximoQuadro, setModo, modoAtual, figurasVisiveis, leiturasClinicas, PIPELINES, rodarPipeline, preencherSemaforo, inserirLeituras };
 })();

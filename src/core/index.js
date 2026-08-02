@@ -26,6 +26,7 @@ import { extractMetrics, daysSince } from './metrics/extract.js';
 import { PROFILES, PROFILE_IDS, getProfile, suggestProfile, bandsOf, normalizeSpectrum, detectTremorFrequency, spearman, movingAverageDays } from './profiles/index.js';
 import { createProvenance, verifyManifest, sha256Hex, canonical } from './provenance/index.js';
 import { generateChecklist, checklistDocx, CHECKLIST_ITEMS } from './report/checklist.js';
+import { clinicalReadings, qcTrafficLight } from './report/reading.js';
 import { makeZip, makeDocx, crc32 } from './export/zip.js';
 import { inferDeviceState, statesComparable } from './io/devicestate.js';
 import { dstTransitions, detectOffsetBreaks, resolveOffsets, segmentByOffset } from './io/timezone.js';
@@ -60,6 +61,8 @@ const API = {
   /* proveniência e padrão de reporte (Onda 7.2 — L49, L50) */
   createProvenance, verifyManifest, sha256Hex, canonical,
   generateChecklist, checklistDocx, CHECKLIST_ITEMS,
+  /* leituras em linguagem clínica e semáforo de QC (Onda 8.1) */
+  clinicalReadings, qcTrafficLight,
   makeZip, makeDocx, crc32,
   /* fidelidade e QC (Ondas 1.3 e 2.2 — L03, L04, L06, L13–L17, L19) */
   inferDeviceState, statesComparable,

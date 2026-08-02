@@ -89,6 +89,25 @@ definição entre centros como um JSON de perfil.
 
 **Epilepsia** — *J Neural Eng* 2024. doi:10.1088/1741-2552/ad1dc3.
 
+## Figuras do modo clínico
+
+Cada perfil declara, em `clinicalFigures`, as seis figuras que o modo clínico mostra. É uma
+escolha do perfil, não da interface — mostrar F13 (estados ON/OFF pela amplitude do beta) num
+paciente com distonia sugeriria uma leitura que o dado não sustenta, já que o detector é definido
+sobre beta.
+
+| perfil | figuras do modo clínico |
+| --- | --- |
+| Parkinson | F1, F6, F8, F9, F11, F13 |
+| Distonia | F1, F5, F6, F8, F9, F11 |
+| Tremor essencial | F1, F5, F6, F8, F9, F11 |
+| Epilepsia | F1, F5, F6, F8, F9, F11 |
+| Genérico | F1, F6, F8, F9, F11, F13 |
+
+Há teste que falha se um perfil declarar uma figura inexistente.
+
+---
+
 ## Como adicionar um perfil
 
 1. Acrescente uma entrada em `PROFILES` (`src/core/profiles/index.js`) com `bands`, `primaryBand`,

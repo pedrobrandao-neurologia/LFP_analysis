@@ -86,6 +86,47 @@ valores conhecidos — a suíte de testes verifica que o pipeline os recupera.
 
 ---
 
+## Dois modos de uso
+
+O alternador no cabeçalho decide **o que é mostrado**, nunca **como é calculado**: os mesmos
+números, as mesmas ressalvas, os mesmos parâmetros declarados nos dois modos. A escolha fica
+guardada no navegador (apenas a preferência de interface — nenhum dado de paciente é gravado).
+
+### Modo clínico — o que sai da consulta
+
+- **Seis figuras**, escolhidas pelo **perfil de doença** (campo `clinicalFigures` em
+  `src/core/profiles/index.js`): em Parkinson, F1 · F6 · F8 · F9 · F11 · F13; em distonia e
+  tremor essencial, F13 sai (o detector de estados é definido sobre beta e não descreve essas
+  condições) e entra F5, o mapa de canais.
+- **Leitura em linguagem simples no topo de cada figura**, gerada em `src/core/report/reading.js`
+  a partir das métricas — a interface não interpreta nada por conta própria. Cada leitura traz
+  quatro partes fixas: a frase, os números, **os parâmetros que produziram aqueles números** e a
+  **ressalva** que eles exigem.
+- **Semáforo de qualidade do sinal** — a versão de uma linha do painel F17, que sempre informa
+  quantos itens **não são verificáveis** com aquele dado: ausência de informação não é aprovação.
+- **Um botão de exportação**: o relatório clínico em PDF, com as leituras na capa.
+
+Quando o dado não sustenta uma conclusão, a leitura diz isso — *"não há Timeline suficiente deste
+lado para descrever o ritmo de 24 horas"* — e indica o que capturar na próxima sessão. Nenhuma
+leitura sugere diagnóstico, prognóstico ou substituição do software regulado do fabricante; há
+teste automatizado varrendo todo o texto exposto ao usuário atrás desses termos.
+
+### Modo pesquisa — tudo
+
+Todas as figuras, todos os controles de parâmetro, as nove exportações (CSV, JSON, PNG, checklist
+PERCEPT-REPORT, manifesto de proveniência) e os **pipelines de um clique**:
+
+| pipeline | abre | entrega |
+| --- | --- | --- |
+| Triagem de elegibilidade a aDBS | F23, F16, F17 | CSV de métricas crônicas |
+| Perfil circadiano completo | F8, F9, F11, F12 | CSV de métricas crônicas |
+| Auditoria de qualidade do sinal | F15, F16, F17 | manifesto de proveniência com o hash citável |
+
+Um pipeline não decide nada por você: os parâmetros continuam sendo os das figuras, e vão
+declarados na exportação.
+
+---
+
 ## Figuras
 
 A coluna **Leitura clínica** resume, em uma frase, o que cada figura diz ao médico.

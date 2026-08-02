@@ -37,6 +37,9 @@ export const PROFILES = {
       { key: 'gamma', label: 'γ', lo: 35, hi: 100, color: COR.gamma, clinicalReading: 'Gama; a faixa 55–95 Hz abriga a gama finamente sintonizada e a gama entrained pela estimulação.' }
     ],
     primaryBand: { lo: 13, hi: 35, label: 'beta' },
+    /* Onda 8.1 — figuras do modo clínico: as seis que respondem às perguntas de
+       consultório. O modo pesquisa continua mostrando todas. */
+    clinicalFigures: ['F1', 'F6', 'F8', 'F9', 'F11', 'F13'],
     peakSearch: [{ band: 'beta', lo: 13, hi: 35, method: 'aperiodic_corrected' }],
     normalization: 'aperiodic_corrected',
     burstBand: { lo: 13, hi: 30 }, burstMethodDefault: 'hilbert_percentile',
@@ -68,6 +71,11 @@ export const PROFILES = {
       { key: 'gamma', label: 'γ', lo: 35, hi: 100, color: COR.gamma, clinicalReading: 'Gama; pouco caracterizada em distonia.' }
     ],
     primaryBand: { lo: 4, hi: 12, label: 'teta-alfa' },
+    /* sem F13: o detector de estados ON/OFF é definido sobre beta e não
+       descreve a distonia — mostrá-lo aqui seria sugerir leitura que o dado
+       não sustenta. Entra F5, o mapa de canais, que orienta a escolha de
+       contatos de sensing. */
+    clinicalFigures: ['F1', 'F5', 'F6', 'F8', 'F9', 'F11'],
     peakSearch: [{ band: 'thetaalpha', lo: 4, hi: 12, method: 'aperiodic_corrected' }],
     /* normalização específica: minimiza contaminação espectral por movimentos
        distônicos fásicos e mioclonias (Thenaisie et al. 2021) */
@@ -107,6 +115,7 @@ export const PROFILES = {
       { key: 'highbeta', label: 'β↑', lo: 20, hi: 30, color: COR.highbeta, clinicalReading: 'Beta talâmico alto; apoio.' }
     ],
     primaryBand: { lo: 2, hi: 12, label: 'frequência do tremor' },
+    clinicalFigures: ['F1', 'F5', 'F6', 'F8', 'F9', 'F11'],
     peakSearch: [{ band: 'tremor', lo: 2, hi: 12, method: 'accelerometer_first' }],
     normalization: 'relative',
     burstBand: { lo: 3, hi: 10 }, burstMethodDefault: 'hilbert_percentile',
@@ -147,6 +156,7 @@ export const PROFILES = {
       { key: 'gamma', label: 'γ', lo: 35, hi: 100, color: COR.gamma, clinicalReading: 'Gama.' }
     ],
     primaryBand: { lo: 4, hi: 8, label: 'teta' },
+    clinicalFigures: ['F1', 'F5', 'F6', 'F8', 'F9', 'F11'],
     peakSearch: [{ band: 'theta', lo: 1, hi: 13, method: 'aperiodic_corrected' }],
     normalization: 'relative',
     burstBand: { lo: 4, hi: 13 }, burstMethodDefault: 'hilbert_percentile',
@@ -174,6 +184,7 @@ export const PROFILES = {
       { key: 'gamma', label: 'γ', lo: 35, hi: 100, color: COR.gamma, clinicalReading: '' }
     ],
     primaryBand: { lo: 13, hi: 35, label: 'banda primária' },
+    clinicalFigures: ['F1', 'F6', 'F8', 'F9', 'F11', 'F13'],
     peakSearch: [{ band: 'custom', lo: 13, hi: 35, method: 'aperiodic_corrected' }],
     normalization: 'relative',
     burstBand: { lo: 13, hi: 30 }, burstMethodDefault: 'hilbert_percentile',
