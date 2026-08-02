@@ -311,6 +311,116 @@ t('envelope de beta a partir do sinal bruto', () => {
   return `${ser.length} pontos de envelope`;
 });
 
+/* ------------------------------------ 8. integridade do sinal bruto (Onda 1) -- */
+sec('perda de pacotes, fs efetiva e NaN');
+{
+  /* série sintética: 20 pacotes de 63 amostras a 250 Hz, com os pacotes 5, 12 e 13 perdidos */
+  const NPK = 20, SZ = 63, FS = 250, MS = SZ / FS * 1000;   // 252 ms por pacote
+  const perdidos = new Set([5, 12, 13]);
+  const seqs = [], ticks = [], sizes = [];
+  for (let i = 0; i < NPK; i++) {
+    if (perdidos.has(i)) continue;
+    seqs.push(i % 256); ticks.push(Math.round(i * MS)); sizes.push(SZ);
+  }
+  const recebidas = new Float64Array((NPK - perdidos.size) * SZ).fill(1);
+
+  t('GlobalSequences detecta exatamente os pacotes perdidos', () => {
+    const r = C.analyzePackets({ data: recebidas, fs: FS, packetSizes: sizes, ticksMs: ticks, sequences: seqs });
+    assert(r.method === 'sequences', 'método: ' + r.method);
+    assert(r.reliable, 'deveria ser verificável');
+    const nPk = r.gaps.reduce((a, g) => a + g.nPackets, 0);
+    assert(nPk === perdidos.size, `pacotes perdidos: ${nPk} ≠ ${perdidos.size}`);
+    assert(r.gaps.length === 2, 'esperava 2 lacunas (5 isolado; 12–13 contíguos), veio ' + r.gaps.length);
+    assert(r.nMissing === perdidos.size * SZ, 'amostras perdidas: ' + r.nMissing);
+    assert(r.nExpected === NPK * SZ, 'nExpected: ' + r.nExpected);
+    return `${r.gaps.length} lacunas, ${r.nMissing} amostras (${r.pctMissing.toFixed(1)}%)`;
+  });
+  t('TicksInMses detecta a mesma perda sem GlobalSequences', () => {
+    const r = C.analyzePackets({ data: recebidas, fs: FS, packetSizes: sizes, ticksMs: ticks });
+    assert(r.method === 'ticks', 'método: ' + r.method);
+    const nPk = r.gaps.reduce((a, g) => a + g.nPackets, 0);
+    assert(nPk === perdidos.size, `pacotes: ${nPk} ≠ ${perdidos.size}`);
+    return `${nPk} pacotes por ticks (nominal ${r.nominalPacketMs} ms)`;
+  });
+  t('sem sequências nem ticks a série é marcada como não verificável', () => {
+    const r = C.analyzePackets({ data: recebidas, fs: FS });
+    assert(r.method === 'none' && !r.reliable, 'deveria ser não verificável');
+    assert(r.nMissing === 0, 'não pode inventar perda');
+    assert(typeof r.reason === 'string' && r.reason.length, 'sem motivo legível');
+    return r.reason.slice(0, 46) + '…';
+  });
+  t('ticks com rollover em 2^16 não geram falso positivo', () => {
+    const base = [];
+    for (let i = 0; i < 40; i++) base.push(Math.round(i * MS));
+    const CAP = 65536;
+    const comVolta = base.map(v => (v + CAP - 3000) % CAP);      // força uma volta no meio
+    assert(comVolta.some((v, i) => i > 0 && v < comVolta[i - 1]), 'o teste precisa conter uma volta');
+    const u = C.unwrapTicks(comVolta);
+    for (let i = 1; i < u.length; i++) assert(u[i] > u[i - 1], 'desenrolar falhou em ' + i);
+    const r = C.analyzePackets({ data: new Float64Array(40 * SZ), fs: FS, packetSizes: base.map(() => SZ), ticksMs: comVolta });
+    assert(r.gaps.length === 0, 'falso positivo: ' + r.gaps.length + ' lacunas');
+    return 'volta desenrolada, 0 lacunas espúrias';
+  });
+  t('unwrapCounter trata perda que ultrapassa a volta (250 → 4)', () => {
+    const u = C.unwrapCounter([248, 249, 250, 4, 5], 256);
+    assert(u[3] === 260, 'esperava 260, veio ' + u[3]);
+    return '250 → 4 vira salto de 10 (9 pacotes perdidos)';
+  });
+  t('insertNaNGaps preserva o número total de amostras esperadas', () => {
+    const r = C.analyzePackets({ data: recebidas, fs: FS, packetSizes: sizes, ticksMs: ticks, sequences: seqs });
+    const out = C.insertNaNGaps(recebidas, r.gaps);
+    assert(out.data.length === r.nExpected, `${out.data.length} ≠ ${r.nExpected}`);
+    assert(out.missingMask.length === r.nExpected, 'máscara com comprimento divergente');
+    const nNaN = Array.from(out.data).filter(Number.isNaN).length;
+    assert(nNaN === r.nMissing, `NaN: ${nNaN} ≠ ${r.nMissing}`);
+    const nMask = Array.from(out.missingMask).reduce((a, b) => a + b, 0);
+    assert(nMask === r.nMissing, 'máscara não bate com os NaN');
+    /* nenhuma amostra válida pode ter sido perdida ou interpolada */
+    assert(Array.from(out.data).filter(v => v === 1).length === recebidas.length, 'amostras válidas alteradas');
+    return `${out.data.length} amostras, ${nNaN} NaN, nada interpolado`;
+  });
+  t('fs efetiva de série a 249,99 Hz é recuperada com erro < 0,001 Hz', () => {
+    const FS_REAL = 249.99, N = 60;
+    const tk = [], sz = [];
+    for (let i = 0; i < N; i++) { tk.push(i * SZ / FS_REAL * 1000); sz.push(SZ); }
+    const r = C.effectiveFs({ ticksMs: tk, nSamples: N * SZ, nominalFs: 250, packetSizes: sz });
+    assert(r.reliable, 'deveria ser verificável');
+    const erro = Math.abs(r.fsEff - FS_REAL);
+    assert(erro < 0.001, `erro ${erro.toExponential(2)} Hz`);
+    assert(isFinite(r.ppmDeviation) && isFinite(r.driftMsTotal), 'deriva não calculada');
+    return `fsEff ${r.fsEff.toFixed(4)} Hz (${r.ppmDeviation.toFixed(0)} ppm, deriva ${r.driftMsTotal.toFixed(1)} ms)`;
+  });
+  t('deriva acima de 20 ms levanta aviso de qualidade', () => {
+    const FS_REAL = 249.9, N = 600;
+    const tk = [], sz = [];
+    for (let i = 0; i < N; i++) { tk.push(i * SZ / FS_REAL * 1000); sz.push(SZ); }
+    const r = C.effectiveFs({ ticksMs: tk, nSamples: N * SZ, nominalFs: 250, packetSizes: sz });
+    assert(r.warnDrift, 'deveria avisar: deriva ' + r.driftMsTotal);
+    return `deriva ${r.driftMsTotal.toFixed(0)} ms em ${(r.durationS / 60).toFixed(1)} min`;
+  });
+  t('costura de streams insere NaN e nunca se declara confiável', () => {
+    const a = { data: Float64Array.from({ length: 250 }, () => 1), fs: 250, t0Ms: 0, missingMask: new Uint8Array(250) };
+    const b = { data: Float64Array.from({ length: 250 }, () => 2), fs: 250, t0Ms: 3000, missingMask: new Uint8Array(250) };
+    const s = C.stitchStreams([a, b], { maxGapS: 60 });
+    assert(s.stitchReliable === false, 'jamais pode se declarar confiável');
+    assert(s.nGapSamples === 500, 'lacuna esperada de 2 s = 500 amostras, veio ' + s.nGapSamples);
+    assert(s.data.length === 1000, 'comprimento: ' + s.data.length);
+    assert(Array.from(s.data).filter(Number.isNaN).length === 500, 'NaN não inseridos');
+    return `${s.nSegments} segmentos, ${s.nGapSamples} amostras de lacuna, reliable=false`;
+  });
+  t('parser expõe integridade e fs efetiva em cada série bruta', () => {
+    const td = parsed.flatMap(p => (p.bsTimeDomain || []).concat(p.montageTD || []));
+    assert(td.length, 'sem séries brutas no exemplo');
+    td.forEach(x => {
+      assert(x.packets && typeof x.packets.pctMissing === 'number', 'sem contabilidade de pacotes');
+      assert(x.missingMask && x.missingMask.length === x.data.length, 'máscara ausente ou desalinhada');
+      assert(isFinite(x.fsEff) && x.fsEff > 0, 'fsEff inválida');
+    });
+    const semMeta = td.filter(x => !x.packets.reliable).length;
+    return `${td.length} séries; ${semMeta} sem metadados de sequência (não verificáveis)`;
+  });
+}
+
 /* ------------------------------------------------------------- resultado -- */
 console.log(`\n${'='.repeat(58)}`);
 console.log(`  ${ok} passaram   ${falhas} falharam   ${pulados} sem dados`);

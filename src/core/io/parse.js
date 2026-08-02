@@ -1,5 +1,8 @@
 /* io/parse.js — parsing do JSON e pseudonimização (io)
-   Gerado do refactor modular (Prompt 0.1). Ver docs/arquitetura.md. */
+   Gerado do refactor modular (Prompt 0.1). Ver docs/arquitetura.md.
+   Integridade do sinal bruto (perda de pacotes, NaN, fs efetiva) em ./packets.js. */
+
+import { parseIntList, analyzePackets, insertNaNGaps, effectiveFs } from './packets.js';
 
 export const tail = s => (typeof s === 'string' && s.includes('.')) ? s.split('.').pop() : s;
 
@@ -187,12 +190,27 @@ export function parsePercept(json, fileName) {
   /* --- séries no domínio do tempo -------------------------------------- */
   const td = (arr, dst) => (isArr(arr) ? arr : []).forEach(r => {
     if (!isArr(r.TimeDomainData) || !r.TimeDomainData.length) return;
+    const fs = num(r.SampleRateInHz) || 250;
+    /* campos de sequência: até aqui eram ignorados, e sem eles a perda de
+       pacotes passa silenciosamente (ver io/packets.js) */
+    const packetSizes = parseIntList(r.GlobalPacketSizes);
+    const ticksMs = parseIntList(r.TicksInMses);
+    const sequences = parseIntList(r.GlobalSequences);
+    const bruto = Float64Array.from(r.TimeDomainData, num);
+    const packets = analyzePackets({ data: bruto, fs, packetSizes, ticksMs, sequences });
+    const preenchido = packets.nMissing
+      ? insertNaNGaps(bruto, packets.gaps)
+      : { data: bruto, missingMask: new Uint8Array(bruto.length) };
+    const timing = effectiveFs({ ticksMs, nSamples: packets.nExpected, nominalFs: fs, packetSizes });
     dst.push({
       pass: r.Pass || '', channel: tail(r.Channel), label: prettyChannel(tail(r.Channel)),
       hemisphere: /LEFT|_L$/i.test(String(r.Channel)) ? 'Left' : (/RIGHT|_R$/i.test(String(r.Channel)) ? 'Right' : '?'),
-      fs: num(r.SampleRateInHz) || 250, gain: num(r.Gain),
+      fs, gain: num(r.Gain),
+      /* fs efetiva medida pelos ticks; cai para a nominal quando não verificável */
+      fsEff: isFinite(timing.fsEff) ? timing.fsEff : fs,
       t0: r.FirstPacketDateTime || null,
-      data: Float64Array.from(r.TimeDomainData, num)
+      data: preenchido.data, missingMask: preenchido.missingMask,
+      packets, timing
     });
   });
   td(d.LfpMontageTimeDomain, out.montageTD);
@@ -216,8 +234,16 @@ export function parsePercept(json, fileName) {
       };
     });
     const ts = r.TherapySnapshot || {};
+    /* fs efetiva também na série de potência (2 Hz nominais), a partir dos ticks
+       de cada amostra — relevante para alinhamento com dado externo */
+    const fsBs = num(r.SampleRateInHz) || 2;
+    const timing = effectiveFs({
+      ticksMs: rows.map(x => num(x.TicksInMs)).filter(isFinite),
+      nSamples: rows.length, nominalFs: fsBs
+    });
     return {
-      channel: tail(r.Channel), fs: num(r.SampleRateInHz) || 2, t0,
+      channel: tail(r.Channel), fs: fsBs, t0,
+      fsEff: isFinite(timing.fsEff) ? timing.fsEff : fsBs, timing,
       startISO: r.FirstPacketDateTime, series,
       therapy: {
         group: tail(ts.ActiveGroup), hpf: num(ts.HighPassFilterInHertz),

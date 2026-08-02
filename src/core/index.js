@@ -4,6 +4,7 @@
    Ver docs/arquitetura.md para o mapa de módulos e a regra de dependência. */
 
 import { parsePercept, MODALITIES, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId } from './io/parse.js';
+import { parseIntList, unwrapCounter, unwrapTicks, analyzePackets, insertNaNGaps, effectiveFs, stitchStreams } from './io/packets.js';
 import { fft, nextPow2 } from './dsp/fft.js';
 import { welchPSD, spectrogram, bandPower, bandTable, bandOf, BANDS } from './dsp/spectral.js';
 import { bandpassFFT, hilbertEnvelope } from './dsp/filters.js';
@@ -28,7 +29,9 @@ const API = {
   permutationTest, thresholdSummary, histogram, ecdf, fPValue, tPValue, normCDF,
   peakInBand, daysSince, pickSpectrum, spectralMetrics, burstMetrics, doseResponse,
   mergeTrend, collectThresholds, chronicMetrics, extractMetrics,
-  detectStates, betaEnvelopeSeries, streamOnOff, bimodalityCoefficient
+  detectStates, betaEnvelopeSeries, streamOnOff, bimodalityCoefficient,
+  /* integridade do sinal bruto (Onda 1 — L01, L02, L05, L07) */
+  parseIntList, unwrapCounter, unwrapTicks, analyzePackets, insertNaNGaps, effectiveFs, stitchStreams
 };
 
 export default API;
