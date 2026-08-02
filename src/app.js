@@ -1844,6 +1844,513 @@ const FIGURES = [
           `seleção do biomarcador, definição do limiar e <b>maladaptação relacionada a artefato</b> — verifique a F17 antes de fixar limiares.`
       }));
     }
+  },
+
+  /* ----------------------------------------------------------------- F18 */
+  {
+    id: 'F18', title: 'Espectro multitaper com intervalo de confiança',
+    sub: 'Slepian (DPSS) sobre o trecho inteiro · jackknife entre tapers · comparação com Welch',
+    has: d => d.bsTimeDomain.length || d.montageTD.length,
+    render(node, d) {
+      const tds = d.bsTimeDomain.concat(d.montageTD);
+      const alvo = opt('F18', 'td', 0);
+      const NW = opt('F18', 'nw', 3);
+      const minC = opt('F18', 'minc', 0.9);
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('canal', tds.map((t, i) => ({ value: i, label: `${t.label} (${hname(t.hemisphere)})` })), alvo, v => setOpt('F18', 'td', +v)),
+        ctrlNumber('NW (tempo × banda)', NW, 1.5, 8, 0.5, v => setOpt('F18', 'nw', v)),
+        ctrlNumber('concentração mínima', minC, 0.5, 0.999, 0.01, v => setOpt('F18', 'minc', v))
+      ]));
+      const td = tds[Math.min(alvo, tds.length - 1)];
+      if (!td) return node.appendChild(el('div', { class: 'empty', text: 'Sem sinal bruto.' }));
+      qualitySeal(node, td);
+      const fs = td.fsEff || td.fs;
+      const mt = C.multitaperPSD(td.data, fs, { NW, minConcentration: minC });
+      if (!mt || !mt.p) return node.appendChild(el('div', { class: 'empty', text: mt ? mt.reason : 'não foi possível estimar.' }));
+      const w = C.welchPSD(td.data, fs, { nperseg: 512, overlap: .5 });
+
+      const fmax = 60;
+      const idx = []; for (let i = 0; i < mt.f.length; i++) if (mt.f[i] > 0 && mt.f[i] <= fmax) idx.push(i);
+      const xs = idx.map(i => mt.f[i]);
+      const box = plotBox(node, 300);
+      const todos = idx.map(i => mt.ciHigh ? mt.ciHigh[i] : mt.p[i]).filter(isFinite);
+      const ch = new P.Chart(box.canvas, {
+        width: box.width, height: box.height, xlim: [0, fmax],
+        ylim: [0, Math.max.apply(null, todos) * 1.08],
+        xlabel: 'frequência (Hz)', ylabel: 'PSD (µV²/Hz)',
+        title: `multitaper — NW ${NW}, ${mt.K} taper(s) · resolução ${f(mt.resolutionHz, 2)} Hz`,
+        pad: { l: 70, r: 14, t: 24, b: 42 }
+      });
+      ch.axes();
+      if (mt.ciLow) ch.area(xs, idx.map(i => mt.ciLow[i]), idx.map(i => mt.ciHigh[i]),
+        { color: hcol(td.hemisphere), alpha: .18, label: 'IC 95% (jackknife)' });
+      ch.line(xs, idx.map(i => mt.p[i]), { color: hcol(td.hemisphere), width: 1.8, label: 'multitaper' });
+      if (w.p) {
+        const iw = []; for (let i = 0; i < w.f.length; i++) if (w.f[i] > 0 && w.f[i] <= fmax) iw.push(i);
+        ch.line(iw.map(i => w.f[i]), iw.map(i => w.p[i]), { color: COL.muted, width: 1.1, dash: [4, 3], label: 'Welch' });
+      }
+      ch.legend({ x: ch.x1 - 150, y: ch.y1 + 6 });
+
+      const pb = profileBands().primary || { lo: 13, hi: 35 };
+      const cmp = C.compareEstimators(w, mt, pb.lo, pb.hi);
+      const inc = C.spectralUncertainty(mt);
+      node.appendChild(table(['item', 'valor', 'o que significa'], [
+        ['tapers usados / pedidos', `${mt.K} / ${mt.KRequested}`, 'tapers pouco concentrados vazam energia e são descartados'],
+        ['concentração de cada taper', mt.concentrations.map(v => f(v, 4)).join(' · '), 'fração da energia da janela dentro de ±W; abaixo do limiar o taper sai'],
+        ['resolução em frequência', `${f(mt.resolutionHz, 2)} Hz`, '2·NW·fs/N — o preço da redução de variância'],
+        ['graus de liberdade (aprox.)', String(mt.dofApprox), '2K; o Welch equivalente precisaria de K segmentos independentes'],
+        ['dados usados', `${f(mt.pctDataUsed, 1)} % (${mt.nUsed} de ${mt.nTotal} amostras)`, 'maior trecho contíguo sem lacuna; nada foi interpolado'],
+        ['largura mediana do IC', isFinite(inc) ? `${f(inc, 2)}×` : '—', 'razão IC alto / IC baixo — incerteza típica do espectro'],
+        cmp ? ['pico na banda primária', `Welch ${f(cmp.welchPeakHz, 2)} Hz · multitaper ${f(cmp.multitaperPeakHz, 2)} Hz`, cmp.note] : null
+      ].filter(Boolean)));
+
+      if (cmp && !cmp.agree) node.appendChild(el('div', {
+        class: 'warnbox', html: `<b>Os estimadores discordam em ${f(cmp.deltaHz, 2)} Hz.</b> ${cmp.note}`
+      }));
+
+      node.appendChild(exportRow([
+        { label: '⤓ PNG', fn: () => P.downloadCanvas(box.canvas, 'F18_multitaper') },
+        { label: '⤓ CSV espectro', fn: () => P.downloadText(P.toCSV(idx.map(i => ({
+          hz: +mt.f[i].toFixed(4), psd_multitaper: mt.p[i],
+          ic_baixo: mt.ciLow ? mt.ciLow[i] : '', ic_alto: mt.ciHigh ? mt.ciHigh[i] : '',
+          NW, K: mt.K
+        }))), 'F18_multitaper.csv', 'text/csv') }
+      ]));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Método.</b> Sequências de Slepian calculadas do zero pelo problema tridiagonal de Percival & Walden, ` +
+          `com autovalores por bissecção de Sturm e autovetores por iteração inversa. O multitaper aplica ${mt.K} janelas ortogonais ao ` +
+          `<b>mesmo trecho</b>, em vez de picar o registro como o Welch — o que importa em streaming curto. ` +
+          `O IC vem do jackknife entre tapers em escala logarítmica (Thomson & Chave). ` +
+          `<b>Quando os dois estimadores concordam</b> sobre a frequência de pico, ela não depende do método; quando discordam, o vazamento ` +
+          `espectral é relevante e isso precisa ser reportado.`
+      }));
+    }
+  },
+
+  /* ----------------------------------------------------------------- F19 */
+  {
+    id: 'F19', title: 'specparam completo — reta ou joelho, largura dos picos, R²',
+    sub: 'ajuste iterativo de gaussianas com limites, reajuste simultâneo e seleção por AIC',
+    has: d => d.sensingSetup.some(s => s.psd) || d.signalCheck.length || d.montage.length,
+    render(node, d) {
+      const src = [];
+      d.sensingSetup.forEach((s, i) => s.psd && src.push({ value: 'ss' + i, label: `SignalTest ${s.channel}`, f: s.psd.f, p: s.psd.p, hemi: s.hemisphere }));
+      d.signalCheck.forEach((s, i) => src.push({ value: 'sc' + i, label: `SignalCheck ${C.prettyChannel(s.channel)}`, f: s.f, p: s.p, hemi: /LEFT/i.test(s.channel) ? 'Left' : 'Right' }));
+      d.montage.forEach((m, i) => src.push({ value: 'mo' + i, label: `Survey ${m.hemisphere[0]} · ${m.label}`, f: m.f, p: m.mag, hemi: m.hemisphere }));
+      if (!src.length) return node.appendChild(el('div', { class: 'empty', text: 'Nenhum espectro disponível.' }));
+      const cur = src.find(s => s.value === opt('F19', 'src', src[0].value)) || src[0];
+      const fmin = opt('F19', 'fmin', 2), fmax = opt('F19', 'fmax', 95);
+      const maxN = opt('F19', 'maxn', 6);
+      const bwMax = opt('F19', 'bwmax', 12);
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('canal', src, cur.value, v => setOpt('F19', 'src', v)),
+        ctrlNumber('f mínima (Hz)', fmin, 1, 20, 1, v => setOpt('F19', 'fmin', v)),
+        ctrlNumber('f máxima (Hz)', fmax, 30, 125, 5, v => setOpt('F19', 'fmax', v)),
+        ctrlNumber('máx. de picos', maxN, 1, 10, 1, v => setOpt('F19', 'maxn', v)),
+        ctrlNumber('largura máx. (Hz)', bwMax, 3, 30, 1, v => setOpt('F19', 'bwmax', v))
+      ]));
+      const cmp = C.specparamCompare(cur.f, cur.p, { fmin, fmax, maxNPeaks: maxN, peakWidthLimits: [1, bwMax] });
+      if (!cmp || !cmp.fixed) return node.appendChild(el('div', { class: 'empty', text: 'Espectro curto demais para o ajuste.' }));
+      const m = cmp[cmp.best] || cmp.fixed;
+
+      const grid = el('div', { class: 'plotgrid two' }); node.appendChild(grid);
+      const b1 = plotBox(grid, 268);
+      const lx = m.f.map(v => Math.log10(v));
+      const ch1 = new P.Chart(b1.canvas, {
+        width: b1.width, height: b1.height,
+        xlim: [Math.log10(fmin), Math.log10(fmax)],
+        ylim: [Math.min.apply(null, m.logPower) - .1, Math.max.apply(null, m.logPower) + .15],
+        xlabel: 'log₁₀ frequência (Hz)', ylabel: 'log₁₀ potência',
+        title: `(a) modelo completo — ${m.aperiodicMode === 'knee' ? 'com joelho' : 'reta'} · R² ${f(m.r2, 3)}`,
+        pad: { l: 62, r: 14, t: 24, b: 42 }
+      });
+      ch1.axes({ xfmt: v => f(Math.pow(10, v), 0) });
+      ch1.line(lx, m.logPower, { color: COL.ink, width: 1.4, label: 'observado' });
+      ch1.line(lx, m.aperiodicLog, { color: COL.warn, width: 1.6, dash: [5, 3], label: 'aperiódico' });
+      ch1.line(lx, m.modelLog, { color: COL.accent, width: 1.8, label: 'modelo' });
+      ch1.legend({ x: ch1.x1 - 120, y: ch1.y1 + 6 });
+
+      const b2 = plotBox(grid, 268);
+      const per = m.periodicLog;
+      const ch2 = new P.Chart(b2.canvas, {
+        width: b2.width, height: b2.height, xlim: [fmin, Math.min(fmax, 60)],
+        ylim: [Math.min(0, Math.min.apply(null, per)) - .02, Math.max(.05, Math.max.apply(null, per)) * 1.15],
+        xlabel: 'frequência (Hz)', ylabel: 'potência acima do aperiódico (log₁₀)',
+        title: '(b) componente periódico e picos ajustados', pad: { l: 68, r: 14, t: 24, b: 42 }
+      });
+      ch2.axes();
+      ch2.line(m.f, m.f.map((x, i) => m.logPower[i] - m.aperiodicLog[i]), { color: COL.muted, width: 1, label: 'achatado' });
+      ch2.line(m.f, per, { color: hcol(cur.hemi), width: 1.9, label: 'gaussianas' });
+      m.peaks.forEach(pk => {
+        ch2.vline(pk.cf, { color: COL.accent, width: 1, dash: [3, 3] });
+        ch2.span(pk.cf - pk.bw / 2, pk.cf + pk.bw / 2, { color: COL.accent, alpha: .07 });
+      });
+      ch2.legend({ x: ch2.x1 - 110, y: ch2.y1 + 6 });
+
+      node.appendChild(table(['pico', 'frequência central (Hz)', 'altura (log₁₀)', 'largura (Hz)', 'banda'],
+        m.peaks.length ? m.peaks.map((pk, i) => [`#${i + 1}`, f(pk.cf, 2), f(pk.pw, 3), f(pk.bw, 2), C.bandOf(pk.cf)])
+          : [['—', '—', '—', '—', 'nenhum pico passou dos critérios']]));
+
+      node.appendChild(table(['modelo', 'expoente χ', 'offset', 'joelho', 'R²', 'erro (MAE)', 'AIC'], [
+        ['reta (fixed)', f(cmp.fixed.exponent, 3), f(cmp.fixed.offset, 3), '—', f(cmp.fixed.r2, 4), f(cmp.fixed.error, 4), cmp.aicFixed == null ? '—' : f(cmp.aicFixed, 1)],
+        cmp.knee ? ['com joelho (knee)', f(cmp.knee.exponent, 3), f(cmp.knee.offset, 3),
+          `${f(cmp.knee.knee, 2)}${cmp.knee.kneeFrequencyHz ? ` (≈ ${f(cmp.knee.kneeFrequencyHz, 1)} Hz)` : ''}`,
+          f(cmp.knee.r2, 4), f(cmp.knee.error, 4), cmp.aicKnee == null ? '—' : f(cmp.aicKnee, 1)] : null
+      ].filter(Boolean)));
+
+      node.appendChild(el('div', {
+        class: m.r2 < 0.8 ? 'warnbox' : 'note',
+        html: m.warning
+          ? `<b>${m.warning}.</b>`
+          : `<b>Seleção de modelo.</b> ${cmp.note} (ΔAIC = ${cmp.deltaAic == null ? '—' : f(cmp.deltaAic, 1)}). ` +
+            `${m.nPeaksDiscarded ? `${m.nPeaksDiscarded} candidato(s) a pico foram descartados por altura ou largura fora dos limites. ` : ''}` +
+            `Parâmetros efetivos: até ${m.params.maxNPeaks} picos, altura mínima ${m.params.minPeakHeight}, limiar ${m.params.peakThreshold} SD, ` +
+            `largura entre ${m.params.peakWidthLimits[0]} e ${m.params.peakWidthLimits[1]} Hz.`
+      }));
+
+      node.appendChild(exportRow([
+        { label: '⤓ PNG modelo', fn: () => P.downloadCanvas(b1.canvas, 'F19_specparam_modelo') },
+        { label: '⤓ PNG picos', fn: () => P.downloadCanvas(b2.canvas, 'F19_specparam_picos') },
+        { label: '⤓ CSV picos', fn: () => P.downloadText(P.toCSV(m.peaks.map(pk => ({
+          canal: cur.label, modelo: m.aperiodicMode, cf_hz: pk.cf, altura_log10: pk.pw, largura_hz: pk.bw,
+          expoente: m.exponent, offset: m.offset, joelho: m.knee == null ? '' : m.knee, r2: m.r2, erro: m.error
+        }))), 'F19_specparam_picos.csv', 'text/csv') }
+      ]));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Diferença para a F2.</b> A F2 usa a aproximação robusta (reta em log-log, picos como resíduo) — boa para anotar. ` +
+          `Aqui está o procedimento do artigo: ajuste aperiódico robusto, busca iterativa de gaussianas com <b>limites de largura</b>, ` +
+          `reajuste <b>simultâneo</b> de todos os picos por Levenberg-Marquardt, e reajuste do aperiódico sobre o espectro sem picos. ` +
+          `<b>Não reporte o expoente sem o R²</b>: um ajuste ruim produz um número que parece uma medida e não é.`
+      }));
+    }
+  },
+
+  /* ----------------------------------------------------------------- F20 */
+  {
+    id: 'F20', title: 'Wavelet de Morlet — escalograma e bursts delimitados',
+    sub: 'CWT complexa · detecção e delimitação separadas · limiar por linha de base 1/f',
+    has: d => d.bsTimeDomain.length || d.montageTD.length,
+    render(node, d) {
+      const tds = d.bsTimeDomain.concat(d.montageTD);
+      const alvo = opt('F20', 'td', 0);
+      const nCiclos = opt('F20', 'nc', 7);
+      const pb = profileBands().primary || { lo: 13, hi: 30 };
+      const blo = opt('F20', 'blo', pb.lo), bhi = opt('F20', 'bhi', Math.min(pb.hi, 30));
+      const pct = opt('F20', 'pct', 75);
+      const borda = opt('F20', 'edge', 0.5);
+      const modoLimiar = opt('F20', 'thr', 'percentil');
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('canal', tds.map((t, i) => ({ value: i, label: `${t.label} (${hname(t.hemisphere)})` })), alvo, v => setOpt('F20', 'td', +v)),
+        ctrlNumber('ciclos da wavelet', nCiclos, 3, 15, 1, v => setOpt('F20', 'nc', v)),
+        ctrlNumber('banda de (Hz)', blo, 1, 60, 1, v => setOpt('F20', 'blo', v)),
+        ctrlNumber('banda até (Hz)', bhi, 2, 90, 1, v => setOpt('F20', 'bhi', v)),
+        ctrlSelect('limiar', [{ value: 'percentil', label: 'percentil do registro' }, { value: 'aperiodico', label: 'linha de base 1/f' }], modoLimiar, v => setOpt('F20', 'thr', v)),
+        ctrlNumber('percentil', pct, 50, 95, 5, v => setOpt('F20', 'pct', v)),
+        ctrlNumber('borda (fração do limiar)', borda, 0.2, 1, 0.1, v => setOpt('F20', 'edge', v))
+      ]));
+      const td = tds[Math.min(alvo, tds.length - 1)];
+      if (!td) return node.appendChild(el('div', { class: 'empty', text: 'Sem sinal bruto.' }));
+      qualitySeal(node, td);
+      const fs = td.fsEff || td.fs;
+      /* limita o trecho para manter o cálculo interativo, e declara o recorte */
+      const maxAmostras = Math.round(fs * 60);
+      const recortado = td.data.length > maxAmostras;
+      const x = recortado ? (td.data.subarray ? td.data.subarray(0, maxAmostras) : td.data.slice(0, maxAmostras)) : td.data;
+
+      const freqs = []; for (let ff = Math.max(1, blo - 5); ff <= Math.min(bhi + 15, fs / 2 - 5); ff += 1) freqs.push(ff);
+      const cwt = C.morletCWT(x, fs, freqs, { nCycles: nCiclos });
+      if (!cwt) return node.appendChild(el('div', { class: 'empty', text: 'Trecho curto demais para a wavelet.' }));
+      const env = C.waveletBandEnvelope(cwt, blo, bhi);
+      if (!env) return node.appendChild(el('div', { class: 'empty', text: 'Nenhuma frequência da CWT cai na banda escolhida.' }));
+
+      /* limiar: percentil do registro ou linha de base aperiódica */
+      let limiarInfo = null, opcoes = { percentile: pct, edgeFraction: borda, minDurationMs: 100 };
+      if (modoLimiar === 'aperiodico') {
+        const w = C.welchPSD(x, fs, { nperseg: 512, overlap: .5 });
+        const sp = w.p ? C.specparam(w.f, w.p, { fmin: 2, fmax: Math.min(95, fs / 2 - 5) }) : null;
+        limiarInfo = sp ? C.aperiodicBurstThreshold(sp, blo, bhi, { k: 2 }) : null;
+        if (limiarInfo) opcoes = { threshold: limiarInfo.threshold, edgeFraction: borda, minDurationMs: 100 };
+      }
+      const bu = C.waveletBursts(env.env, fs, opcoes);
+      if (!bu) return node.appendChild(el('div', { class: 'empty', text: 'Envelope curto demais para detectar bursts.' }));
+
+      /* escalograma */
+      const passo = Math.max(1, Math.floor(cwt.n / 900));
+      const M = cwt.power.map(linha => {
+        const out = [];
+        for (let i = 0; i < cwt.n; i += passo) out.push(linha[i]);
+        return out;
+      });
+      const planos = M.flat().filter(isFinite).sort((a, b) => a - b);
+      const box = plotBox(node, 260);
+      const durSec = cwt.n / fs;
+      const ch = new P.Chart(box.canvas, {
+        width: box.width, height: box.height, xlim: [0, durSec], ylim: [freqs[0], freqs[freqs.length - 1]],
+        xlabel: 'tempo (s)', ylabel: 'frequência (Hz)',
+        title: `(a) escalograma de Morlet — ${nCiclos} ciclos`, pad: { l: 70, r: 62, t: 24, b: 42 }
+      });
+      ch.heat(M, { cmap: 'viridis', zmin: planos[Math.floor(planos.length * .05)], zmax: planos[Math.floor(planos.length * .98)], smooth: true });
+      ch.axes({ grid: false });
+      ch.colorbar({ label: 'potência (µV²)' });
+
+      /* envelope com bursts marcados */
+      const b2 = plotBox(node, 220);
+      const t2 = [], e2 = [];
+      for (let i = 0; i < env.env.length; i += passo) { t2.push(i / fs); e2.push(env.env[i]); }
+      const validos = e2.filter(isFinite);
+      const ch2 = new P.Chart(b2.canvas, {
+        width: b2.width, height: b2.height, xlim: [0, durSec],
+        ylim: [0, Math.max.apply(null, validos) * 1.1],
+        xlabel: 'tempo (s)', ylabel: `potência ${blo}–${bhi} Hz (µV²)`,
+        title: `(b) envelope e ${bu.n} burst(s) — detecção no limiar, borda em ${f(100 * borda, 0)}% dele`,
+        pad: { l: 74, r: 14, t: 24, b: 42 }
+      });
+      ch2.axes();
+      bu.bursts.forEach(b => ch2.span(b.startIdx / fs, b.endIdx / fs, { color: COL.accent, alpha: .16 }));
+      ch2.line(t2, e2, { color: hcol(td.hemisphere), width: 1 });
+      ch2.hline(bu.threshold, { color: COL.right, dash: [4, 3], label: 'limiar' });
+      ch2.hline(bu.edgeThreshold, { color: COL.warn, dash: [2, 3], label: 'borda' });
+      ch2.legend({ x: ch2.x1 - 100, y: ch2.y1 + 6 });
+
+      node.appendChild(table(['métrica', 'valor', 'parâmetro que a produziu'], [
+        ['bursts detectados', String(bu.n), `limiar ${modoLimiar === 'aperiodico' ? 'pela linha de base 1/f' : 'no percentil ' + pct}`],
+        ['taxa', `${f(bu.rateHz, 3)} /s`, `duração mínima ${bu.minDurationMs} ms`],
+        ['duração média', `${f(bu.meanDurationMs, 1)} ms`, `borda em ${f(100 * borda, 0)}% do limiar`],
+        ['duração mediana', `${f(bu.medianDurationMs, 1)} ms`, 'mediana é menos sensível a um burst muito longo'],
+        ['ocupação', `${f(bu.occupancyPct, 1)} %`, 'fração do tempo válido dentro de burst'],
+        ['tempo válido', `${f(bu.validSeconds, 1)} s`, `${bu.nNaN} amostras em lacuna ou no cone de influência`]
+      ]));
+
+      if (limiarInfo) node.appendChild(el('div', {
+        class: limiarInfo.usable ? 'note' : 'warnbox',
+        html: `<b>Limiar por linha de base 1/f.</b> ${limiarInfo.rationale}; potência de base ${f(limiarInfo.baselinePower, 4)} µV², ` +
+          `R² do ajuste aperiódico ${f(limiarInfo.aperiodicR2, 3)}. ${limiarInfo.caveat}`
+      }));
+
+      const sens = C.burstDurationSensitivity(x, fs, [blo, bhi], [3, 5, 7, 10], opcoes);
+      node.appendChild(el('h4', { class: 'qc-title', html: '<b>A duração é do cérebro ou do método?</b> — mesma série, quatro resoluções' }));
+      node.appendChild(table(['ciclos da wavelet', 'duração média (ms)', 'taxa (/s)', 'ocupação (%)'],
+        sens.rows.map(r => [String(r.nCycles), f(r.meanDurationMs, 1), f(r.rateHz, 3), f(r.occupancyPct, 1)])));
+      node.appendChild(el('div', {
+        class: sens.spreadRelative > 0.25 ? 'warnbox' : 'note',
+        html: `<b>Dispersão relativa ${f(100 * sens.spreadRelative, 0)}%.</b> ${sens.verdict}.`
+      }));
+
+      node.appendChild(exportRow([
+        { label: '⤓ PNG escalograma', fn: () => P.downloadCanvas(box.canvas, 'F20_escalograma') },
+        { label: '⤓ PNG envelope', fn: () => P.downloadCanvas(b2.canvas, 'F20_envelope_bursts') },
+        { label: '⤓ CSV bursts', fn: () => P.downloadText(P.toCSV(bu.bursts.map(b => ({
+          inicio_s: b.startSec, duracao_ms: b.durationMs, pico: b.peak, pico_s: b.peakSec, area: b.area,
+          limiar: bu.threshold, borda: bu.edgeThreshold, fracao_borda: borda, ciclos: nCiclos, banda: `${blo}-${bhi}`
+        }))), 'F20_bursts_wavelet.csv', 'text/csv') }
+      ]));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Por que separar detecção de delimitação.</b> O limiar diz QUE existe um burst; a borda diz QUANTO ele dura. ` +
+          `Se as duas forem o mesmo número, a duração medida vira função do limiar escolhido, e comparar estudos com limiares diferentes ` +
+          `deixa de significar alguma coisa. Aqui a detecção usa o limiar e a delimitação desce a ${f(100 * borda, 0)}% dele. ` +
+          `${recortado ? `<b>Recorte:</b> a wavelet roda nos primeiros 60 s do registro para manter a interface responsiva — as métricas acima referem-se a esse trecho. ` : ''}` +
+          `A wavelet devolve <b>NaN dentro do cone de influência</b> (2σ em cada borda): são amostras desconhecidas, não zero.`
+      }));
+    }
+  },
+
+  /* ----------------------------------------------------------------- F21 */
+  {
+    id: 'F21', title: 'Acoplamento fase-amplitude (PAC) e comodulograma',
+    sub: 'índice de Tort com surrogados · checagem obrigatória de forma de onda',
+    has: d => d.bsTimeDomain.length || d.montageTD.length,
+    render(node, d) {
+      const tds = d.bsTimeDomain.concat(d.montageTD);
+      const alvo = opt('F21', 'td', 0);
+      const nSur = opt('F21', 'sur', 200);
+      const pb = profileBands().primary || { lo: 13, hi: 30 };
+      const flo = opt('F21', 'flo', pb.lo), fhi = opt('F21', 'fhi', Math.min(pb.hi, 30));
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('canal', tds.map((t, i) => ({ value: i, label: `${t.label} (${hname(t.hemisphere)})` })), alvo, v => setOpt('F21', 'td', +v)),
+        ctrlNumber('fase de (Hz)', flo, 1, 40, 1, v => setOpt('F21', 'flo', v)),
+        ctrlNumber('fase até (Hz)', fhi, 3, 50, 1, v => setOpt('F21', 'fhi', v)),
+        ctrlNumber('surrogados', nSur, 50, 1000, 50, v => setOpt('F21', 'sur', v))
+      ]));
+      const td = tds[Math.min(alvo, tds.length - 1)];
+      if (!td) return node.appendChild(el('div', { class: 'empty', text: 'Sem sinal bruto.' }));
+      qualitySeal(node, td);
+      const fs = td.fsEff || td.fs;
+      if (fs / 2 < 60) return node.appendChild(el('div', {
+        class: 'empty', html: `A frequência de amostragem deste canal (${f(fs, 1)} Hz) coloca o Nyquist em ${f(fs / 2, 1)} Hz. ` +
+          `Não há banda de gama utilizável — PAC beta-gama não é mensurável com este dado, e nenhum número é apresentado.`
+      }));
+      const maxAmostras = Math.round(fs * 120);
+      const recortado = td.data.length > maxAmostras;
+      const x = recortado ? (td.data.subarray ? td.data.subarray(0, maxAmostras) : td.data.slice(0, maxAmostras)) : td.data;
+
+      const nyq = fs / 2;
+      const pac = C.pacTort(x, fs, { phaseBand: [flo, fhi], ampBand: [Math.min(50, nyq - 20), nyq - 2], nSurrogates: nSur });
+      const wa = C.waveformAsymmetry(x, fs, flo, fhi);
+
+      if (!pac || !isFinite(pac.mi)) return node.appendChild(el('div', {
+        class: 'empty', text: pac ? (pac.reason || 'não foi possível estimar o PAC.') : 'trecho curto demais para PAC.'
+      }));
+
+      /* comodulograma */
+      const com = C.comodulogram(x, fs, {
+        phaseRange: [4, Math.min(40, nyq - 20)], phaseWidth: 4, phaseStep: 2,
+        ampRange: [Math.min(30, nyq - 30), nyq - 2], ampStep: 10, nSurrogates: Math.min(50, nSur)
+      });
+
+      if (com) {
+        const M = com.ampCenters.map((_, j) => com.phaseCenters.map((__, i) => {
+          const c = com.grid.find(g => g.i === i && g.j === j);
+          return c && isFinite(c.mi) ? c.mi : NaN;
+        }));
+        const box = plotBox(node, 280);
+        const planos = M.flat().filter(isFinite).sort((a, b) => a - b);
+        const ch = new P.Chart(box.canvas, {
+          width: box.width, height: box.height,
+          xlim: [com.phaseCenters[0], com.phaseCenters[com.phaseCenters.length - 1]],
+          ylim: [com.ampCenters[0], com.ampCenters[com.ampCenters.length - 1]],
+          xlabel: 'frequência da FASE (Hz)', ylabel: 'frequência da AMPLITUDE (Hz)',
+          title: '(a) comodulograma — índice de modulação de Tort', pad: { l: 76, r: 62, t: 24, b: 42 }
+        });
+        ch.heat(M, { cmap: 'magma', zmin: 0, zmax: planos.length ? planos[Math.floor(planos.length * .99)] : 1, smooth: true });
+        ch.axes({ grid: false });
+        ch.colorbar({ label: 'MI' });
+        node.appendChild(el('div', { class: 'note', html: `<b>Política de surrogados.</b> ${com.surrogatePolicy}.` }));
+      }
+
+      /* distribuição de amplitude por bin de fase */
+      const b2 = plotBox(node, 230);
+      const centros = pac.distribution.map((_, i) => -180 + (i + 0.5) * 360 / pac.distribution.length);
+      const ch2 = new P.Chart(b2.canvas, {
+        width: b2.width, height: b2.height, xlim: [-180, 180],
+        ylim: [0, Math.max.apply(null, pac.distribution) * 1.25],
+        xlabel: 'fase da banda lenta (graus)', ylabel: 'amplitude normalizada',
+        title: `(b) amplitude por bin de fase — MI ${pac.mi.toExponential(2)}, z ${f(pac.z, 1)}`,
+        pad: { l: 68, r: 14, t: 24, b: 42 }
+      });
+      ch2.axes();
+      ch2.bars(centros, pac.distribution, { color: hcol(td.hemisphere), width: 340 / pac.distribution.length });
+      ch2.hline(1 / pac.distribution.length, { color: COL.muted, dash: [4, 3], label: 'uniforme (sem acoplamento)' });
+      ch2.legend({ x: ch2.x0 + 8, y: ch2.y1 + 6 });
+
+      node.appendChild(table(['item', 'valor', 'interpretação'], [
+        ['índice de modulação (MI)', pac.mi.toExponential(3), 'divergência da distribuição uniforme; não comparável entre registros de durações diferentes'],
+        ['z contra surrogados', f(pac.z, 2), `${pac.nSurrogates} surrogados por deslocamento temporal, semente ${pac.seed}`],
+        ['p empírico', { html: pHtml(pac.pEmpirical) }, pac.significant ? 'acoplamento acima do nulo' : 'não distinguível do acaso'],
+        ['fase preferida', `${f(pac.preferredPhaseRad * 180 / Math.PI, 1)}°`, 'fase da banda lenta em que a amplitude rápida é máxima'],
+        ['profundidade de modulação', `${f(pac.modulationDepthPct, 1)} %`, 'diferença entre o bin mais alto e o mais baixo, em relação ao uniforme'],
+        ['banda de fase / amplitude', `${flo}–${fhi} Hz / ${f(pac.ampBand[0], 0)}–${f(pac.ampBand[1], 0)} Hz`, pac.ampBandWideEnough ? 'banda de amplitude larga o bastante para conter as bandas laterais' : 'banda de amplitude estreita demais'],
+        wa ? ['forma de onda', `simetria pico-vale ${f(wa.peakTroughSymmetry, 3)} (0,5 = simétrico) · inclinação ${f(wa.steepnessRatio, 2)}`, wa.interpretation] : null
+      ].filter(Boolean)));
+
+      if (wa && wa.nonSinusoidal) node.appendChild(el('div', {
+        class: 'warnbox', html: `<b>A onda é não senoidal nesta banda</b> (simetria pico-vale ${f(wa.peakTroughSymmetry, 3)}; 0,5 seria simetria perfeita). ${wa.interpretation}. ` +
+          `Parte do MI acima pode ser harmônico da própria banda de fase — não interprete como interação entre redes sem outra evidência.`
+      }));
+      if (pac.warning) node.appendChild(el('div', { class: 'warnbox', html: `<b>Atenção.</b> ${pac.warning}.` }));
+
+      node.appendChild(exportRow([
+        { label: '⤓ PNG distribuição', fn: () => P.downloadCanvas(b2.canvas, 'F21_pac_distribuicao') },
+        { label: '⤓ CSV comodulograma', fn: () => P.downloadText(P.toCSV((com ? com.grid : []).map(c => ({
+          fase_hz: c.phaseHz, amplitude_hz: c.ampHz, mi: c.mi, z: c.z, p: c.p
+        }))), 'F21_comodulograma.csv', 'text/csv') }
+      ]));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Por que o cuidado aqui é maior.</b> PAC é fácil de produzir por artefato: uma forma de onda não senoidal gera ` +
+          `harmônicos que se acoplam à própria fundamental, sem nenhuma interação entre redes distintas (Cole &amp; Voytek 2017). ` +
+          `Por isso o MI cru nunca aparece sozinho — vem sempre com z contra surrogados e com a medida de assimetria da onda. ` +
+          `${recortado ? '<b>Recorte:</b> o cálculo usa os primeiros 120 s do registro. ' : ''}` +
+          `<b>Leitura clínica:</b> PAC beta-gama no STN está elevado no estado OFF e cai com levodopa e com DBS eficaz; ` +
+          `é medida de interação entre ritmos, complementar — não substituta — da potência beta.`
+      }));
+    }
+  },
+
+  /* ----------------------------------------------------------------- F22 */
+  {
+    id: 'F22', title: 'Gama finamente sintonizada vs. gama entrained em f_stim/2',
+    sub: 'dois fenômenos na mesma faixa com leituras clínicas opostas',
+    has: d => d.sensingSetup.some(s => s.psd) || d.signalCheck.length || d.montage.length || d.bsTimeDomain.length,
+    render(node, d) {
+      const src = [];
+      d.sensingSetup.forEach((s, i) => s.psd && src.push({ value: 'ss' + i, label: `SignalTest ${s.channel}`, f: s.psd.f, p: s.psd.p, hemi: s.hemisphere, parsed: null }));
+      d.signalCheck.forEach((s, i) => src.push({ value: 'sc' + i, label: `SignalCheck ${C.prettyChannel(s.channel)}`, f: s.f, p: s.p, hemi: /LEFT/i.test(s.channel) ? 'Left' : 'Right' }));
+      d.montage.forEach((m, i) => src.push({ value: 'mo' + i, label: `Survey ${m.hemisphere[0]} · ${m.label}`, f: m.f, p: m.mag, hemi: m.hemisphere }));
+      d.bsTimeDomain.forEach((t, i) => {
+        const w = C.welchPSD(t.data, t.fsEff || t.fs, { nperseg: 1024, overlap: .5 });
+        if (w.p) src.push({ value: 'td' + i, label: `Streaming ${t.label} (Welch)`, f: Array.from(w.f), p: Array.from(w.p), hemi: t.hemisphere, td: t });
+      });
+      if (!src.length) return node.appendChild(el('div', { class: 'empty', text: 'Nenhum espectro disponível.' }));
+      const cur = src.find(s => s.value === opt('F22', 'src', src[src.length - 1].value)) || src[src.length - 1];
+
+      /* frequência de estimulação: do arquivo quando existir, senão do usuário */
+      const est = C.inferDeviceState(cur.td || null, (activeFiles()[0] || {}).parsed, { modality: cur.td ? 'streaming' : 'survey' });
+      const fstimArquivo = isFinite(est.rateHz) && est.rateHz > 0 ? est.rateHz : NaN;
+      const fstim = opt('F22', 'fstim', isFinite(fstimArquivo) ? fstimArquivo : 0);
+      const tol = opt('F22', 'tol', 2.5);
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('fonte', src, cur.value, v => setOpt('F22', 'src', v)),
+        ctrlNumber('f_stim (Hz; 0 = desconhecida)', fstim, 0, 250, 5, v => setOpt('F22', 'fstim', v)),
+        ctrlNumber('tolerância (Hz)', tol, 0.5, 8, 0.5, v => setOpt('F22', 'tol', v))
+      ]));
+      const fmaxDisp = cur.f[cur.f.length - 1];
+      if (fmaxDisp < 55) return node.appendChild(el('div', {
+        class: 'empty', html: `Este espectro vai só até ${f(fmaxDisp, 1)} Hz. A faixa de gama (55–95 Hz) não está no dado — ` +
+          `nenhuma conclusão sobre gama é possível aqui.`
+      }));
+      const g = C.detectGamma(cur.f, cur.p, { stimRateHz: fstim > 0 ? fstim : NaN, tolHz: tol, lo: 40, hi: Math.min(100, fmaxDisp) });
+
+      const box = plotBox(node, 280);
+      const idx = []; for (let i = 0; i < cur.f.length; i++) if (cur.f[i] >= 30 && cur.f[i] <= Math.min(110, fmaxDisp)) idx.push(i);
+      const ys = idx.map(i => cur.p[i]);
+      const ch = new P.Chart(box.canvas, {
+        width: box.width, height: box.height, xlim: [30, Math.min(110, fmaxDisp)],
+        ylim: [0, Math.max.apply(null, ys) * 1.2],
+        xlabel: 'frequência (Hz)', ylabel: 'potência', title: 'faixa de gama — picos e f_stim/2',
+        pad: { l: 68, r: 14, t: 24, b: 42 }
+      });
+      ch.axes();
+      ch.span(55, 95, { color: COL.ok, alpha: .07, label: 'faixa da FTG' });
+      ch.line(idx.map(i => cur.f[i]), ys, { color: hcol(cur.hemi), width: 1.6 });
+      if (fstim > 0) {
+        ch.vline(fstim / 2, { color: COL.right, width: 1.6, dash: [5, 3], label: `f_stim/2 = ${f(fstim / 2, 1)} Hz` });
+        ch.span(fstim / 2 - tol, fstim / 2 + tol, { color: COL.right, alpha: .08 });
+      }
+      (g.peaks || []).forEach(pk => ch.marker(pk.hz, cur.p[cur.f.findIndex(v => Math.abs(v - pk.hz) < 1e-6)] || 0, { color: COL.accent, r: 3 }));
+      ch.legend({ x: ch.x0 + 8, y: ch.y1 + 6 });
+
+      node.appendChild(table(['pico (Hz)', 'proeminência sobre o aperiódico', 'largura (Hz)', 'Q', 'classificação'],
+        (g.peaks || []).length ? g.peaks.map(pk => [
+          f(pk.hz, 2), f(pk.prominenceOverAperiodic, 2), f(pk.bandwidthHz, 2), f(pk.q, 1),
+          g.entrained && Math.abs(pk.hz - g.entrained.hz) < 1e-6 ? 'entrained (f_stim/2)'
+            : g.ftg && Math.abs(pk.hz - g.ftg.hz) < 1e-6 ? 'finamente sintonizada' : '—'
+        ]) : [['—', '—', '—', '—', 'nenhum pico destacado do fundo aperiódico']]));
+
+      node.appendChild(el('div', {
+        class: g.verdict === 'indistinguível sem a frequência de estimulação' ? 'warnbox' : 'note',
+        html: `<b>Veredito: ${g.verdict}.</b> ` +
+          (g.reason ? g.reason + '. ' : '') +
+          (g.clinicalNote ? g.clinicalNote + '. ' : '') +
+          (fstim > 0 ? `f_stim usada: ${f(fstim, 1)} Hz${isFinite(fstimArquivo) ? ' (lida do arquivo)' : ' (informada manualmente)'}; subarmônico em ${f(fstim / 2, 1)} Hz, tolerância ±${f(tol, 1)} Hz.`
+            : 'Sem a frequência de estimulação, um pico em 65 Hz pode ser gama endógena ou engate 1:2 com estimulação a 130 Hz — ' +
+              'as duas leituras clínicas são opostas, e por isso nenhuma é afirmada.')
+      }));
+
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Como confirmar de vez.</b> Registre o mesmo canal com <b>duas frequências de estimulação diferentes</b>. ` +
+          `Se o pico acompanhar f_stim/2, é entrained; se ficar parado, é endógeno. Sem essa manobra, a classificação acima é uma ` +
+          `inferência aritmética, não uma demonstração. ` +
+          `<b>Por que importa:</b> a gama finamente sintonizada acompanha o estado ON de levodopa e discinesia (marcador pró-cinético); ` +
+          `a gama entrained é resposta da rede à própria estimulação e não deve ser lida como marcador de estado motor.`
+      }));
+
+      node.appendChild(exportRow([
+        { label: '⤓ PNG', fn: () => P.downloadCanvas(box.canvas, 'F22_gama') },
+        { label: '⤓ CSV picos', fn: () => P.downloadText(P.toCSV((g.peaks || []).map(pk => ({
+          fonte: cur.label, hz: pk.hz, proeminencia: pk.prominenceOverAperiodic, largura_hz: pk.bandwidthHz, q: pk.q,
+          f_stim: fstim || '', subarmonico: fstim ? fstim / 2 : '', veredito: g.verdict
+        }))), 'F22_gama.csv', 'text/csv') }
+      ]));
+    }
   }
 ];
 

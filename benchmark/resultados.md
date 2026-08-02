@@ -1,6 +1,6 @@
 # Benchmark do pipeline — desempenho medido
 
-Sinal sintético com ground truth (`tools/gerar_sintetico.mjs`). **56/56** critérios aprovados.
+Sinal sintético com ground truth (`tools/gerar_sintetico.mjs`). **87/87** critérios aprovados.
 
 | métrica | condição | valor | unidade | critério | ok |
 |---|---|---:|---|---|:--:|
@@ -60,3 +60,34 @@ Sinal sintético com ground truth (`tools/gerar_sintetico.mjs`). **56/56** crit�
 | recuperação da frequência de pico | preset et | 0.1055 | Hz | < 0,5 Hz | ✓ |
 | recuperação do expoente aperiódico | preset et | 0.5363 | % | < 40% | ✓ |
 | detecção de bursts (F1) | SNR 20 dB, p75 | 0.9787 | F1 | > 0,80 | ✓ |
+| pico por multitaper | 4 s de registro | 0.0156 | Hz | < 0,5 Hz | ✓ |
+| Welch se recusa (poucos segmentos) | 4 s de registro | 2 | segmentos | informativo | ✓ |
+| pico por multitaper | 8 s de registro | 0.0156 | Hz | < 0,5 Hz | ✓ |
+| pico por Welch (referência) | 8 s de registro | 0.0156 | Hz | informativo | ✓ |
+| pico por multitaper | 16 s de registro | 0.0767 | Hz | < 0,5 Hz | ✓ |
+| pico por Welch (referência) | 16 s de registro | 0.0156 | Hz | informativo | ✓ |
+| ortonormalidade das DPSS | N=512, NW=4, K=7 | 0 |  | < 1e-8 | ✓ |
+| concentração mínima até 2NW−2 | N=512, NW=4 | 0.995 | λ | > 0,99 | ✓ |
+| specparam — expoente | χ verdadeiro 1 | 0.0013 |  | < 0,10 | ✓ |
+| specparam — offset | χ verdadeiro 1 | 0.0028 |  | < 0,15 | ✓ |
+| specparam — frequência do pico | χ verdadeiro 1 | 0.005 | Hz | < 0,5 Hz | ✓ |
+| specparam — largura do pico | χ verdadeiro 1 | 0.059 | Hz | < 2,5 Hz | ✓ |
+| specparam — R² do modelo | χ verdadeiro 1 | 1 |  | > 0,95 | ✓ |
+| specparam — expoente | χ verdadeiro 1.5 | 0.0019 |  | < 0,10 | ✓ |
+| specparam — offset | χ verdadeiro 1.5 | 0.004 |  | < 0,15 | ✓ |
+| specparam — frequência do pico | χ verdadeiro 1.5 | 0.007 | Hz | < 0,5 Hz | ✓ |
+| specparam — largura do pico | χ verdadeiro 1.5 | 0.084 | Hz | < 2,5 Hz | ✓ |
+| specparam — R² do modelo | χ verdadeiro 1.5 | 1 |  | > 0,95 | ✓ |
+| specparam — expoente | χ verdadeiro 2.2 | 0.0022 |  | < 0,10 | ✓ |
+| specparam — offset | χ verdadeiro 2.2 | 0.0046 |  | < 0,15 | ✓ |
+| specparam — frequência do pico | χ verdadeiro 2.2 | 0.007 | Hz | < 0,5 Hz | ✓ |
+| specparam — largura do pico | χ verdadeiro 2.2 | 0.096 | Hz | < 2,5 Hz | ✓ |
+| specparam — R² do modelo | χ verdadeiro 2.2 | 1 |  | > 0,95 | ✓ |
+| seleção de modelo aperiódico | espectro com joelho | 1 | acerto | = 1 | ✓ |
+| seleção de modelo aperiódico | lei de potência pura | 1 | acerto | = 1 | ✓ |
+| bursts por wavelet (F1) | SNR 20 dB, p75 | 0.9804 | F1 | > 0,75 | ✓ |
+| PAC — detecta acoplamento verdadeiro | beta→gama simulado | 23.705 | z | > 5 | ✓ |
+| PAC — rejeita controle sem acoplamento | sem acoplamento | -0.196 | z | < 3 | ✓ |
+| gama — classifica entrained em f_stim/2 | pico 65 Hz, f_stim 130 | 1 | acerto | = 1 | ✓ |
+| gama — classifica endógena fora de f_stim/2 | pico 65 Hz, f_stim 160 | 1 | acerto | = 1 | ✓ |
+| gama — recusa sem f_stim | f_stim desconhecida | 1 | acerto | = 1 | ✓ |

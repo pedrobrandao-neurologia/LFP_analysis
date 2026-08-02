@@ -35,9 +35,15 @@ import { checkHarmonics } from './qc/harmonics.js';
 import { peakReproducibility, screenChronicByEcg } from './qc/reproducibility.js';
 import { qcPanel } from './qc/panel.js';
 import { notchFFT, suggestLineFrequency } from './dsp/notch.js';
+import { dpss, multitaperPSD, compareEstimators, spectralUncertainty } from './dsp/multitaper.js';
+import { specparam, specparamCompare } from './dsp/specparam.js';
+import { morletCWT, waveletBandEnvelope, waveletBursts, aperiodicBurstThreshold, burstDurationSensitivity } from './dsp/wavelet.js';
+import { pacTort, tortMI, comodulogram, waveformAsymmetry, analytic } from './dsp/pac.js';
+import { detectGamma, confirmEntrainment } from './dsp/gamma.js';
 import { assessEligibility, PREVALENCIA_BETA } from './adbs/eligibility.js';
 import { simulateAdbs, thresholdSweep, suggestThresholds } from './adbs/simulate.js';
-import { fitDoseResponse, levenbergMarquardt, MODELOS } from './adbs/doseresponse.js';
+import { fitDoseResponse, MODELOS } from './adbs/doseresponse.js';
+import { levenbergMarquardt, solveGaussJordan } from './stats/optimize.js';
 
 const API = {
   parsePercept, MODALITIES, BANDS, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId,
@@ -73,7 +79,13 @@ const API = {
   /* aDBS: elegibilidade, simulação e predição (Onda 4.2 — L34, L35, L36) */
   assessEligibility, PREVALENCIA_BETA,
   simulateAdbs, thresholdSweep, suggestThresholds,
-  fitDoseResponse, levenbergMarquardt, MODELOS
+  fitDoseResponse, levenbergMarquardt, solveGaussJordan, MODELOS,
+  /* DSP avançada (Onda 3 — multitaper, specparam completo, wavelet, PAC, gama) */
+  dpss, multitaperPSD, compareEstimators, spectralUncertainty,
+  specparam, specparamCompare,
+  morletCWT, waveletBandEnvelope, waveletBursts, aperiodicBurstThreshold, burstDurationSensitivity,
+  pacTort, tortMI, comodulogram, waveformAsymmetry, analytic,
+  detectGamma, confirmEntrainment
 };
 
 export default API;

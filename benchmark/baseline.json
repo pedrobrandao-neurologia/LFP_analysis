@@ -1,6 +1,6 @@
 {
-  "aprovados": 56,
-  "total": 56,
+  "aprovados": 87,
+  "total": 87,
   "linhas": [
     {
       "metrica": "detecção de picos R — VP",
@@ -449,6 +449,254 @@
       "criterio": "> 0,80",
       "aprovado": 1,
       "unidade": "F1"
+    },
+    {
+      "metrica": "pico por multitaper",
+      "condicao": "4 s de registro",
+      "valor": 0.0156,
+      "criterio": "< 0,5 Hz",
+      "aprovado": 1,
+      "unidade": "Hz"
+    },
+    {
+      "metrica": "Welch se recusa (poucos segmentos)",
+      "condicao": "4 s de registro",
+      "valor": 2,
+      "criterio": "informativo",
+      "aprovado": 1,
+      "unidade": "segmentos"
+    },
+    {
+      "metrica": "pico por multitaper",
+      "condicao": "8 s de registro",
+      "valor": 0.0156,
+      "criterio": "< 0,5 Hz",
+      "aprovado": 1,
+      "unidade": "Hz"
+    },
+    {
+      "metrica": "pico por Welch (referência)",
+      "condicao": "8 s de registro",
+      "valor": 0.0156,
+      "criterio": "informativo",
+      "aprovado": 1,
+      "unidade": "Hz"
+    },
+    {
+      "metrica": "pico por multitaper",
+      "condicao": "16 s de registro",
+      "valor": 0.0767,
+      "criterio": "< 0,5 Hz",
+      "aprovado": 1,
+      "unidade": "Hz"
+    },
+    {
+      "metrica": "pico por Welch (referência)",
+      "condicao": "16 s de registro",
+      "valor": 0.0156,
+      "criterio": "informativo",
+      "aprovado": 1,
+      "unidade": "Hz"
+    },
+    {
+      "metrica": "ortonormalidade das DPSS",
+      "condicao": "N=512, NW=4, K=7",
+      "valor": 0,
+      "criterio": "< 1e-8",
+      "aprovado": 1,
+      "unidade": ""
+    },
+    {
+      "metrica": "concentração mínima até 2NW−2",
+      "condicao": "N=512, NW=4",
+      "valor": 0.995,
+      "criterio": "> 0,99",
+      "aprovado": 1,
+      "unidade": "λ"
+    },
+    {
+      "metrica": "specparam — expoente",
+      "condicao": "χ verdadeiro 1",
+      "valor": 0.0013,
+      "criterio": "< 0,10",
+      "aprovado": 1,
+      "unidade": ""
+    },
+    {
+      "metrica": "specparam — offset",
+      "condicao": "χ verdadeiro 1",
+      "valor": 0.0028,
+      "criterio": "< 0,15",
+      "aprovado": 1,
+      "unidade": ""
+    },
+    {
+      "metrica": "specparam — frequência do pico",
+      "condicao": "χ verdadeiro 1",
+      "valor": 0.005,
+      "criterio": "< 0,5 Hz",
+      "aprovado": 1,
+      "unidade": "Hz"
+    },
+    {
+      "metrica": "specparam — largura do pico",
+      "condicao": "χ verdadeiro 1",
+      "valor": 0.059,
+      "criterio": "< 2,5 Hz",
+      "aprovado": 1,
+      "unidade": "Hz"
+    },
+    {
+      "metrica": "specparam — R² do modelo",
+      "condicao": "χ verdadeiro 1",
+      "valor": 1,
+      "criterio": "> 0,95",
+      "aprovado": 1,
+      "unidade": ""
+    },
+    {
+      "metrica": "specparam — expoente",
+      "condicao": "χ verdadeiro 1.5",
+      "valor": 0.0019,
+      "criterio": "< 0,10",
+      "aprovado": 1,
+      "unidade": ""
+    },
+    {
+      "metrica": "specparam — offset",
+      "condicao": "χ verdadeiro 1.5",
+      "valor": 0.004,
+      "criterio": "< 0,15",
+      "aprovado": 1,
+      "unidade": ""
+    },
+    {
+      "metrica": "specparam — frequência do pico",
+      "condicao": "χ verdadeiro 1.5",
+      "valor": 0.007,
+      "criterio": "< 0,5 Hz",
+      "aprovado": 1,
+      "unidade": "Hz"
+    },
+    {
+      "metrica": "specparam — largura do pico",
+      "condicao": "χ verdadeiro 1.5",
+      "valor": 0.084,
+      "criterio": "< 2,5 Hz",
+      "aprovado": 1,
+      "unidade": "Hz"
+    },
+    {
+      "metrica": "specparam — R² do modelo",
+      "condicao": "χ verdadeiro 1.5",
+      "valor": 1,
+      "criterio": "> 0,95",
+      "aprovado": 1,
+      "unidade": ""
+    },
+    {
+      "metrica": "specparam — expoente",
+      "condicao": "χ verdadeiro 2.2",
+      "valor": 0.0022,
+      "criterio": "< 0,10",
+      "aprovado": 1,
+      "unidade": ""
+    },
+    {
+      "metrica": "specparam — offset",
+      "condicao": "χ verdadeiro 2.2",
+      "valor": 0.0046,
+      "criterio": "< 0,15",
+      "aprovado": 1,
+      "unidade": ""
+    },
+    {
+      "metrica": "specparam — frequência do pico",
+      "condicao": "χ verdadeiro 2.2",
+      "valor": 0.007,
+      "criterio": "< 0,5 Hz",
+      "aprovado": 1,
+      "unidade": "Hz"
+    },
+    {
+      "metrica": "specparam — largura do pico",
+      "condicao": "χ verdadeiro 2.2",
+      "valor": 0.096,
+      "criterio": "< 2,5 Hz",
+      "aprovado": 1,
+      "unidade": "Hz"
+    },
+    {
+      "metrica": "specparam — R² do modelo",
+      "condicao": "χ verdadeiro 2.2",
+      "valor": 1,
+      "criterio": "> 0,95",
+      "aprovado": 1,
+      "unidade": ""
+    },
+    {
+      "metrica": "seleção de modelo aperiódico",
+      "condicao": "espectro com joelho",
+      "valor": 1,
+      "criterio": "= 1",
+      "aprovado": 1,
+      "unidade": "acerto"
+    },
+    {
+      "metrica": "seleção de modelo aperiódico",
+      "condicao": "lei de potência pura",
+      "valor": 1,
+      "criterio": "= 1",
+      "aprovado": 1,
+      "unidade": "acerto"
+    },
+    {
+      "metrica": "bursts por wavelet (F1)",
+      "condicao": "SNR 20 dB, p75",
+      "valor": 0.9804,
+      "criterio": "> 0,75",
+      "aprovado": 1,
+      "unidade": "F1"
+    },
+    {
+      "metrica": "PAC — detecta acoplamento verdadeiro",
+      "condicao": "beta→gama simulado",
+      "valor": 23.705,
+      "criterio": "> 5",
+      "aprovado": 1,
+      "unidade": "z"
+    },
+    {
+      "metrica": "PAC — rejeita controle sem acoplamento",
+      "condicao": "sem acoplamento",
+      "valor": -0.196,
+      "criterio": "< 3",
+      "aprovado": 1,
+      "unidade": "z"
+    },
+    {
+      "metrica": "gama — classifica entrained em f_stim/2",
+      "condicao": "pico 65 Hz, f_stim 130",
+      "valor": 1,
+      "criterio": "= 1",
+      "aprovado": 1,
+      "unidade": "acerto"
+    },
+    {
+      "metrica": "gama — classifica endógena fora de f_stim/2",
+      "condicao": "pico 65 Hz, f_stim 160",
+      "valor": 1,
+      "criterio": "= 1",
+      "aprovado": 1,
+      "unidade": "acerto"
+    },
+    {
+      "metrica": "gama — recusa sem f_stim",
+      "condicao": "f_stim desconhecida",
+      "valor": 1,
+      "criterio": "= 1",
+      "aprovado": 1,
+      "unidade": "acerto"
     }
   ]
 }

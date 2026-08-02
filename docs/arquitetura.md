@@ -57,9 +57,15 @@ Estado atual (verificado):
 | `stats/circadian.js`, `stats/events.js`, `stats/states.js` | `stats`, `dsp`, `io` |
 | `metrics/**` | `dsp`, `stats`, `io` |
 | `report/reading.js` | `profiles` (só o perfil; nenhuma dependência de DSP) |
+| `stats/optimize.js` | `stats` (Levenberg-Marquardt compartilhado por `dsp` e `adbs`) |
+| `dsp/multitaper.js`, `dsp/specparam.js`, `dsp/wavelet.js`, `dsp/pac.js`, `dsp/gamma.js` | `dsp`, `stats` |
 
 A camada de apresentação (`src/app.js`, `src/percept-plot.js`) é consumidora do núcleo e nunca é
 importada por ele.
+
+A Onda 3 forçou uma extração: o Levenberg-Marquardt vivia dentro de `adbs/doseresponse.js`, e o
+specparam completo precisa do mesmo ajustador — mas `dsp` não pode importar `adbs`. O otimizador
+foi para `stats/optimize.js`, camada que ambos podem importar sem violar a regra.
 
 Corolário que a Onda 8.1 tornou explícito: **as frases em linguagem clínica também são núcleo**.
 `report/reading.js` recebe a saída de `extractMetrics` e o painel de QC e devolve texto com

@@ -12,85 +12,8 @@
 
    Unidades: x em mA, y em potência de LFP (u.a.).                            */
 
-import { mean, quantile, median } from '../stats/descriptive.js';
-
-/* Resolve A·δ = b por Gauss-Jordan (matrizes pequenas: ≤ 4 parâmetros). */
-function solve(A, b) {
-  const n = b.length;
-  const M = A.map((linha, i) => linha.concat([b[i]]));
-  for (let c = 0; c < n; c++) {
-    let piv = c;
-    for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[piv][c])) piv = r;
-    if (Math.abs(M[piv][c]) < 1e-14) return null;
-    [M[c], M[piv]] = [M[piv], M[c]];
-    const d = M[c][c];
-    for (let j = c; j <= n; j++) M[c][j] /= d;
-    for (let r = 0; r < n; r++) if (r !== c) {
-      const f = M[r][c];
-      for (let j = c; j <= n; j++) M[r][j] -= f * M[c][j];
-    }
-  }
-  return M.map(l => l[n]);
-}
-
-/* Levenberg-Marquardt com Jacobiano numérico. */
-export function levenbergMarquardt(x, y, modelo, p0, opts) {
-  opts = opts || {};
-  const maxIter = opts.maxIter || 200;
-  const tol = opts.tol || 1e-10;
-  let p = p0.slice(), lambda = opts.lambda0 || 1e-3;
-  const n = x.length, k = p.length;
-  const sse = par => {
-    let s = 0;
-    for (let i = 0; i < n; i++) { const r = y[i] - modelo(x[i], par); s += r * r; }
-    return s;
-  };
-  let erro = sse(p);
-  let iter = 0, convergiu = false;
-  for (; iter < maxIter; iter++) {
-    /* Jacobiano por diferenças centrais */
-    const J = [];
-    for (let i = 0; i < n; i++) {
-      const linha = new Array(k);
-      for (let j = 0; j < k; j++) {
-        const h = Math.max(1e-7, Math.abs(p[j]) * 1e-6);
-        const pm = p.slice(), pp = p.slice();
-        pm[j] -= h; pp[j] += h;
-        linha[j] = (modelo(x[i], pp) - modelo(x[i], pm)) / (2 * h);
-      }
-      J.push(linha);
-    }
-    const JtJ = Array.from({ length: k }, () => new Array(k).fill(0));
-    const Jtr = new Array(k).fill(0);
-    for (let i = 0; i < n; i++) {
-      const r = y[i] - modelo(x[i], p);
-      for (let a = 0; a < k; a++) {
-        Jtr[a] += J[i][a] * r;
-        for (let b = 0; b < k; b++) JtJ[a][b] += J[i][a] * J[i][b];
-      }
-    }
-    const A = JtJ.map((l, i) => l.map((v, j) => i === j ? v * (1 + lambda) : v));
-    const delta = solve(A, Jtr);
-    if (!delta) break;
-    const novo = p.map((v, i) => v + delta[i]);
-    const erroNovo = sse(novo);
-    if (erroNovo < erro) {
-      const ganho = (erro - erroNovo) / (erro || 1);
-      p = novo; erro = erroNovo; lambda = Math.max(1e-9, lambda / 3);
-      if (ganho < tol) { convergiu = true; break; }
-    } else {
-      lambda *= 4;
-      if (lambda > 1e10) break;
-    }
-  }
-  const my = mean(y);
-  const sst = y.reduce((a, v) => a + (v - my) * (v - my), 0);
-  return {
-    params: p, sse: erro, mse: erro / n,
-    r2: sst > 0 ? 1 - erro / sst : NaN,
-    iterations: iter, converged: convergiu
-  };
-}
+import { quantile, median } from '../stats/descriptive.js';
+import { levenbergMarquardt } from '../stats/optimize.js';
 
 /* Os dois modelos do BRAVO. */
 export const MODELOS = {
