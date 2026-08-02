@@ -11,13 +11,16 @@ import { welchPSD, spectrogram, bandPower, bandTable, bandOf, BANDS } from './ds
 import { bandpassFFT, hilbertEnvelope } from './dsp/filters.js';
 import { detectBursts } from './dsp/bursts.js';
 import { fitAperiodic } from './dsp/aperiodic.js';
-import { ecgTemplateSubtract } from './artifact/ecg.js';
+import { ecgTemplateSubtract, removeEcg, cleanEcg } from './artifact/ecg.js';
+import { detectRPeaks } from './artifact/rpeaks.js';
+import { svdJacobi, lowRankApprox } from './artifact/svd.js';
+import { ecgSuppressionRatio, betaPeakRecovery, bandPowerPreservation, correlation, validateEcgRemoval } from './artifact/validate.js';
 import { mean, median, sd, variance, quantile, mad, removeOutliersMAD, linreg, pearson, histogram, ecdf, bimodalityCoefficient } from './stats/descriptive.js';
 import { fPValue, tPValue, normCDF } from './stats/distributions.js';
 import { cosinor, cosinorBootstrap, rayleigh, varianceByHour, diurnalProfile } from './stats/circadian.js';
 import { eventAligned, permutationTest } from './stats/events.js';
 import { detectStates, betaEnvelopeSeries, streamOnOff } from './stats/states.js';
-import { peakInBand, pickSpectrum, spectralMetrics, burstMetrics, doseResponse } from './metrics/acute.js';
+import { peakInBand, pickSpectrum, spectralMetrics, burstMetrics, doseResponse, ecgMetrics } from './metrics/acute.js';
 import { mergeTrend, collectThresholds, chronicMetrics, thresholdSummary } from './metrics/chronic.js';
 import { extractMetrics, daysSince } from './metrics/extract.js';
 
@@ -28,12 +31,15 @@ const API = {
   mean, median, sd, variance, quantile, mad, removeOutliersMAD, linreg, pearson,
   cosinor, cosinorBootstrap, rayleigh, varianceByHour, diurnalProfile, eventAligned,
   permutationTest, thresholdSummary, histogram, ecdf, fPValue, tPValue, normCDF,
-  peakInBand, daysSince, pickSpectrum, spectralMetrics, burstMetrics, doseResponse,
+  peakInBand, daysSince, pickSpectrum, spectralMetrics, burstMetrics, doseResponse, ecgMetrics,
   mergeTrend, collectThresholds, chronicMetrics, extractMetrics,
   detectStates, betaEnvelopeSeries, streamOnOff, bimodalityCoefficient,
   /* integridade do sinal bruto (Onda 1 — L01, L02, L05, L07) */
   parseIntList, unwrapCounter, unwrapTicks, analyzePackets, insertNaNGaps, effectiveFs, stitchStreams,
-  nanStats, segmentsWithoutNan, interpolateForFilter, detrendLinearNaN
+  nanStats, segmentsWithoutNan, interpolateForFilter, detrendLinearNaN,
+  /* artefato cardíaco: três métodos + validação quantificada (Onda 2 — L08, L10, L11, L12) */
+  detectRPeaks, removeEcg, cleanEcg, svdJacobi, lowRankApprox,
+  ecgSuppressionRatio, betaPeakRecovery, bandPowerPreservation, correlation, validateEcgRemoval
 };
 
 export default API;

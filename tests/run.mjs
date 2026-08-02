@@ -532,6 +532,168 @@ sec('DSP tolerante a lacunas');
   });
 }
 
+/* ------------------------- 10. artefato cardíaco: 3 métodos + validação (Onda 2) -- */
+sec('remoção de ECG — detecção em duas passagens, três métodos e validação');
+{
+  const FS = 250, DUR = 60, N = FS * DUR, BPM = 60, RR = Math.round(FS * 60 / BPM);
+
+  /* QRS sintético paramétrico: onda bifásica estreita (~100 ms) */
+  const qrs = (() => {
+    const L = Math.round(0.1 * FS), t = [];
+    for (let i = 0; i < L; i++) {
+      const u = (i / L - 0.5) * 8;
+      t.push(Math.exp(-u * u / 2) * (1 - 0.55 * u * u));
+    }
+    return t;
+  })();
+
+  /* sinal = senoide beta 20 Hz + ruído 1/f (determinístico) + QRS em SNR dado */
+  function gerar(snrDb) {
+    const limpo = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      let rosa = 0;
+      for (let k = 1; k <= 8; k++) rosa += Math.sin(2 * Math.PI * (k * 0.7) * i / FS + k * 1.7) / k;
+      limpo[i] = 2 * Math.sin(2 * Math.PI * 20 * i / FS) + 0.6 * rosa
+        + 1.2 * Math.sin(2 * Math.PI * 6 * i / FS + 0.4);
+    }
+    let pS = 0; for (let i = 0; i < N; i++) pS += limpo[i] * limpo[i];
+    pS /= N;
+    /* posição de referência = o MÁXIMO do QRS, que é o que um detector encontra.
+       O RR leva variabilidade (HRV): sem ela o QRS fica travado em fase com o
+       beta e o template médio passa a conter o próprio sinal cerebral — um
+       artefato do sinal sintético, não do método. */
+    let iMax = 0; qrs.forEach((v, i) => { if (v > qrs[iMax]) iMax = i; });
+    const picos = [];
+    let pos = RR;
+    for (let b = 0; pos < N - RR; b++) {
+      picos.push(pos + iMax);
+      pos += Math.round(RR * (1 + 0.10 * Math.sin(b * 1.7) + 0.05 * Math.sin(b * 0.53)));
+    }
+    const artef = new Float64Array(N);
+    picos.forEach(p => { for (let k = 0; k < qrs.length; k++) { const i = p - iMax + k; if (i < N) artef[i] += qrs[k]; } });
+    let pA = 0; for (let i = 0; i < N; i++) pA += artef[i] * artef[i];
+    pA /= N;
+    /* escala o artefato para o SNR pedido: SNR = 10log10(pS/pA') */
+    const alvo = pS / Math.pow(10, snrDb / 10);
+    const g = pA > 0 ? Math.sqrt(alvo / pA) : 0;
+    const sujo = new Float64Array(N);
+    for (let i = 0; i < N; i++) sujo[i] = limpo[i] + g * artef[i];
+    return { limpo, sujo, picos };
+  }
+
+  const medirDeteccao = (snr) => {
+    const { sujo, picos } = gerar(snr);
+    const det = C.detectRPeaks(sujo, FS, {});
+    const tol = Math.round(0.05 * FS);
+    let vp = 0; const usados = new Set();
+    det.peaks.forEach(p => {
+      const achou = picos.findIndex((v, i) => !usados.has(i) && Math.abs(v - p) <= tol);
+      if (achou >= 0) { vp++; usados.add(achou); }
+    });
+    return {
+      det, nTrue: picos.length,
+      vp: 100 * vp / picos.length,
+      fp: 100 * (det.peaks.length - vp) / Math.max(1, det.peaks.length)
+    };
+  };
+
+  t('detecção de picos R: > 95% VP e < 1% FP com artefato detectável', () => {
+    /* regime em que a remoção de ECG faz sentido: o artefato domina o registro */
+    for (const snr of [-10, -5]) {
+      const r = medirDeteccao(snr);
+      assert(r.vp > 95, `SNR ${snr} dB: VP ${r.vp.toFixed(1)}%`);
+      assert(r.fp < 1, `SNR ${snr} dB: FP ${r.fp.toFixed(1)}%`);
+      assert(r.det.method === 'template-2-passagens', 'método: ' + r.det.method);
+      assert(Math.abs(r.det.bpm - BPM) < 6, `SNR ${snr} dB: bpm ${r.det.bpm.toFixed(1)}`);
+    }
+    const a = medirDeteccao(-10), b = medirDeteccao(-5);
+    return `−10 dB: VP ${a.vp.toFixed(0)}%/FP ${a.fp.toFixed(0)}% · −5 dB: VP ${b.vp.toFixed(0)}%/FP ${b.fp.toFixed(0)}%`;
+  });
+
+  t('com artefato desprezível, o detector não reivindica confiança alta', () => {
+    /* SNR +10 dB: o QRS é 10× menor que o sinal cerebral. Nesse caso não há o
+       que remover, e o comportamento correto é NÃO afirmar um resultado —
+       Vivien et al. relatam 2 de 30 STN em que o pico R não era detectável sem
+       ECG externo. O detector precisa sinalizar isso, não produzir número. */
+    const r = medirDeteccao(10);
+    assert(r.det.confidence !== 'alta',
+      `confiança "${r.det.confidence}" com artefato desprezível (VP real ${r.vp.toFixed(0)}%)`);
+    assert(typeof r.det.reason === 'string' && r.det.reason.length, 'sem motivo legível');
+    return `confiança ${r.det.confidence} — ${r.det.reason.slice(0, 44)}…`;
+  });
+
+  t('SVD de Jacobi reconstrói matriz de posto 1 exatamente', () => {
+    const u = [1, 2, 3, 4], v = [2, -1, 0.5];
+    const A = u.map(a => v.map(b => a * b));
+    const s = C.svdJacobi(A);
+    assert(s.S[0] > 0 && s.S[1] < 1e-8, 'posto não é 1: ' + Array.from(s.S).join(','));
+    const R = C.lowRankApprox(s, 1);
+    let err = 0;
+    for (let i = 0; i < A.length; i++) for (let j = 0; j < v.length; j++) err = Math.max(err, Math.abs(R[i][j] - A[i][j]));
+    assert(err < 1e-8, 'erro de reconstrução ' + err);
+    return `σ = [${Array.from(s.S).map(x => x.toFixed(3)).join(', ')}], erro ${err.toExponential(1)}`;
+  });
+
+  /* varredura de SNR com os três métodos — é a comparação que Stam et al. e
+     Vivien et al. fizeram e que nenhuma ferramenta reporta para si mesma */
+  const METODOS = ['interpolation', 'template', 'svd'];
+  for (const snr of [-10, -5]) {
+    t(`SNR ${snr} dB — os três métodos suprimem o ECG e preservam o pico beta`, () => {
+      const { limpo, sujo } = gerar(snr);
+      const det = C.detectRPeaks(sujo, FS, {});
+      assert(det.peaks.length > 30, 'poucos picos detectados: ' + det.peaks.length);
+      const linhas = METODOS.map(method => {
+        const r = C.removeEcg(sujo, FS, det.peaks, { method });
+        assert(r.applied, `${method} não aplicado: ${r.reason}`);
+        const v = C.validateEcgRemoval(sujo, r.cleaned, FS, { peakHz: 20, reference: limpo });
+        assert(v.suppressionRatioDb > 0, `${method}: supressão ${v.suppressionRatioDb.toFixed(2)} dB não é > 0`);
+        /* faixa medida para os três métodos nos defaults; o SVD, recomendado na
+           literatura, é verificado no critério estrito [0,8; 1,2] logo abaixo */
+        assert(v.betaPeakRecovery >= 0.7 && v.betaPeakRecovery <= 1.3,
+          `${method}: recuperação do pico beta ${v.betaPeakRecovery.toFixed(2)} fora de [0,7; 1,3]`);
+        if (method === 'svd') {
+          assert(v.betaPeakRecovery >= 0.8 && v.betaPeakRecovery <= 1.2,
+            `svd: recuperação ${v.betaPeakRecovery.toFixed(2)} fora de [0,8; 1,2]`);
+          assert(v.correlationWithReference > 0.90,
+            `svd: correlação com o ground truth ${v.correlationWithReference.toFixed(3)} ≤ 0,90`);
+        }
+        return `${method.slice(0, 4)} ${v.suppressionRatioDb.toFixed(1)}dB/${v.betaPeakRecovery.toFixed(2)}`;
+      });
+      return linhas.join(' · ');
+    });
+  }
+
+  t('SVD supera os demais na correlação com o ground truth (comparação direta)', () => {
+    const { limpo, sujo } = gerar(-10);
+    const det = C.detectRPeaks(sujo, FS, {});
+    const corr = {};
+    METODOS.forEach(m => {
+      const r = C.removeEcg(sujo, FS, det.peaks, { method: m });
+      corr[m] = C.validateEcgRemoval(sujo, r.cleaned, FS, { peakHz: 20, reference: limpo }).correlationWithReference;
+    });
+    assert(corr.svd >= corr.template && corr.svd >= corr.interpolation,
+      `SVD não é o melhor: ${JSON.stringify(corr)}`);
+    return METODOS.map(m => `${m.slice(0, 4)} ${corr[m].toFixed(3)}`).join(' · ');
+  });
+
+  t('validação reprova limpeza que destrói o pico beta', () => {
+    const { sujo } = gerar(0);
+    const zerado = new Float64Array(sujo.length);      // "limpeza" que apaga tudo
+    const v = C.validateEcgRemoval(sujo, zerado, FS, { peakHz: 20 });
+    assert(v.verdict !== 'supressão com preservação do pico', 'veredito complacente: ' + v.verdict);
+    return v.verdict;
+  });
+
+  t('ecgTemplateSubtract mantém a forma de retorno e passa a usar a nova detecção', () => {
+    const { sujo } = gerar(0);
+    const r = C.ecgTemplateSubtract(sujo, FS);
+    assert(r.applied && r.cleaned.length === sujo.length, 'forma de retorno alterada');
+    assert(isFinite(r.bpm) && r.nBeats > 0, 'bpm/nBeats ausentes');
+    assert(r.detection && r.detection.method, 'não expôs a detecção nova');
+    return `${r.nBeats} batimentos, ${r.bpm.toFixed(0)} bpm, via ${r.detection.method}`;
+  });
+}
+
 /* ------------------------------------------------------------- resultado -- */
 console.log(`\n${'='.repeat(58)}`);
 console.log(`  ${ok} passaram   ${falhas} falharam   ${pulados} sem dados`);

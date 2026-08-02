@@ -1469,33 +1469,638 @@ function findPeaks(f, y, minH) {
 
 /* Remoção de artefato cardíaco por subtração de template (QRS) */
 
-/* ---------- core/artifact/ecg.js ---------- */
-/* artifact/ecg.js — remoção de artefato cardíaco (artifact)
-   Gerado do refactor modular (Prompt 0.1). Ver docs/arquitetura.md. */
+/* ---------- core/artifact/rpeaks.js ---------- */
+/* artifact/rpeaks.js — detecção de picos R em duas passagens por correlação de
+   template, com e sem canal de ECG externo.
+
+   POR QUE ISTO EXISTE. A detecção anterior era de passagem única por limiar de
+   percentil no envelope 5–30 Hz. O padrão do campo, formalizado por Stam et al.
+   (Clin Neurophysiol 2023;146:147-161) e por Vivien et al. (npj Parkinsons Dis
+   2026), é a detecção em DUAS PASSAGENS por correlação de template, com
+   desempenho reportado de 97,2% de verdadeiros positivos, 0,4% de falsos
+   positivos e 2,4% de picos perdidos.
+
+   Implementação de referência (conceitual): DBSsync/functions/ecg_cleaning.py
+   (find_r_peaks_in_lfp_channel, find_r_peaks_based_on_ext_ecg).
+
+   Unidades: x em µV, fs em Hz, saídas de tempo em amostras (peaks) e em ms
+   (rrIntervals, hrvSdnn).                                                    */
 
 
-function ecgTemplateSubtract(x, fs) {
-  const bp = bandpassFFT(x, fs, 5, 30);
-  const env = hilbertEnvelope(bp);
-  const thr = quantile(Array.from(env), 0.98);
-  const refractory = Math.round(0.4 * fs);
+/* Picos locais acima de `height`, respeitando distância mínima. */
+function findPeaksAbove(x, from, to, height, minDist) {
   const peaks = [];
-  for (let i = 1; i < env.length - 1; i++) {
-    if (env[i] > thr && env[i] >= env[i - 1] && env[i] > env[i + 1]) {
-      if (!peaks.length || i - peaks[peaks.length - 1] > refractory) peaks.push(i);
+  for (let i = from + 1; i < to - 1; i++) {
+    if (!isFinite(x[i])) continue;
+    if (x[i] >= x[i - 1] && x[i] > x[i + 1] && x[i] >= height) {
+      const ult = peaks[peaks.length - 1];
+      if (ult == null || i - ult >= minDist) peaks.push(i);
+      else if (x[i] > x[ult]) peaks[peaks.length - 1] = i;
     }
   }
-  const half = Math.round(0.25 * fs);
-  const usable = peaks.filter(p => p - half >= 0 && p + half < x.length);
-  if (usable.length < 8) return { cleaned: Float64Array.from(x), nBeats: usable.length, bpm: NaN, applied: false };
+  return peaks;
+}
+
+/* Passagem grosseira: janelas de 1 s, limiar em percentis decrescentes
+   (estratégia de Stam/DBSsync: 80 → 70 → 60 → 50).
+
+   Detalhe que importa: dentro de cada janela ficam apenas os DOIS candidatos de
+   maior amplitude, não todos os que cruzam o limiar. Com beta forte, o percentil
+   80 é ultrapassado por dezenas de máximos locais da própria oscilação, e o
+   template acabaria sendo montado sobre posições erradas — o QRS é, por
+   construção, o evento de maior amplitude da janela.                        */
+function coarseDetect(x, fs) {
+  const win = Math.max(8, Math.round(fs));
+  const minDist = Math.max(1, Math.round(fs / 3));
+  for (const pct of [80, 70, 60, 50]) {
+    const peaks = [];
+    for (let s = 0; s + win <= x.length; s += win) {
+      const seg = [];
+      for (let i = s; i < s + win; i++) if (isFinite(x[i])) seg.push(x[i]);
+      if (seg.length < win * 0.5) continue;
+      const h = quantile(seg, pct / 100);
+      const cand = findPeaksAbove(x, s, s + win, h, minDist)
+        .sort((a, b) => x[b] - x[a]).slice(0, 2);
+      cand.forEach(i => peaks.push(i));
+    }
+    const limpos = [];
+    peaks.sort((a, b) => a - b).forEach(p => {
+      if (!limpos.length || p - limpos[limpos.length - 1] >= minDist) limpos.push(p);
+    });
+    if (limpos.length >= 3) return { peaks: limpos, percentile: pct };
+  }
+  return { peaks: [], percentile: null };
+}
+
+/* Template médio das épocas centradas nos picos. */
+function buildTemplate(x, peaks, half) {
   const tpl = new Float64Array(2 * half + 1);
-  usable.forEach(p => { for (let k = -half; k <= half; k++) tpl[k + half] += x[p + k]; });
-  for (let k = 0; k < tpl.length; k++) tpl[k] /= usable.length;
-  const m = mean(Array.from(tpl)); for (let k = 0; k < tpl.length; k++) tpl[k] -= m;
+  let n = 0;
+  for (const p of peaks) {
+    if (p - half < 0 || p + half >= x.length) continue;
+    let ok = true;
+    for (let k = -half; k <= half; k++) if (!isFinite(x[p + k])) { ok = false; break; }
+    if (!ok) continue;
+    for (let k = -half; k <= half; k++) tpl[k + half] += x[p + k];
+    n++;
+  }
+  if (!n) return null;
+  for (let k = 0; k < tpl.length; k++) tpl[k] /= n;
+  const m = mean(Array.from(tpl));
+  for (let k = 0; k < tpl.length; k++) tpl[k] -= m;      // template de média zero
+  return { template: tpl, nUsed: n };
+}
+
+/* Correlação cruzada normalizada do template com o sinal. */
+function xcorr(x, tpl) {
+  const L = tpl.length, half = (L - 1) / 2;
+  const out = new Float64Array(x.length);
+  let normT = 0; for (let k = 0; k < L; k++) normT += tpl[k] * tpl[k];
+  normT = Math.sqrt(normT) || 1;
+  for (let i = half; i < x.length - half; i++) {
+    let dot = 0, normX = 0, ok = true;
+    for (let k = 0; k < L; k++) {
+      const v = x[i - half + k];
+      if (!isFinite(v)) { ok = false; break; }
+      dot += v * tpl[k]; normX += v * v;
+    }
+    out[i] = ok && normX > 0 ? dot / (Math.sqrt(normX) * normT) : 0;
+  }
+  return out;
+}
+
+/* detectRPeaks(x, fs, {threshold, externalEcg, externalFs})
+   → { peaks, polarity, template, bpm, rrIntervals, hrvSdnn, nDetected,
+       confidence, reason, method }                                          */
+function detectRPeaks(x, fs, opts) {
+  opts = opts || {};
+  const minDistR = Math.max(1, Math.round(0.5 * fs));   // 0,5 s entre picos R
+
+  /* --- caminho com ECG externo (mais confiável; resolve o caso em que o pico
+     R é pequeno demais no LFP) ------------------------------------------- */
+  if (opts.externalEcg && opts.externalEcg.length) {
+    const fsE = opts.externalFs || fs;
+    const bp = bandpassFFT(opts.externalEcg, fsE, 0.5, 60);
+    const vals = Array.from(bp).filter(isFinite);
+    const h = quantile(vals, 0.95);
+    const picosE = findPeaksAbove(bp, 0, bp.length, h, Math.max(1, Math.round(0.5 * fsE)));
+    /* casar no LFP: máximo absoluto em janela de −80 a +80 ms ao redor de cada R */
+    const jan = Math.round(0.08 * fs);
+    const peaks = [];
+    for (const pe of picosE) {
+      const centro = Math.round(pe * fs / fsE);
+      let melhor = -1, val = -Infinity;
+      for (let i = Math.max(0, centro - jan); i <= Math.min(x.length - 1, centro + jan); i++) {
+        if (isFinite(x[i]) && Math.abs(x[i]) > val) { val = Math.abs(x[i]); melhor = i; }
+      }
+      if (melhor >= 0 && (!peaks.length || melhor - peaks[peaks.length - 1] >= minDistR)) peaks.push(melhor);
+    }
+    const t = buildTemplate(x, peaks, Math.round(0.25 * fs));
+    return finalize(x, fs, peaks, 1, t && t.template, 'ecg-externo');
+  }
+
+  /* --- 1–3. passagem grosseira nas duas polaridades --------------------- */
+  const neg = new Float64Array(x.length);
+  for (let i = 0; i < x.length; i++) neg[i] = -x[i];
+  const cPos = coarseDetect(x, fs), cNeg = coarseDetect(neg, fs);
+  const polarity = cNeg.peaks.length > cPos.peaks.length ? -1 : 1;
+  const sinal = polarity === 1 ? x : neg;
+  const grosso = polarity === 1 ? cPos : cNeg;
+  if (grosso.peaks.length < 5)
+    return finalize(x, fs, [], polarity, null, 'template-2-passagens',
+      'picos R de amplitude pequena demais em relação ao sinal cerebral — recomenda-se canal de ECG externo');
+
+  /* --- 4. primeiro template --------------------------------------------
+     A referência usa épocas de −0,5 a +0,5 s. Aqui a meia-largura é limitada a
+     40% do RR mediano: se o template abranger um intervalo RR inteiro (ritmos
+     lentos, ou RR muito regular), ele passa a conter os batimentos vizinhos e a
+     correlação ganha lóbulos laterais que geram picos espúrios a meio RR.   */
+  const rrGrosso = [];
+  for (let i = 1; i < grosso.peaks.length; i++) rrGrosso.push(grosso.peaks[i] - grosso.peaks[i - 1]);
+  const rrMediano = rrGrosso.length ? quantile(rrGrosso, 0.5) : fs;
+  const half = Math.max(4, Math.min(Math.round(0.5 * fs), Math.round(0.4 * rrMediano)));
+  /* distância mínima entre picos R guiada pelo RR observado: o piso fisiológico
+     de 0,5 s sozinho deixa passar dois picos por batimento quando o RR é maior */
+  const minDist = Math.max(minDistR, Math.round(0.6 * rrMediano));
+  const t1 = buildTemplate(sinal, grosso.peaks, half);
+  if (!t1) return finalize(x, fs, [], polarity, null, 'template-2-passagens', 'não foi possível formar o template do QRS');
+
+  /* --- 5. primeira passagem por correlação ------------------------------ */
+  const cc1 = xcorr(sinal, t1.template);
+  const lim1 = isFinite(opts.threshold) ? opts.threshold
+    : quantile(Array.from(cc1).filter(isFinite), 0.95);
+  const p1 = findPeaksAbove(cc1, 0, cc1.length, lim1, minDist);
+
+  /* --- 6. refino do template e segunda passagem ------------------------- */
+  const t2 = buildTemplate(sinal, p1, half) || t1;
+  const cc2 = xcorr(sinal, t2.template);
+  const lim2 = isFinite(opts.threshold) ? opts.threshold
+    : quantile(Array.from(cc2).filter(isFinite), 0.95);
+  let peaks = findPeaksAbove(cc2, 0, cc2.length, lim2, minDist);
+
+  /* filtro de qualidade do casamento: candidatos cuja correlação fica muito
+     abaixo da mediana dos aceitos são casamentos fracos (tipicamente nas bordas
+     do registro, onde não há QRS) e viram falso positivo se mantidos */
+  if (peaks.length >= 5) {
+    const vals = peaks.map(p => cc2[p]).filter(isFinite);
+    const medCc = quantile(vals, 0.5);
+    if (isFinite(medCc) && medCc > 0) peaks = peaks.filter(p => cc2[p] >= 0.6 * medCc);
+  }
+
+  /* reposiciona no máximo local do sinal (a correlação pode deslocar 1–2 amostras) */
+  const ajuste = Math.max(1, Math.round(0.02 * fs));
+  peaks = peaks.map(p => {
+    let melhor = p, val = -Infinity;
+    for (let i = Math.max(0, p - ajuste); i <= Math.min(sinal.length - 1, p + ajuste); i++)
+      if (isFinite(sinal[i]) && sinal[i] > val) { val = sinal[i]; melhor = i; }
+    return melhor;
+  });
+
+  return finalize(x, fs, peaks, polarity, t2.template, 'template-2-passagens');
+}
+
+function finalize(x, fs, peaks, polarity, template, method, motivo) {
+  const rr = [];
+  for (let i = 1; i < peaks.length; i++) rr.push((peaks[i] - peaks[i - 1]) / fs * 1000);
+  const rrMed = rr.length ? rr.slice().sort((a, b) => a - b)[Math.floor(rr.length / 2)] : NaN;
+  const cv = rr.length > 2 ? sd(rr) / mean(rr) : NaN;
+
+  /* confiança: n de batimentos, regularidade do RR e destaque do QRS sobre o
+     sinal cerebral. Baixa confiança recomenda explicitamente ECG externo.   */
+  let confidence = 'baixa', razao = motivo || null;
+  const amostras = Array.from(x).filter(isFinite);
+  const sdSinal = amostras.length ? sd(amostras) : NaN;
+  const ampTpl = template ? Math.max(...template) - Math.min(...template) : NaN;
+  const destaque = isFinite(ampTpl) && isFinite(sdSinal) && sdSinal > 0 ? ampTpl / sdSinal : NaN;
+  if (peaks.length >= 10 && isFinite(cv) && cv < 0.25 && destaque > 0.5) confidence = 'alta';
+  else if (peaks.length >= 5) confidence = 'média';
+  if (confidence !== 'alta' && !razao) {
+    /* dizer POR QUE a confiança não é alta é o que permite ao usuário decidir
+       entre aceitar, inspecionar visualmente ou registrar ECG externo */
+    const causas = [];
+    if (peaks.length < 10) causas.push('poucos batimentos detectados');
+    if (!(destaque > 0.5)) causas.push('pico R pouco destacado do sinal cerebral');
+    if (isFinite(cv) && cv >= 0.25) causas.push('intervalos RR muito irregulares');
+    razao = (causas.length ? causas.join('; ') : 'casamento de template pouco consistente') +
+      ' — inspecione visualmente e considere registrar ECG externo na próxima sessão';
+  }
+
+  return {
+    peaks, polarity, template, method,
+    nDetected: peaks.length,
+    rrIntervals: rr,
+    bpm: isFinite(rrMed) && rrMed > 0 ? 60000 / rrMed : NaN,
+    hrvSdnn: rr.length > 2 ? sd(rr) : NaN,
+    rrCv: cv, qrsProminence: destaque,
+    confidence, reason: razao
+  };
+}
+
+/* ---------- core/artifact/svd.js ---------- */
+/* artifact/svd.js — decomposição em valores singulares por Jacobi de um lado.
+
+   Escrita do zero (invariante do projeto: zero dependência). O método de Jacobi
+   unilateral ortogonaliza pares de colunas por rotações sucessivas até
+   convergir; é numericamente estável e adequado às matrizes pequenas deste uso
+   (épocas de QRS: algumas centenas de linhas × ~100 colunas).
+
+   Referência do uso: Stam et al., Clin Neurophysiol 2023;146:147-161;
+   Vivien et al., npj Parkinsons Dis 2026 (SVD é o método recomendado, com mais
+   de um componente quando a contaminação é alta).                            */
+
+/* svdJacobi(rows) → { U, S, V, m, n }
+   `rows` é um array de m arrays de comprimento n (matriz densa).
+   A = U · diag(S) · Vᵀ, com S em ordem decrescente.                          */
+function svdJacobi(rows, opts) {
+  opts = opts || {};
+  const maxSweeps = opts.maxSweeps || 30;
+  const eps = opts.eps || 1e-12;
+  const m0 = rows.length, n0 = rows[0] ? rows[0].length : 0;
+  if (!m0 || !n0) return null;
+
+  /* Jacobi unilateral exige m ≥ n; se não for o caso, decompõe a transposta e
+     troca os papéis de U e V no final. */
+  const transposta = m0 < n0;
+  const m = transposta ? n0 : m0, n = transposta ? m0 : n0;
+  const U = [];
+  for (let i = 0; i < m; i++) {
+    const lin = new Float64Array(n);
+    for (let j = 0; j < n; j++) lin[j] = transposta ? rows[j][i] : rows[i][j];
+    U.push(lin);
+  }
+  const V = [];
+  for (let i = 0; i < n; i++) { const l = new Float64Array(n); l[i] = 1; V.push(l); }
+
+  for (let sweep = 0; sweep < maxSweeps; sweep++) {
+    let off = 0;
+    for (let i = 0; i < n - 1; i++) {
+      for (let j = i + 1; j < n; j++) {
+        let alpha = 0, beta = 0, gamma = 0;
+        for (let k = 0; k < m; k++) {
+          alpha += U[k][i] * U[k][i];
+          beta += U[k][j] * U[k][j];
+          gamma += U[k][i] * U[k][j];
+        }
+        if (Math.abs(gamma) <= eps * Math.sqrt(alpha * beta) || gamma === 0) continue;
+        off += gamma * gamma;
+        const zeta = (beta - alpha) / (2 * gamma);
+        const t = Math.sign(zeta || 1) / (Math.abs(zeta) + Math.sqrt(1 + zeta * zeta));
+        const c = 1 / Math.sqrt(1 + t * t), s = c * t;
+        for (let k = 0; k < m; k++) {
+          const a = U[k][i], b = U[k][j];
+          U[k][i] = c * a - s * b; U[k][j] = s * a + c * b;
+        }
+        for (let k = 0; k < n; k++) {
+          const a = V[k][i], b = V[k][j];
+          V[k][i] = c * a - s * b; V[k][j] = s * a + c * b;
+        }
+      }
+    }
+    if (off < eps) break;
+  }
+
+  /* valores singulares = normas das colunas; normaliza U */
+  const S = new Float64Array(n);
+  for (let j = 0; j < n; j++) {
+    let sq = 0; for (let k = 0; k < m; k++) sq += U[k][j] * U[k][j];
+    S[j] = Math.sqrt(sq);
+  }
+  const ordem = Array.from({ length: n }, (_, j) => j).sort((a, b) => S[b] - S[a]);
+  const Ur = [], Vr = [], Sr = new Float64Array(n);
+  for (let k = 0; k < m; k++) Ur.push(new Float64Array(n));
+  for (let k = 0; k < n; k++) Vr.push(new Float64Array(n));
+  ordem.forEach((j, novo) => {
+    Sr[novo] = S[j];
+    const inv = S[j] > 1e-300 ? 1 / S[j] : 0;
+    for (let k = 0; k < m; k++) Ur[k][novo] = U[k][j] * inv;
+    for (let k = 0; k < n; k++) Vr[k][novo] = V[k][j];
+  });
+  return transposta ? { U: Vr, S: Sr, V: Ur, m: m0, n: n0 } : { U: Ur, S: Sr, V: Vr, m: m0, n: n0 };
+}
+
+/* Aproximação de posto k: Aₖ = Σ_{i<k} σᵢ · uᵢ · vᵢᵀ.
+   É a reconstrução do artefato a partir dos primeiros k componentes.         */
+function lowRankApprox(svd, k) {
+  const { U, S, V, m, n } = svd;
+  const kk = Math.max(1, Math.min(k, S.length));
+  const out = [];
+  for (let i = 0; i < m; i++) {
+    const lin = new Float64Array(n);
+    for (let j = 0; j < n; j++) {
+      let acc = 0;
+      for (let c = 0; c < kk; c++) acc += U[i][c] * S[c] * V[j][c];
+      lin[j] = acc;
+    }
+    out.push(lin);
+  }
+  return out;
+}
+
+/* ---------- core/artifact/ecg.js ---------- */
+/* artifact/ecg.js — remoção de artefato cardíaco por três métodos comparáveis.
+
+   Referências: Stam et al., Clin Neurophysiol 2023;146:147-161 (comparação
+   formal dos três métodos em 9 pacientes com DP); Vivien et al., npj Parkinsons
+   Dis 2026 (SVD recomendado, com mais de um componente quando a contaminação é
+   alta); Hammer et al., Stereotact Funct Neurosurg 2022;100:168-183.
+   Implementações de referência (conceituais): perceive (perceive_ecg.m,
+   interpolação de QRS); DBSsync/functions/ecg_cleaning.py (clean_ecg_*).
+
+   Nenhuma limpeza é aplicada sem reportar quanto removeu e se preservou o
+   sinal: ver artifact/validate.js — as métricas de validação são saída
+   obrigatória (contrato em CLAUDE.md).
+
+   Unidades: x em µV, fs em Hz, janelas em segundos.                          */
+
+
+
+
+/* Épocas válidas ao redor dos picos, como matriz (épocas × amostras). */
+function buildEpochs(x, peaks, half) {
+  const idx = [], linhas = [];
+  for (const p of peaks) {
+    if (p - half < 0 || p + half >= x.length) continue;
+    const lin = new Float64Array(2 * half + 1);
+    let ok = true;
+    for (let k = -half; k <= half; k++) {
+      const v = x[p + k];
+      if (!isFinite(v)) { ok = false; break; }
+      lin[k + half] = v;
+    }
+    if (!ok) continue;                       // época sobre lacuna não é usada
+    idx.push(p); linhas.push(lin);
+  }
+  return { peaks: idx, epochs: linhas };
+}
+
+/* Ajuste de amplitude por mínimos quadrados: a = ⟨x, t⟩ / ⟨t, t⟩ */
+function fitScale(alvo, base) {
+  let num = 0, den = 0;
+  for (let k = 0; k < base.length; k++) { num += alvo[k] * base[k]; den += base[k] * base[k]; }
+  return den > 1e-300 ? num / den : 0;
+}
+
+/* Interpolação cúbica de Hermite entre as bordas da janela contaminada. */
+function cubicSpan(out, i0, i1) {
+  const n = i1 - i0;
+  if (n <= 0) return;
+  const p0 = out[i0 - 1], p1 = out[i1];
+  if (!isFinite(p0) || !isFinite(p1)) return;
+  const m0 = isFinite(out[i0 - 2]) ? p0 - out[i0 - 2] : 0;
+  const m1 = isFinite(out[i1 + 1]) ? out[i1 + 1] - p1 : 0;
+  for (let k = 0; k < n; k++) {
+    const t = (k + 1) / (n + 1), t2 = t * t, t3 = t2 * t;
+    out[i0 + k] = (2 * t3 - 3 * t2 + 1) * p0 + (t3 - 2 * t2 + t) * m0 +
+                  (-2 * t3 + 3 * t2) * p1 + (t3 - t2) * m1;
+  }
+}
+
+/* removeEcg(x, fs, peaks, {method, svdComponents, window})
+   method ∈ 'interpolation' | 'template' | 'svd'                              */
+function removeEcg(x, fs, peaks, opts) {
+  opts = opts || {};
+  const method = opts.method || 'svd';
+  /* Janela default de ±0,06 s (≈ largura do QRS), e não os ±0,2 s citados na
+     referência. Medimos as duas em sinal sintético com HRV e SNR de −10 a
+     +10 dB (ver tests/run.mjs): a janela larga piora a preservação do pico beta
+     em todos os três métodos — no SVD a recuperação cai de 0,86 para 0,56 —
+     porque a época passa a conter sinal cerebral além do artefato. A
+     interpolação, que SUBSTITUI o trecho em vez de subtrair, é ainda mais
+     sensível: a ±0,2 s ela apagaria 40% de um registro a 60 bpm.            */
+  const winS = isFinite(opts.window) ? opts.window : 0.06;
+  const half = Math.max(2, Math.round(winS * fs));
+  /* k = 2 por default: Vivien et al. recomendam mais de um componente quando a
+     contaminação é alta, e é o que rende melhor correlação com o ground truth
+     na nossa varredura de SNR (0,97 contra 0,83 com k = 1).                 */
+  const k = Math.max(1, Math.min(5, opts.svdComponents || 2));
   const out = Float64Array.from(x);
-  usable.forEach(p => { for (let k = -half; k <= half; k++) out[p + k] -= tpl[k + half]; });
-  const rr = []; for (let i = 1; i < usable.length; i++) rr.push((usable[i] - usable[i - 1]) / fs);
-  return { cleaned: out, nBeats: usable.length, bpm: 60 / (median(rr) || NaN), template: tpl, peaks: usable, applied: true };
+  const params = { method, windowS: winS, svdComponents: method === 'svd' ? k : null };
+
+  if (!peaks || peaks.length < 3)
+    return { cleaned: out, applied: false, nBeats: peaks ? peaks.length : 0, params,
+      reason: 'picos R insuficientes para remover o artefato' };
+
+  if (method === 'interpolation') {
+    /* perceive: interpola o segmento contaminado */
+    for (const p of peaks) {
+      const i0 = Math.max(1, p - half), i1 = Math.min(out.length - 1, p + half);
+      cubicSpan(out, i0, i1);
+    }
+    return { cleaned: out, applied: true, nBeats: peaks.length, params };
+  }
+
+  const { peaks: usados, epochs } = buildEpochs(x, peaks, half);
+  if (epochs.length < 3)
+    return { cleaned: out, applied: false, nBeats: usados.length, params,
+      reason: 'épocas válidas insuficientes (lacunas ou bordas)' };
+
+  if (method === 'template') {
+    /* Hammer et al. / DBSsync: template médio ajustado em amplitude por
+       mínimos quadrados a CADA artefato individualmente e subtraído */
+    const L = 2 * half + 1;
+    const tpl = new Float64Array(L);
+    epochs.forEach(e => { for (let k2 = 0; k2 < L; k2++) tpl[k2] += e[k2]; });
+    for (let k2 = 0; k2 < L; k2++) tpl[k2] /= epochs.length;
+    const m = mean(Array.from(tpl));
+    for (let k2 = 0; k2 < L; k2++) tpl[k2] -= m;
+    usados.forEach((p, i) => {
+      const a = fitScale(epochs[i], tpl);
+      for (let k2 = -half; k2 <= half; k2++) out[p + k2] -= a * tpl[k2 + half];
+    });
+    return { cleaned: out, applied: true, nBeats: usados.length, template: tpl, params };
+  }
+
+  /* método SVD (recomendado): empilha as épocas, decompõe, reconstrói o
+     artefato com os k primeiros componentes e subtrai ajustado em cada pico */
+  const svd = svdJacobi(epochs);
+  if (!svd) return { cleaned: out, applied: false, nBeats: usados.length, params, reason: 'SVD não convergiu' };
+  const artefato = lowRankApprox(svd, k);
+  usados.forEach((p, i) => {
+    const base = artefato[i];
+    const a = fitScale(epochs[i], base);
+    for (let k2 = -half; k2 <= half; k2++) out[p + k2] -= a * base[k2 + half];
+  });
+  const total = Array.from(svd.S).reduce((s, v) => s + v * v, 0) || 1;
+  let expl = 0; for (let i = 0; i < k && i < svd.S.length; i++) expl += svd.S[i] * svd.S[i];
+  return {
+    cleaned: out, applied: true, nBeats: usados.length, params,
+    singularValues: Array.from(svd.S), varianceExplained: 100 * expl / total,
+    template: artefato[0]
+  };
+}
+
+/* Pipeline completo: detectar → remover → (o chamador valida).
+   Mantido separado de removeEcg para permitir comparar os três métodos sobre
+   exatamente o mesmo conjunto de picos.                                      */
+function cleanEcg(x, fs, opts) {
+  opts = opts || {};
+  const det = detectRPeaks(x, fs, opts);
+  const rem = removeEcg(x, fs, det.peaks, opts);
+  return Object.assign({ detection: det }, rem);
+}
+
+/* --------------------------------------------------------------------------
+   Compatibilidade: assinatura e forma de retorno originais preservadas, agora
+   servidas pela detecção em duas passagens e pela subtração de template com
+   ajuste de amplitude. Código existente (F6, métricas agudas) segue funcionando.
+   -------------------------------------------------------------------------- */
+function ecgTemplateSubtract(x, fs) {
+  const det = detectRPeaks(x, fs, {});
+  if (det.peaks.length < 8) {
+    /* caminho legado: envelope 5–30 Hz com limiar de percentil 98 */
+    const bp = bandpassFFT(x, fs, 5, 30);
+    const env = hilbertEnvelope(bp);
+    const thr = quantile(Array.from(env), 0.98);
+    const refractory = Math.round(0.4 * fs);
+    const peaks = [];
+    for (let i = 1; i < env.length - 1; i++) {
+      if (env[i] > thr && env[i] >= env[i - 1] && env[i] > env[i + 1]) {
+        if (!peaks.length || i - peaks[peaks.length - 1] > refractory) peaks.push(i);
+      }
+    }
+    const half = Math.round(0.25 * fs);
+    const usable = peaks.filter(p => p - half >= 0 && p + half < x.length);
+    if (usable.length < 8)
+      return { cleaned: Float64Array.from(x), nBeats: usable.length, bpm: NaN, applied: false, detection: det };
+    const tpl = new Float64Array(2 * half + 1);
+    usable.forEach(p => { for (let k = -half; k <= half; k++) tpl[k + half] += x[p + k]; });
+    for (let k = 0; k < tpl.length; k++) tpl[k] /= usable.length;
+    const m = mean(Array.from(tpl)); for (let k = 0; k < tpl.length; k++) tpl[k] -= m;
+    const out = Float64Array.from(x);
+    usable.forEach(p => { for (let k = -half; k <= half; k++) out[p + k] -= tpl[k + half]; });
+    const rr = []; for (let i = 1; i < usable.length; i++) rr.push((usable[i] - usable[i - 1]) / fs);
+    return { cleaned: out, nBeats: usable.length, bpm: 60 / (median(rr) || NaN), template: tpl, peaks: usable, applied: true, detection: det };
+  }
+  const rem = removeEcg(x, fs, det.peaks, { method: 'template', window: 0.25 });
+  return {
+    cleaned: rem.cleaned, nBeats: rem.nBeats, bpm: det.bpm, template: rem.template,
+    peaks: det.peaks, applied: rem.applied, detection: det
+  };
+}
+
+/* ---------- core/artifact/validate.js ---------- */
+/* artifact/validate.js — métricas de validação da limpeza de ECG.
+
+   SAÍDA OBRIGATÓRIA. Nenhuma limpeza pode ser aplicada sem reportar quanto
+   removeu e se preservou o sinal — hoje era exatamente o que faltava: o app
+   removia ECG sem informar nem uma coisa nem outra.
+
+   Métricas exatamente como em Vivien et al., npj Parkinsons Dis 2026:
+     • razão de supressão de ECG = 10·log10(P_bruto / P_limpo), com P = potência
+       média em 0,5–40 Hz. Valores altos = mais supressão.
+     • recuperação do pico beta = proeminência_limpo / proeminência_bruto, com
+       proeminência calculada em janela de ±5 Hz ao redor da frequência de pico.
+       Valor próximo de 1 indica preservação ótima, sem amplificação espúria.
+     • preservação de potência beta/teta (BPP/TPP) contra referência não
+       contaminada, quando houver.
+
+   Unidades: sinais em µV, fs em Hz, razão de supressão em dB, demais em razão
+   adimensional.                                                              */
+
+
+const psdDe = (x, fs) => welchPSD(x, fs, { nperseg: Math.min(1024, 2 ** Math.floor(Math.log2(x.length))), overlap: .5 });
+
+/* Potência média numa faixa (ignora bins não finitos). */
+function meanPower(psd, lo, hi) {
+  if (!psd || !psd.p) return NaN;
+  const v = [];
+  for (let i = 0; i < psd.f.length; i++)
+    if (psd.f[i] >= lo && psd.f[i] <= hi && isFinite(psd.p[i])) v.push(psd.p[i]);
+  return v.length ? mean(v) : NaN;
+}
+
+/* Razão de supressão de ECG, em dB, na banda 0,5–40 Hz. */
+function ecgSuppressionRatio(raw, clean, fs) {
+  const pr = meanPower(psdDe(raw, fs), 0.5, 40);
+  const pc = meanPower(psdDe(clean, fs), 0.5, 40);
+  if (!isFinite(pr) || !isFinite(pc) || pc <= 0) return NaN;
+  return 10 * Math.log10(pr / pc);
+}
+
+/* Proeminência do pico: valor no pico menos a linha de base das bordas da
+   janela de ±halfBw Hz ao redor dele. */
+function prominence(psd, peakHz, halfBw) {
+  if (!psd || !psd.p) return NaN;
+  let pico = -Infinity, borda = [];
+  for (let i = 0; i < psd.f.length; i++) {
+    const d = psd.f[i] - peakHz;
+    if (!isFinite(psd.p[i])) continue;
+    if (Math.abs(d) <= 1) pico = Math.max(pico, psd.p[i]);
+    else if (Math.abs(d) >= halfBw - 1 && Math.abs(d) <= halfBw) borda.push(psd.p[i]);
+  }
+  if (!isFinite(pico) || !borda.length) return NaN;
+  return pico - mean(borda);
+}
+
+/* Recuperação do pico beta: proeminência_limpo / proeminência_bruto. */
+function betaPeakRecovery(rawPsd, cleanPsd, peakHz, halfBw) {
+  const bw = isFinite(halfBw) ? halfBw : 5;
+  const pr = prominence(rawPsd, peakHz, bw), pc = prominence(cleanPsd, peakHz, bw);
+  if (!isFinite(pr) || !isFinite(pc) || pr === 0) return NaN;
+  return pc / pr;
+}
+
+/* Preservação de potência numa banda contra uma referência (BPP/TPP). */
+function bandPowerPreservation(cleanPsd, refPsd, lo, hi) {
+  if (!cleanPsd || !cleanPsd.p || !refPsd || !refPsd.p) return NaN;
+  const pc = bandPower(cleanPsd.f, cleanPsd.p, lo, hi);
+  const pr = bandPower(refPsd.f, refPsd.p, lo, hi);
+  if (!isFinite(pc) || !isFinite(pr) || pr === 0) return NaN;
+  return pc / pr;
+}
+
+/* Correlação de Pearson entre dois sinais (para comparação com ground truth). */
+function correlation(a, b) {
+  const n = Math.min(a.length, b.length);
+  let sa = 0, sb = 0, k = 0;
+  for (let i = 0; i < n; i++) if (isFinite(a[i]) && isFinite(b[i])) { sa += a[i]; sb += b[i]; k++; }
+  if (k < 3) return NaN;
+  const ma = sa / k, mb = sb / k;
+  let num = 0, va = 0, vb = 0;
+  for (let i = 0; i < n; i++) {
+    if (!isFinite(a[i]) || !isFinite(b[i])) continue;
+    const da = a[i] - ma, db = b[i] - mb;
+    num += da * db; va += da * da; vb += db * db;
+  }
+  return (va > 0 && vb > 0) ? num / Math.sqrt(va * vb) : NaN;
+}
+
+/* validateEcgRemoval(raw, clean, fs, {peakHz, reference})
+   → objeto `validation` anexado ao resultado da limpeza, exportado no CSV de
+   métricas e exibido na UI.                                                   */
+function validateEcgRemoval(raw, clean, fs, opts) {
+  opts = opts || {};
+  const rawPsd = psdDe(raw, fs), cleanPsd = psdDe(clean, fs);
+  /* frequência de pico: informada, ou o maior pico em 13–35 Hz do sinal limpo */
+  let peakHz = opts.peakHz;
+  if (!isFinite(peakHz) && cleanPsd.p) {
+    let bv = -Infinity;
+    for (let i = 0; i < cleanPsd.f.length; i++)
+      if (cleanPsd.f[i] >= 13 && cleanPsd.f[i] <= 35 && cleanPsd.p[i] > bv) { bv = cleanPsd.p[i]; peakHz = cleanPsd.f[i]; }
+  }
+  const out = {
+    suppressionRatioDb: ecgSuppressionRatio(raw, clean, fs),
+    betaPeakRecovery: betaPeakRecovery(rawPsd, cleanPsd, peakHz),
+    peakHz: isFinite(peakHz) ? peakHz : NaN,
+    thetaPowerRatio: NaN, betaPowerRatio: NaN, correlationWithReference: NaN
+  };
+  if (opts.reference && opts.reference.length) {
+    const refPsd = psdDe(opts.reference, fs);
+    out.thetaPowerRatio = bandPowerPreservation(cleanPsd, refPsd, 4, 8);
+    out.betaPowerRatio = bandPowerPreservation(cleanPsd, refPsd, 13, 30);
+    out.correlationWithReference = correlation(clean, opts.reference);
+  }
+  /* leitura honesta do resultado */
+  const pLimpo = meanPower(cleanPsd, 0.5, 40), pBruto = meanPower(rawPsd, 0.5, 40);
+  const destruido = isFinite(pBruto) && pBruto > 0 && (!isFinite(pLimpo) || pLimpo < pBruto * 1e-6);
+  out.verdict = destruido ? 'sinal destruído — a limpeza removeu também o sinal cerebral'
+    : !isFinite(out.suppressionRatioDb) ? 'não avaliável'
+    : (out.suppressionRatioDb > 0 && isFinite(out.betaPeakRecovery)
+        && out.betaPeakRecovery >= 0.8 && out.betaPeakRecovery <= 1.2)
+      ? 'supressão com preservação do pico'
+      : (out.suppressionRatioDb <= 0 ? 'sem supressão detectável'
+        : 'supressão com alteração do pico beta — inspecione antes de usar');
+  return out;
 }
 
 /* ---------- core/stats/distributions.js ---------- */
@@ -1869,6 +2474,9 @@ function streamOnOff(parsed, hemi, opts) {
 
 
 
+
+
+
 const HEMIS = ['Left', 'Right'];
 
 function peakInBand(f, p, lo, hi) {
@@ -1943,6 +2551,37 @@ function burstMetrics(parsed, hemi, opts) {
     burst_median_ms: rnd(bu.medianDurationMs, 1), burst_prob_pct: rnd(100 * bu.probability, 1),
     beta_power_welch: rnd(bandPower(w.f, w.p, 13, 30), 4)
   };
+}
+
+/* Qualidade cardíaca do registro: quanto de ECG há e o que a limpeza faria.
+   Exportada junto das métricas agudas porque contaminação por ECG é critério de
+   exclusão documentado (van Rheede et al. excluíram 2 de 12 STN) e causa de
+   maladaptação em aDBS (Busch et al.). Não altera o sinal — apenas reporta. */
+function ecgMetrics(parsed, hemi) {
+  const src = (parsed.bsTimeDomain || []).find(t => t.hemisphere === hemi)
+    || (parsed.montageTD || []).find(t => t.hemisphere === hemi);
+  if (!src || src.data.length < 8 * (src.fsEff || src.fs)) return null;
+  const fs = src.fsEff || src.fs;
+  const det = detectRPeaks(src.data, fs, {});
+  const base = {
+    ecg_n_beats: det.nDetected,
+    ecg_bpm: rnd(det.bpm, 1),
+    ecg_hrv_sdnn_ms: rnd(det.hrvSdnn, 1),
+    ecg_detection_confidence: det.confidence,
+    ecg_detection_method: det.method
+  };
+  if (det.nDetected < 5) return Object.assign(base, { ecg_detected: 0 });
+  const rem = removeEcg(src.data, fs, det.peaks, { method: 'svd' });
+  const val = validateEcgRemoval(src.data, rem.cleaned, fs, {});
+  return Object.assign(base, {
+    ecg_detected: 1,
+    ecg_suppression_db: rnd(val.suppressionRatioDb, 2),
+    ecg_beta_peak_recovery: rnd(val.betaPeakRecovery, 3),
+    ecg_cleaning_verdict: val.verdict,
+    ecg_cleaning_method: rem.params.method,
+    ecg_cleaning_window_s: rem.params.windowS,
+    ecg_svd_components: rem.params.svdComponents
+  });
 }
 
 /* Curva dose-resposta (potência × amplitude de estimulação) do BrainSenseLfp. */
@@ -2107,8 +2746,8 @@ function extractMetrics(parsedList, offMin) {
     const sdate = p.meta.sessionStart ? localDayKey(T(p.meta.sessionStart), offMin) : '';
     const dsi = (implant && p.meta.sessionStart) ? daysSince(implant, p.meta.sessionStart) : NaN;
     HEMIS.forEach(h => {
-      const spec = pickSpectrum(p, h), bu = burstMetrics(p, h, {}), dr = doseResponse(p, h), so = streamOnOff(p, h);
-      if (!spec && !bu && !dr && !so) return;
+      const spec = pickSpectrum(p, h), bu = burstMetrics(p, h, {}), dr = doseResponse(p, h), so = streamOnOff(p, h), eq = ecgMetrics(p, h);
+      if (!spec && !bu && !dr && !so && !eq) return;
       const row = {
         subject_id: subject.id, diagnosis: subject.diagnosis, implant_date: implantDay,
         session_file: p.fileName, session_date_local: sdate, days_since_implant: dsi,
@@ -2118,6 +2757,7 @@ function extractMetrics(parsedList, offMin) {
       if (bu) Object.assign(row, bu);
       if (dr) Object.assign(row, dr);
       if (so) Object.assign(row, so);
+      if (eq) Object.assign(row, eq);
       acute.push(row);
     });
   });
@@ -2158,6 +2798,9 @@ function extractMetrics(parsedList, offMin) {
 
 
 
+
+
+
 const API = {
   parsePercept, MODALITIES, BANDS, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId,
   fft, nextPow2, welchPSD, spectrogram, bandpassFFT, hilbertEnvelope, detectBursts, fitAperiodic,
@@ -2165,12 +2808,15 @@ const API = {
   mean, median, sd, variance, quantile, mad, removeOutliersMAD, linreg, pearson,
   cosinor, cosinorBootstrap, rayleigh, varianceByHour, diurnalProfile, eventAligned,
   permutationTest, thresholdSummary, histogram, ecdf, fPValue, tPValue, normCDF,
-  peakInBand, daysSince, pickSpectrum, spectralMetrics, burstMetrics, doseResponse,
+  peakInBand, daysSince, pickSpectrum, spectralMetrics, burstMetrics, doseResponse, ecgMetrics,
   mergeTrend, collectThresholds, chronicMetrics, extractMetrics,
   detectStates, betaEnvelopeSeries, streamOnOff, bimodalityCoefficient,
   /* integridade do sinal bruto (Onda 1 — L01, L02, L05, L07) */
   parseIntList, unwrapCounter, unwrapTicks, analyzePackets, insertNaNGaps, effectiveFs, stitchStreams,
-  nanStats, segmentsWithoutNan, interpolateForFilter, detrendLinearNaN
+  nanStats, segmentsWithoutNan, interpolateForFilter, detrendLinearNaN,
+  /* artefato cardíaco: três métodos + validação quantificada (Onda 2 — L08, L10, L11, L12) */
+  detectRPeaks, removeEcg, cleanEcg, svdJacobi, lowRankApprox,
+  ecgSuppressionRatio, betaPeakRecovery, bandPowerPreservation, correlation, validateEcgRemoval
 };
 if (typeof module !== "undefined" && module.exports) module.exports = API;
 root.PerceptCore = API;
@@ -3768,6 +4414,184 @@ const FIGURES = [
           `duração mínima para evitar troca-troca. <b>Cuidado:</b> o beta é um <i>correlato</i> do estado clínico, não a verdade — ` +
           `artefato de movimento infla o beta (falso OFF) e a própria estimulação o reduz; a bimodalidade indica se realmente há dois estados. ` +
           `Em streaming curto de consultório, o registro costuma ficar num único estado — o método rende mais no Timeline crônico, ao longo dos ciclos da levodopa.`
+      }));
+    }
+  },
+
+  /* ----------------------------------------------------------------- F15 */
+  {
+    id: 'F15', title: 'Limpeza de artefato cardíaco — três métodos e validação',
+    sub: 'detecção de picos R em duas passagens · interpolação, template e SVD',
+    has: d => d.bsTimeDomain.length || d.montageTD.length,
+    render(node, d) {
+      const src = [].concat(
+        d.bsTimeDomain.map((t, i) => ({ value: 'bs' + i, label: `Streaming ${t.label} (${(t.data.length / t.fs).toFixed(0)} s)`, td: t })),
+        d.montageTD.map((t, i) => ({ value: 'mt' + i, label: `Survey ${t.hemisphere[0]}·${t.label} (${(t.data.length / t.fs).toFixed(0)} s)`, td: t })));
+      if (!src.length) return node.appendChild(el('div', { class: 'empty', text: 'Nenhum sinal bruto disponível.' }));
+      const cur = src.find(s => s.value === opt('F15', 'src', src[0].value)) || src[0];
+      const td = cur.td, fs = td.fsEff || td.fs;
+      const metodo = opt('F15', 'metodo', 'svd');
+      const kSvd = opt('F15', 'k', 2);
+      const janela = opt('F15', 'win', 0.06);
+      const comparar = opt('F15', 'cmp', false);
+
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('sinal', src, cur.value, v => setOpt('F15', 'src', v)),
+        ctrlSelect('método', [
+          { value: 'interpolation', label: 'interpolação de QRS' },
+          { value: 'template', label: 'subtração de template' },
+          { value: 'svd', label: 'SVD (recomendado)' }
+        ], metodo, v => setOpt('F15', 'metodo', v)),
+        ctrlNumber('componentes SVD (k)', kSvd, 1, 5, 1, v => setOpt('F15', 'k', v)),
+        ctrlNumber('janela (s)', janela, 0.02, 0.3, 0.01, v => setOpt('F15', 'win', v)),
+        ctrlCheck('comparar os três métodos', comparar, v => setOpt('F15', 'cmp', v))
+      ]));
+      qualitySeal(node, td);
+
+      const det = C.detectRPeaks(td.data, fs, {});
+      if (!det.peaks.length) {
+        node.appendChild(el('div', {
+          class: 'warnbox', html: `<b>Nenhum pico R detectado.</b> ${det.reason || ''} ` +
+            `Sem detecção confiável, não há o que remover — e forçar a limpeza pioraria o sinal.`
+        }));
+        return;
+      }
+      const rem = C.removeEcg(td.data, fs, det.peaks, { method: metodo, svdComponents: kSvd, window: janela });
+      const val = C.validateEcgRemoval(td.data, rem.cleaned, fs, {});
+
+      /* barra de métricas de validação — saída obrigatória */
+      const confCls = det.confidence === 'alta' ? 'sig' : det.confidence === 'baixa' ? 'warn' : '';
+      node.appendChild(table(['métrica de validação', 'valor', 'leitura'], [
+        ['razão de supressão de ECG', `${f(val.suppressionRatioDb, 2)} dB`, 'potência removida em 0,5–40 Hz; > 0 indica supressão'],
+        ['recuperação do pico beta', f(val.betaPeakRecovery, 3), 'próximo de 1 = preservado sem amplificação espúria'],
+        ['veredito', { html: `<b>${val.verdict}</b>` }, 'leitura conjunta das duas métricas acima'],
+        ['picos R detectados', `${det.nDetected} (${f(det.bpm, 0)} bpm)`, `SDNN ${f(det.hrvSdnn, 0)} ms · polaridade ${det.polarity > 0 ? 'positiva' : 'negativa'}`],
+        ['confiança da detecção', { html: `<span class="${confCls}">${det.confidence}</span>` }, det.reason || 'casamento de template consistente']
+      ]));
+      if (det.confidence === 'baixa') node.appendChild(el('div', {
+        class: 'warnbox', html: `<b>Confiança baixa na detecção dos picos R.</b> ${det.reason || ''}`
+      }));
+
+      const grid = el('div', { class: 'plotgrid two' }); node.appendChild(grid);
+      const nVis = Math.min(td.data.length, Math.round(6 * fs));
+      const tv = Array.from({ length: nVis }, (_, i) => i / fs);
+      const bruto = Array.from(td.data.slice(0, nVis));
+      const limpo = Array.from(rem.cleaned.slice(0, nVis));
+      const amp = Math.max(...bruto.filter(isFinite).map(Math.abs)) * 1.15 || 1;
+
+      /* (a) bruto com picos R e template */
+      const b1 = plotBox(grid, 210);
+      const c1 = new P.Chart(b1.canvas, {
+        width: b1.width, height: b1.height, xlim: [0, nVis / fs], ylim: [-amp, amp],
+        xlabel: 'tempo (s)', ylabel: 'µV', title: '(a) bruto · picos R detectados', pad: { l: 58, r: 14, t: 24, b: 38 }
+      });
+      c1.axes();
+      c1.line(tv, bruto, { color: COL.ink, width: 1 });
+      det.peaks.filter(p => p < nVis).forEach(p => c1.vline(p / fs, { color: COL.right, dash: [2, 2] }));
+
+      /* (b) limpo sobreposto ao bruto */
+      const b2 = plotBox(grid, 210);
+      const c2 = new P.Chart(b2.canvas, {
+        width: b2.width, height: b2.height, xlim: [0, nVis / fs], ylim: [-amp, amp],
+        xlabel: 'tempo (s)', ylabel: 'µV', title: '(b) limpo sobre o bruto (mesma escala)', pad: { l: 58, r: 14, t: 24, b: 38 }
+      });
+      c2.axes();
+      c2.line(tv, bruto, { color: '#C9D3DC', width: 1, label: 'bruto' });
+      c2.line(tv, limpo, { color: COL.accent, width: 1.2, label: 'limpo' });
+      c2.legend({ x: c2.x0 + 8, y: c2.y1 + 6 });
+
+      /* (c) PSD bruta vs limpa em log-log */
+      const pB = C.welchPSD(td.data, fs, { nperseg: 512, overlap: .5 });
+      const pL = C.welchPSD(rem.cleaned, fs, { nperseg: 512, overlap: .5 });
+      if (pB.p && pL.p) {
+        const idx = Array.from(pB.f).map((v, i) => i).filter(i => pB.f[i] >= 1 && pB.f[i] <= 90 && pB.p[i] > 0 && pL.p[i] > 0);
+        const b3 = plotBox(grid, 230);
+        const ys = idx.map(i => pB.p[i]).concat(idx.map(i => pL.p[i]));
+        const c3 = new P.Chart(b3.canvas, {
+          width: b3.width, height: b3.height, xlog: true, ylog: true,
+          xlim: [1, 90], ylim: [Math.max(1e-6, Math.min(...ys) * .7), Math.max(...ys) * 1.4],
+          xlabel: 'frequência (Hz)', ylabel: 'potência (log)', title: '(c) espectro antes e depois', pad: { l: 62, r: 14, t: 24, b: 40 }
+        });
+        c3.axes({ xfmt: v => String(v) });
+        c3.span(13, 35, { color: '#B8912A', alpha: .12, label: 'β' });
+        c3.line(idx.map(i => pB.f[i]), idx.map(i => pB.p[i]), { color: '#9FB3C0', width: 1.4, label: 'bruto' });
+        c3.line(idx.map(i => pL.f[i]), idx.map(i => pL.p[i]), { color: COL.ink, width: 1.6, label: 'limpo' });
+        c3.legend({ x: c3.x0 + 8, y: c3.y1 + 6 });
+      }
+
+      /* (d) épocas empilhadas antes e depois */
+      const half = Math.max(2, Math.round(janela * fs));
+      const epocas = (sinal) => det.peaks
+        .filter(p => p - half >= 0 && p + half < sinal.length)
+        .slice(0, 120)
+        .map(p => Array.from(sinal.slice(p - half, p + half + 1)).map(v => isFinite(v) ? v : 0));
+      const eA = epocas(td.data), eD = epocas(rem.cleaned);
+      if (eA.length > 3) {
+        const todos = eA.flat();
+        const zmin = C.quantile(todos, .02), zmax = C.quantile(todos, .98);
+        [[eA, '(d) épocas do QRS — antes'], [eD, '(d) épocas do QRS — depois']].forEach(([M, titulo]) => {
+          const bx = plotBox(grid, 210);
+          const ch = new P.Chart(bx.canvas, {
+            width: bx.width, height: bx.height, xlim: [-janela * 1000, janela * 1000], ylim: [0, M.length],
+            xlabel: 'tempo em relação ao pico R (ms)', ylabel: 'época', title: titulo, pad: { l: 58, r: 58, t: 24, b: 40 }
+          });
+          ch.heat(M, { cmap: 'divergent', zmin, zmax, smooth: false });
+          ch.axes({ grid: false });
+          ch.colorbar({ label: 'µV' });
+        });
+      }
+
+      /* (e) espectro de valores singulares, para escolher k com evidência */
+      if (metodo === 'svd' && rem.singularValues) {
+        const sv = rem.singularValues.slice(0, 12);
+        const b5 = plotBox(grid, 210);
+        const c5 = new P.Chart(b5.canvas, {
+          width: b5.width, height: b5.height, xlim: [-.6, sv.length - .4], ylim: [0, Math.max(...sv) * 1.15],
+          xlabel: 'componente', ylabel: 'valor singular', title: `(e) espectro de valores singulares — k = ${kSvd}`,
+          pad: { l: 62, r: 14, t: 24, b: 40 }
+        });
+        c5.axes({ xticks: sv.map((_, i) => i), xfmt: v => String(v + 1) });
+        c5.bars(sv.map((_, i) => i), sv, {
+          width: (c5.X(1) - c5.X(0)) * .6,
+          color: (v, i) => i < kSvd ? COL.accent : '#B9C6D0'
+        });
+        node.appendChild(el('div', {
+          class: 'note', html: `Os <b>${kSvd}</b> primeiros componentes explicam <b>${f(rem.varianceExplained, 1)}%</b> da variância das épocas. ` +
+            `Vivien et al. recomendam mais de um componente quando a contaminação é alta — escolha k pela queda do espectro acima, não por default.`
+        }));
+      }
+
+      /* comparação dos três métodos em um clique */
+      if (comparar) {
+        const linhas = ['interpolation', 'template', 'svd'].map(m => {
+          const r = C.removeEcg(td.data, fs, det.peaks, { method: m, svdComponents: kSvd, window: janela });
+          const v = C.validateEcgRemoval(td.data, r.cleaned, fs, {});
+          return [m === 'interpolation' ? 'interpolação' : m === 'template' ? 'template' : 'SVD',
+            f(v.suppressionRatioDb, 2) + ' dB', f(v.betaPeakRecovery, 3), v.verdict];
+        });
+        node.appendChild(el('h4', { class: 'note', html: '<b>Comparação direta dos três métodos</b> (mesmos picos R)' }));
+        node.appendChild(table(['método', 'supressão', 'recuperação do pico β', 'veredito'], linhas));
+      }
+
+      node.appendChild(exportRow([
+        { label: '⤓ PNG bruto', fn: () => P.downloadCanvas(b1.canvas, 'F15a_bruto_picosR') },
+        { label: '⤓ PNG limpo', fn: () => P.downloadCanvas(b2.canvas, 'F15b_limpo') },
+        { label: '⤓ CSV sinal limpo', fn: () => P.downloadText(P.toCSV(Array.from(rem.cleaned).map((v, i) => ({ t_s: +(i / fs).toFixed(4), uV: v }))), 'F15_sinal_limpo.csv', 'text/csv') },
+        { label: '⤓ CSV picos R', fn: () => P.downloadText(P.toCSV(det.peaks.map((p, i) => ({ indice: p, t_s: +(p / fs).toFixed(4), rr_ms: i ? +det.rrIntervals[i - 1].toFixed(1) : '' }))), 'F15_picos_R.csv', 'text/csv') }
+      ]));
+
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Método.</b> Detecção de picos R em <b>duas passagens por correlação de template</b> ` +
+          `(percentis decrescentes para semear, template médio, correlação, refino e segunda passagem), como em Stam et al. (2023) e Vivien et al. (2026). ` +
+          `Três métodos de remoção comparáveis: <b>interpolação</b> do trecho (perceive), <b>subtração de template</b> ajustado em amplitude por mínimos quadrados a cada batimento (Hammer et al.), ` +
+          `e <b>SVD</b> das épocas com reconstrução por k componentes (recomendado). ` +
+          `As métricas de validação são <b>saída obrigatória</b>: sem elas não é possível saber se a limpeza removeu o artefato ou o sinal.`
+      }));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Prevenção vale mais que correção.</b> Stam et al. recomendam explicitamente prevenir a contaminação em vez de corrigi-la: ` +
+          `o artefato reduz a relação sinal-ruído e, portanto, a confiabilidade do LFP para físio-marcadores e para aDBS. ` +
+          `Medidas: <b>posicionamento do gerador</b> (Neumann et al., Brain Stimul 2021 — a contaminação por ECG é sensível ao sítio cirúrgico de implante), ` +
+          `verificação de impedância de leads e extensões, e <b>registro de ECG externo simultâneo</b> na próxima sessão, que resolve os casos em que o pico R é pequeno demais no LFP.`
       }));
     }
   }

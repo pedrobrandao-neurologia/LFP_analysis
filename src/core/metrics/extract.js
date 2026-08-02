@@ -1,7 +1,7 @@
 /* metrics/extract.js — extrator principal de métricas tidy (metrics)
    Gerado do refactor modular (Prompt 0.1). Ver docs/arquitetura.md. */
 
-import { HEMIS, burstMetrics, doseResponse, pickSpectrum, spectralMetrics } from './acute.js';
+import { pickSpectrum, spectralMetrics, burstMetrics, doseResponse, ecgMetrics, HEMIS } from './acute.js';
 import { T, localDayKey } from '../io/parse.js';
 import { chronicMetrics, collectThresholds, mergeTrend } from './chronic.js';
 import { streamOnOff } from '../stats/states.js';
@@ -40,8 +40,8 @@ export function extractMetrics(parsedList, offMin) {
     const sdate = p.meta.sessionStart ? localDayKey(T(p.meta.sessionStart), offMin) : '';
     const dsi = (implant && p.meta.sessionStart) ? daysSince(implant, p.meta.sessionStart) : NaN;
     HEMIS.forEach(h => {
-      const spec = pickSpectrum(p, h), bu = burstMetrics(p, h, {}), dr = doseResponse(p, h), so = streamOnOff(p, h);
-      if (!spec && !bu && !dr && !so) return;
+      const spec = pickSpectrum(p, h), bu = burstMetrics(p, h, {}), dr = doseResponse(p, h), so = streamOnOff(p, h), eq = ecgMetrics(p, h);
+      if (!spec && !bu && !dr && !so && !eq) return;
       const row = {
         subject_id: subject.id, diagnosis: subject.diagnosis, implant_date: implantDay,
         session_file: p.fileName, session_date_local: sdate, days_since_implant: dsi,
@@ -51,6 +51,7 @@ export function extractMetrics(parsedList, offMin) {
       if (bu) Object.assign(row, bu);
       if (dr) Object.assign(row, dr);
       if (so) Object.assign(row, so);
+      if (eq) Object.assign(row, eq);
       acute.push(row);
     });
   });

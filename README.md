@@ -105,6 +105,7 @@ A coluna **Leitura clínica** resume, em uma frase, o que cada figura diz ao mé
 | F11 | Distribuição de potência e limiares de aDBS | `LFPTrendLogs` | **Quanto tempo** o beta passa em cada faixa — define limiares do aDBS. |
 | F12 | Espectros medianos por tipo de evento | `LfpFrequencySnapshotEvents` | Compara o espectro entre **tipos de evento** do paciente. |
 | **F13** | **Estados ON/OFF pela amplitude do beta** | `BrainSenseTimeDomain` ou `LFPTrendLogs` | Divide o registro em **ON (baixo beta)** e **OFF (alto beta)** automaticamente. |
+| **F15** | **Limpeza de artefato cardíaco — 3 métodos + validação** | `BrainSenseTimeDomain` ou `LfpMontageTimeDomain` | Quanto do sinal é **batimento cardíaco**, e se a limpeza tirou o artefato **sem tirar o sinal**. |
 
 Cada figura exporta PNG e os dados subjacentes em CSV.
 
@@ -215,6 +216,18 @@ tanto **quem programa o DBS** quanto **quem faz a análise estatística** leiam 
 | `beta_state_sep` | O **contraste** entre os dois níveis | distância padronizada (tipo *d*) | maior = estados mais separados |
 | `beta_bimodality` / `stream_beta_bimodality` | **Há mesmo dois estados?** | coeficiente de bimodalidade de Sarle | **> 0,555** sugere dois patamares reais; abaixo disso, a divisão ON/OFF é só descritiva |
 
+### Artefato cardíaco e qualidade do sinal — F15 (medidas agudas)
+
+| Variável | Em linguagem simples | Como é medido | O que sugere |
+|---|---|---|---|
+| `ecg_n_beats`, `ecg_bpm` | Quantos **batimentos cardíacos** aparecem no registro do cérebro | detecção de picos R em duas passagens por correlação de template | batimento visível no LFP = contaminação cardíaca presente |
+| `ecg_detection_confidence` | O quanto se pode confiar nessa detecção | n de batimentos, regularidade do RR e destaque do QRS | confiança baixa pede **ECG externo** na próxima sessão |
+| `ecg_suppression_db` | **Quanto artefato foi removido** (em dB) | 10·log₁₀(potência antes / depois) em 0,5–40 Hz | acima de 0 indica supressão efetiva |
+| `ecg_beta_peak_recovery` | Se o **pico beta sobreviveu** à limpeza | proeminência depois ÷ antes (janela de ±5 Hz) | perto de 1 = preservado; muito abaixo = a limpeza levou o sinal junto |
+| `ecg_cleaning_verdict` | Leitura conjunta das duas métricas acima | regra sobre supressão + recuperação | é o que autoriza (ou não) usar o sinal limpo |
+
+> **Por que isso importa.** Contaminação cardíaca é critério de exclusão documentado (van Rheede et al. excluíram **2 de 12 STN** inteiros da série crônica) e causa reconhecida de **maladaptação em aDBS** (Busch et al.). Até aqui o app removia ECG **sem informar quanto removeu nem se preservou o pico** — agora as métricas de validação são saída obrigatória.
+
 ### Chaves de identificação (em toda linha exportada)
 
 | Variável | Significado |
@@ -305,7 +318,7 @@ R/percept_lfp.R            61 funções: leitura, DSP, estatística, figuras ggp
 docs/estado-da-arte.md     revisão de literatura e mapa da estrutura do JSON
 docs/Revisao_LFP_Parkinson.pdf  revisão sobre LFP na doença de Parkinson
 tools/gerar_exemplo.mjs    gerador do dataset sintético
-tests/run.mjs              suíte de 57 testes
+tests/run.mjs              suíte de 85 testes
 examples/                  dataset sintético
 ```
 
@@ -319,7 +332,9 @@ node tools/gerar_exemplo.mjs examples
 node tests/run.mjs
 ```
 
-57 testes cobrindo parser, DSP, estatística, camada gráfica, os 13 renderizadores, a extração de métricas
+85 testes cobrindo parser, DSP tolerante a lacunas, integridade de pacotes, estatística, camada gráfica,
+os 14 renderizadores, a extração de métricas, os estados ON/OFF e a remoção de artefato cardíaco
+(varredura de SNR com ground truth).
 e a detecção de estados ON/OFF.
 
 ---
