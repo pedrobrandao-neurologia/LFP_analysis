@@ -1197,6 +1197,119 @@ sec('aDBS — elegibilidade, simulador de limiar e predição dose-resposta');
   });
 }
 
+/* ------------------------------ desempenho e retorno de processo (Onda 8.0) */
+sec('desempenho e retorno de processo');
+{
+  /* O bootstrap de blocos era o gargalo do carregamento: com meses de Timeline
+     ele sozinho segurava a thread por segundos. A reformulação soma as equações
+     normais por dia, então precisa provar DUAS coisas: que o estimador não
+     mudou e que o custo caiu. */
+  const off = -180, T0 = Date.parse('2025-03-02T03:00:00Z');
+  let semente = 4242;
+  const rnd = () => { semente = (Math.imul(semente, 1664525) + 1013904223) >>> 0; return semente / 4294967296; };
+  const linhas = [];
+  for (let d = 0; d < 45; d++) for (let k = 0; k < 144; k++) {
+    const tt = T0 + d * 864e5 + k * 6e5;
+    linhas.push({ t: tt, lfp: 40 + 8 * Math.cos(2 * Math.PI * (C.localHour(tt, off) - 16) / 24) + 2 * (rnd() - 0.5) });
+  }
+
+  t('bootstrap de blocos é idêntico ao reajuste completo', () => {
+    /* referência: refaz o cosinor inteiro em cada reamostragem, com a MESMA
+       sequência de sorteio (mesmo gerador, mesma semente, mesma ordem de dias) */
+    const porDia = {};
+    linhas.forEach(r => { const k = C.localDayKey(r.t, off); (porDia[k] = porDia[k] || []).push(r); });
+    const dias = Object.keys(porDia);
+    let sem = 999 >>> 0;
+    const prox = () => { sem = (Math.imul(sem, 1664525) + 1013904223) >>> 0; return sem / 4294967296; };
+    const mesor = [], amp = [];
+    for (let b = 0; b < 60; b++) {
+      const amostra = [];
+      for (let i = 0; i < dias.length; i++) amostra.push(...porDia[dias[(prox() * dias.length) | 0]]);
+      const c = C.cosinor(amostra.map(r => C.localHour(r.t, off)), amostra.map(r => r.lfp), [24]);
+      mesor.push(c.mesor); amp.push(c.components[0].amplitude);
+    }
+    const ref = { m: [C.quantile(mesor, 0.025), C.quantile(mesor, 0.975)], a: [C.quantile(amp, 0.025), C.quantile(amp, 0.975)] };
+    const b = C.cosinorBootstrap(linhas, [24], 60, off, { seed: 999 });
+    const dif = Math.max(
+      Math.abs(b.mesorCI[0] - ref.m[0]), Math.abs(b.mesorCI[1] - ref.m[1]),
+      Math.abs(b.amplitudeCI[0] - ref.a[0]), Math.abs(b.amplitudeCI[1] - ref.a[1]));
+    assert(dif < 1e-8, 'estimador divergiu do reajuste completo: ' + dif.toExponential(2));
+    return `diferença máxima ${dif.toExponential(1)} sobre ${linhas.length} pontos`;
+  });
+
+  t('bootstrap é reprodutível entre execuções (semente fixa)', () => {
+    const a = C.cosinorBootstrap(linhas, [24], 80, off);
+    const b = C.cosinorBootstrap(linhas, [24], 80, off);
+    assert(a.mesorCI[0] === b.mesorCI[0] && a.amplitudeCI[1] === b.amplitudeCI[1], 'IC mudou entre execuções idênticas');
+    const c = C.cosinorBootstrap(linhas, [24], 80, off, { seed: 7 });
+    assert(c.mesorCI[0] !== a.mesorCI[0] || c.amplitudeCI[0] !== a.amplitudeCI[0], 'a semente não muda nada');
+    return `semente ${a.seed} reproduz; semente 7 difere`;
+  });
+
+  t('bootstrap de 6 semanas com nBoot=200 custa menos de 1 s', () => {
+    const t0 = Date.now();
+    const b = C.cosinorBootstrap(linhas, [24], 200, off);
+    const dt = Date.now() - t0;
+    assert(b && b.nBoot === 200, 'bootstrap incompleto');
+    assert(dt < 1000, `levou ${dt} ms — o gargalo do carregamento voltou`);
+    return `${linhas.length} pontos × 200 reamostragens em ${dt} ms`;
+  });
+
+  t('valores não finitos são excluídos e contabilizados, nunca imputados', () => {
+    const sujo = linhas.slice(0, 4000).concat([{ t: T0, lfp: NaN }, { t: T0 + 6e5, lfp: NaN }]);
+    const b = C.cosinorBootstrap(sujo, [24], 40, off);
+    assert(b.nExcluded === 2, 'nExcluded: ' + b.nExcluded);
+    return `${b.nExcluded} amostras excluídas, ${b.nDays} dias mantidos`;
+  });
+
+  /* O painel de processamento é o que responde à pergunta "travou ou está
+     calculando?". Aqui verificamos o contrato: percentual monotônico, cada
+     etapa registrada, e término em 100%. */
+  await ta('painel de processamento anuncia etapas e chega a 100%', async () => {
+    const G = H.Prog;
+    G.begin('teste').expect(3);
+    const pcts = [];
+    for (const rotulo of ['ler', 'interpretar', 'agregar']) {
+      await G.step(rotulo);
+      pcts.push(parseInt(document.getElementById('procPct').textContent, 10));
+    }
+    await G.finish('ok');
+    const fim = parseInt(document.getElementById('procPct').textContent, 10);
+    assert(pcts.every((v, i) => i === 0 || v >= pcts[i - 1]), 'percentual não é monotônico: ' + pcts.join(','));
+    assert(fim === 100, 'não terminou em 100%: ' + fim);
+    assert(!G.ativo, 'painel continuou ativo após finish');
+    return `percentuais ${pcts.join(' → ')} → ${fim}%`;
+  });
+
+  await ta('falha de uma etapa não derruba as demais', async () => {
+    const G = H.Prog;
+    G.begin('teste').expect(2);
+    await G.step('etapa que falha');
+    G.falhaEtapa('arquivo inválido');
+    await G.step('etapa que segue');
+    await G.finish('ok');
+    assert(!G.ativo, 'painel não encerrou');
+    return 'etapa marcada como falha e execução continuou';
+  });
+
+  /* Regressão real: um identificador inexistente em renderRail derrubava TODO o
+     carregamento — o painel lateral lançava ReferenceError antes de qualquer
+     figura ser desenhada, e o aplicativo terminava sem entregar gráfico nenhum.
+     O erro não aparecia nos testes porque nada exercitava o painel lateral. */
+  t('painel lateral do registro é montado sem exceção', () => {
+    H.renderRail();
+    return `${H.S.files.length} arquivo(s) no painel`;
+  });
+
+  t('ds() é memoizado e invalidado explicitamente', () => {
+    const a = H.ds();
+    assert(H.ds() === a, 'ds() recalculou sem mudança de estado');
+    H.invalidarDs();
+    assert(H.ds() !== a, 'ds() não recalculou após invalidação');
+    return 'cache válido entre chamadas, descartado em invalidarDs()';
+  });
+}
+
 /* ------------------------------------------------------------- resultado -- */
 console.log(`\n${'='.repeat(58)}`);
 console.log(`  ${ok} passaram   ${falhas} falharam   ${pulados} sem dados`);

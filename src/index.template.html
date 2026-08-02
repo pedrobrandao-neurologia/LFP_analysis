@@ -44,6 +44,21 @@
   <main id="figs"></main>
 </div>
 
+<!-- Painel de processamento: anuncia cada etapa ANTES de executá-la e registra
+     quanto cada uma levou. Existe para que uma espera longa seja legível como
+     cálculo em andamento, e não como travamento. -->
+<div class="proc" id="proc" hidden role="status" aria-live="polite">
+  <div class="proc-head">
+    <b id="procTitle">Processando</b>
+    <span class="proc-pct" id="procPct">0%</span>
+    <button class="proc-x" id="procX" title="ocultar" aria-label="ocultar painel de processamento">×</button>
+  </div>
+  <div class="proc-bar"><i id="procFill"></i></div>
+  <div class="proc-now" id="procNow">—</div>
+  <ol class="proc-log" id="procLog"></ol>
+  <div class="proc-foot" id="procFoot">Todo o cálculo acontece neste navegador. Enquanto uma etapa estiver anunciada acima, ela está <b>calculando</b> — o tempo real de cada etapa concluída fica registrado na lista.</div>
+</div>
+
 <footer class="foot">
   <p class="privacy"><i></i> Nenhum dado sai deste dispositivo — leitura, cálculo e figuras acontecem no navegador.</p>
   <p style="max-width:760px;margin:14px auto 0;text-align:left">

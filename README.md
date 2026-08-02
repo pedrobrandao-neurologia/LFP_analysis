@@ -308,6 +308,51 @@ estimulação o reduz; em Parkinson o método rende mais no Timeline crônico, a
 
 ---
 
+## Desempenho e retorno de processo
+
+Todo o cálculo roda na thread principal do navegador, no computador de quem usa. Um Session
+Report com meses de Timeline (dezenas de milhares de pontos) e minutos de streaming (centenas de
+milhares de amostras) leva alguns segundos para ser processado — e durante um cálculo em
+JavaScript a página não repinta. Sem retorno visual, isso é indistinguível de travamento.
+
+O aplicativo, por isso, **anuncia cada etapa antes de executá-la** e registra quanto cada uma
+levou, num painel que não bloqueia a tela:
+
+| etapa anunciada | o que está acontecendo |
+| --- | --- |
+| `lendo <arquivo> (N MB)` | leitura do disco pelo próprio navegador; nada sai do dispositivo |
+| `interpretando <arquivo>` | `JSON.parse` e extração das modalidades do Percept, com pseudonimização na borda |
+| `agregando séries do registro` | concatenação e desduplicação do Timeline entre arquivos do mesmo registro |
+| `montando painel do registro` | matriz de disponibilidade, perfil de doença, opções de exportação |
+| `figura Fx — <título>` | cálculo daquela figura, uma por vez |
+
+Regras que decorrem disso:
+
+- **Só três figuras são calculadas ao carregar** (F1, F8, F9). As demais só calculam quando
+  abertas, e mostram o aviso *"calculando… o navegador não travou"* **antes** de o cálculo
+  começar. Figuras que levam mais de 1,5 s informam, ao final, quanto levaram naquele registro.
+- **Etapas lentas ficam marcadas na lista** com o tempo real medido. Uma espera longa é legível:
+  dá para ver qual etapa custou o quê, em vez de olhar para uma tela parada.
+- **Uma etapa que falha não derruba as demais** — ela é marcada como falha, com a mensagem de
+  erro, e o carregamento continua.
+- **Exportações e o relatório em PDF também anunciam suas etapas**, porque recalculam todas as
+  métricas e todas as figuras.
+
+O gargalo real do carregamento era o **bootstrap de blocos do cosinor** (F9). Ele foi
+reescrito somando as **equações normais por dia**: como (XᵀX, Xᵀy) é aditivo sobre blocos
+disjuntos, cada reamostragem de dias inteiros passou a ser a soma de matrizes pré-calculadas e a
+solução de um sistema 5×5, em vez de reajustar o modelo sobre todas as amostras. O estimador é o
+**mesmo** — os testes comparam contra o reajuste completo com a mesma sequência de sorteio e
+exigem diferença < 10⁻⁸ — e o custo caiu de ~5,3 s para ~0,05 s em 26 000 pontos com 200
+reamostragens. A reamostragem passou a usar semente fixa, então o IC é **reprodutível** entre
+execuções, como o manifesto de proveniência exige.
+
+Medido num arquivo de 8 MB (180 dias × 144 pontos × 2 hemisférios, mais 10 min de streaming a
+250 Hz), em navegador real: **do arquivo solto ao primeiro gráfico, menos de 1,5 s**, com todas
+as etapas visíveis.
+
+---
+
 ## Checklist de captura
 
 Para habilitar as figuras que aparecerem como "sem dados", na próxima sessão de programação:

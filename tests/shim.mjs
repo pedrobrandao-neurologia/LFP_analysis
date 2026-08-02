@@ -26,12 +26,19 @@ class Node {
   querySelector(){ return null; }
 }
 export function installDOM(){
+  /* nós por id são ESTÁVEIS: o painel de processamento escreve em #procPct,
+     #procNow etc. e os testes precisam ler de volta o que foi escrito */
+  const porId = new Map();
   const doc = {
     createElement(tag){ return tag==='canvas' ? new Canvas() : new Node(tag); },
     createTextNode(t){ const n=new Node('#text'); n._text=t; return n; },
     querySelector(){ return new Node('div'); },
     querySelectorAll(){ return []; },
-    addEventListener(){}, getElementById(){ return new Node('div'); }
+    addEventListener(){},
+    getElementById(id){
+      if(!porId.has(id)) porId.set(id, new Node('div'));
+      return porId.get(id);
+    }
   };
   globalThis.document = doc;
   globalThis.window = globalThis;

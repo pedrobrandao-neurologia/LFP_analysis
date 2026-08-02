@@ -216,3 +216,37 @@ footer.foot{padding:24px 20px 40px;text-align:center;font:11px/1.7 var(--mono);c
 .qcitem.amarelo{border-left-color:var(--warn);background:#FBF3EA}
 .qcitem.vermelho{border-left-color:var(--right);background:#FBEDF0}
 .qcitem.cinza{border-left-color:var(--rule);background:var(--panel-2);opacity:.85}
+
+/* ---------- painel de processamento ---------- */
+/* Fica fixo no canto, nunca bloqueia a tela: o usuário vê as figuras surgindo
+   ao mesmo tempo em que acompanha o que está sendo calculado. */
+.proc{position:fixed;right:14px;bottom:14px;z-index:60;width:min(370px,calc(100vw - 28px));
+  background:var(--panel);border:1px solid var(--rule);border-radius:5px;
+  box-shadow:0 8px 26px rgba(14,26,36,.16);overflow:hidden}
+.proc[hidden]{display:none}
+.proc-head{display:flex;align-items:center;gap:8px;padding:9px 11px 8px;
+  border-bottom:1px solid var(--rule-2);background:var(--panel-2)}
+.proc-head b{font:600 10.5px/1 var(--mono);letter-spacing:.09em;text-transform:uppercase;color:var(--ink)}
+.proc-pct{margin-left:auto;font:600 11px/1 var(--mono);color:var(--accent);font-variant-numeric:tabular-nums}
+.proc-x{border:0;background:none;cursor:pointer;color:var(--ink-3);font-size:15px;line-height:1;padding:0 1px}
+.proc-x:hover{color:var(--ink)}
+.proc-bar{height:4px;background:var(--rule-2)}
+.proc-bar>i{display:block;height:100%;width:0;background:var(--accent);transition:width .18s linear}
+.proc.erro .proc-bar>i{background:var(--right)}
+.proc.pronto .proc-bar>i{background:var(--ok)}
+.proc-now{padding:9px 11px 3px;font:11.5px/1.4 var(--mono);color:var(--ink);
+  display:flex;align-items:baseline;gap:6px}
+.proc-now:before{content:'▸';color:var(--accent)}
+.proc.pronto .proc-now:before{content:'✓';color:var(--ok)}
+.proc.erro .proc-now:before{content:'✗';color:var(--right)}
+.proc-log{list-style:none;margin:0;padding:2px 11px 0;max-height:158px;overflow:auto;
+  font:10.5px/1.5 var(--mono);color:var(--ink-3)}
+.proc-log li{display:flex;gap:8px;padding:1px 0}
+.proc-log li span{margin-left:auto;font-variant-numeric:tabular-nums;white-space:nowrap}
+.proc-log li.lento{color:var(--warn)}
+.proc-log li.falhou{color:var(--right)}
+.proc-foot{padding:8px 11px 10px;font:10px/1.45 var(--sans);color:var(--ink-3)}
+/* placeholder mostrado enquanto uma figura pesada é calculada */
+.calc{padding:22px 14px;text-align:center;font:11.5px/1.5 var(--mono);color:var(--ink-3)}
+.calc b{color:var(--ink-2);font-weight:400}
+@media print{.proc{display:none!important}}
