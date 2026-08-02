@@ -26,6 +26,131 @@ const COL = {
 const hcol = h => COL[h] || COL.accent;
 const hname = h => h === 'Left' ? 'esquerdo' : h === 'Right' ? 'direito' : h;
 
+/* =================================================== retorno de processo ==
+   POR QUE ISTO EXISTE. Um Session Report com meses de Timeline e minutos de
+   streaming leva segundos para ser processado, e o cálculo roda na thread
+   principal do navegador — durante ele a página não repinta. Sem retorno
+   visual, isso é indistinguível de travamento, e foi exatamente assim que o
+   comportamento foi relatado.
+
+   O QUE MUDA. Cada etapa é ANUNCIADA e pintada ANTES de ser executada, e o
+   tempo real medido é registrado depois. Uma espera longa passa a ser legível:
+   dá para ver qual etapa está demorando e quanto cada uma custou. O painel não
+   bloqueia a tela — as figuras vão aparecendo enquanto ele avança. */
+
+/* Devolve o controle ao navegador por um quadro, para que ele pinte. */
+const proximoQuadro = () => new Promise(res => {
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => setTimeout(res, 0));
+  else setTimeout(res, 0);
+});
+const msTexto = ms => ms >= 1000 ? (ms / 1000).toFixed(1) + ' s' : Math.round(ms) + ' ms';
+
+const Prog = {
+  total: 0, feitos: 0, t0: 0, tEtapa: 0, rotulo: '', ativo: false, _token: 0, _ultimoPct: 0,
+  _n(id) { return document.getElementById(id); },
+
+  begin(titulo) {
+    this.total = 0; this.feitos = 0; this.ativo = true; this.rotulo = '';
+    this.t0 = Date.now(); this.tEtapa = this.t0; this._token++; this._ultimoPct = 0;
+    const p = this._n('proc');
+    if (p) {
+      p.hidden = false; p.className = 'proc';
+      const t = this._n('procTitle'); if (t) t.textContent = titulo;
+      const l = this._n('procLog'); if (l) l.innerHTML = '';
+      const n = this._n('procNow'); if (n) n.textContent = 'preparando…';
+    }
+    this._pct(0);
+    return this;
+  },
+
+  /* declara mais n etapas; o denominador do percentual pode crescer ao longo
+     do caminho (só depois de agregar sabemos quantas figuras têm dados) */
+  expect(n) { this.total += n; this._pct(); return this; },
+
+  /* O denominador CRESCE ao longo do caminho: só depois de agregar as séries se
+     sabe quantas figuras têm dados. Para que a barra não ande para trás quando
+     isso acontece, o percentual exibido é monotônico dentro de uma execução —
+     ele apenas espera as novas etapas alcançarem o ponto já mostrado. Os tempos
+     exatos de cada etapa continuam na lista, sem suavização. */
+  _pct(v) {
+    let pct = v != null ? v : (this.total ? Math.min(99, Math.round(100 * this.feitos / this.total)) : 0);
+    pct = Math.max(0, Math.min(100, pct));
+    if (v == null) pct = Math.max(pct, this._ultimoPct);
+    this._ultimoPct = pct;
+    const f = this._n('procFill'), t = this._n('procPct');
+    if (f && f.style) f.style.width = pct + '%';
+    if (t) t.textContent = pct + '%';
+  },
+
+  _encerra(falhou, detalhe) {
+    if (!this.rotulo) return;
+    const dt = Date.now() - this.tEtapa;
+    const log = this._n('procLog');
+    if (log && log.appendChild) {
+      log.appendChild(el('li', { class: falhou ? 'falhou' : dt >= 1500 ? 'lento' : '' }, [
+        el('i', { style: 'font-style:normal', text: (falhou ? '✗ ' : '') + this.rotulo + (detalhe ? ' — ' + detalhe : '') }),
+        el('span', { text: msTexto(dt) })
+      ]));
+      if (isFinite(log.scrollHeight)) log.scrollTop = log.scrollHeight;
+    }
+    this.feitos++; this.rotulo = '';
+    this._pct();
+  },
+
+  /* Anuncia a etapa e devolve o controle ao navegador para que ela apareça na
+     tela ANTES de o cálculo começar. */
+  async step(rotulo) {
+    if (!this.ativo) { await proximoQuadro(); return; }
+    this._encerra(false);
+    this.rotulo = rotulo;
+    const n = this._n('procNow'); if (n) n.textContent = rotulo;
+    this.tEtapa = Date.now();
+    await proximoQuadro();
+  },
+
+  /* registra que a etapa corrente falhou, sem interromper as demais */
+  falhaEtapa(detalhe) { this._encerra(true, detalhe); },
+
+  async finish(msg) {
+    if (!this.ativo) return;
+    this._encerra(false);
+    const total = Date.now() - this.t0;
+    this.ativo = false;
+    const p = this._n('proc');
+    if (p) p.className = 'proc pronto';
+    const n = this._n('procNow');
+    if (n) n.textContent = `${msg || 'concluído'} — ${msTexto(total)} no total`;
+    this._pct(100);
+    const meu = this._token;
+    setTimeout(() => {
+      const q = this._n('proc');
+      if (q && !Prog.ativo && Prog._token === meu) q.hidden = true;
+    }, total > 3000 ? 7000 : 2500);
+    await proximoQuadro();
+  },
+
+  fail(e) {
+    this._encerra(true, String((e && e.message) || e));
+    this.ativo = false;
+    const p = this._n('proc'); if (p) p.className = 'proc erro';
+    const n = this._n('procNow');
+    if (n) n.textContent = 'falhou: ' + String((e && e.message) || e);
+    this._pct(100);
+  }
+};
+
+/* Executa uma etapa única com retorno visual — usado pelas exportações, que
+   recalculam todas as métricas e por isso também levam segundos. */
+async function comEtapa(titulo, rotulo, fn) {
+  Prog.begin(titulo).expect(1);
+  await Prog.step(rotulo);
+  try {
+    const r = await fn();
+    await Prog.finish('pronto');
+    return r;
+  } catch (e) { Prog.fail(e); throw e; }
+}
+
 /* ======================================================== estado global == */
 const S = {
   files: [],            // [{name, parsed}]
@@ -92,8 +217,23 @@ function offMin() {
   return -180;
 }
 
-/* Datasets agregados (somente dentro do registro ativo) -------------------- */
+/* Datasets agregados (somente dentro do registro ativo) --------------------
+   Memoizado: cada figura chamava `ds()` de novo, e a concatenação/desduplicação
+   de meses de Timeline custa dezenas de milissegundos por chamada. A chave
+   depende apenas do que altera o resultado — os arquivos carregados e o
+   registro ativo. Fuso e perfil de doença NÃO entram no agregado. */
+let _dsCache = null, _dsChave = null, _dsVersao = 0;
+/* Invalidação explícita: trocar o conteúdo de um arquivo pelo mesmo nome não
+   muda a chave textual, então quem mexe em S.files avisa aqui. */
+function invalidarDs() { _dsVersao++; _dsCache = null; }
 function ds() {
+  const chave = _dsVersao + "|" + S.files.length + "|" + S.files.map(x => x.name).join("~") + "|" + (S.subject || "");
+  if (_dsCache && _dsChave === chave) return _dsCache;
+  const out = dsCompute();
+  _dsChave = chave; _dsCache = out;
+  return out;
+}
+function dsCompute() {
   const all = activeFiles().map(x => x.parsed);
   const merge = key => {
     const out = {};
@@ -157,7 +297,9 @@ function opt(figId, key, def) {
   if (S.opts[figId][key] === undefined) S.opts[figId][key] = def;
   return S.opts[figId][key];
 }
-function setOpt(figId, key, v) { S.opts[figId] = S.opts[figId] || {}; S.opts[figId][key] = v; renderFigure(figId); }
+/* Trocar um parâmetro recalcula a figura — com aviso, porque em registros
+   longos esse recálculo também custa segundos. */
+function setOpt(figId, key, v) { S.opts[figId] = S.opts[figId] || {}; S.opts[figId][key] = v; renderFigureAsync(figId); }
 
 function plotBox(parent, h) {
   const box = el('div', { class: 'plotbox' });
@@ -1701,7 +1843,7 @@ function renderRail() {
           el('b', { text: fl.name.replace(/^Report_Json_Session_Report_/, '').replace(/\.json$/, '') }),
           el('span', { text: `${p.patient.idHash} · ${n} modalidades` })
         ]),
-        el('button', { class: 'x', title: 'remover', text: '×', onclick: () => { S.files.splice(i, 1); renderAll(); } })
+        el('button', { class: 'x', title: 'remover', text: '×', onclick: () => { S.files.splice(i, 1); invalidarDs(); renderAll('Removendo arquivo'); } })
       ]));
     });
     body.appendChild(ul);
@@ -1715,7 +1857,7 @@ function renderRail() {
     const br = el('div', { class: 'body' });
     br.appendChild(ctrlSelect('', subs.map(s => ({
       value: s.key, label: `${s.idHash} — ${s.files.length} arq. · implante ${String(s.implant || '').slice(0, 10) || '—'}`
-    })), act.key, v => { S.subject = v; S.opts = {}; renderAll(); }));
+    })), act.key, v => { S.subject = v; S.opts = {}; renderAll('Trocando de registro'); }));
     br.appendChild(el('div', {
       class: 'warnbox', html: 'Os arquivos carregados pertencem a <b>pessoas diferentes</b>. ' +
         'Apenas o registro selecionado é analisado — séries de registros distintos nunca são agregadas.'
@@ -1760,7 +1902,7 @@ function renderRail() {
     add('implante', String(p0.device.implantDate || '').slice(0, 10) || '—');
     add('alvos', p0.leads.map(l => `${l.hemisphere[0]}:${l.target}`).join(' ') || '—');
     add('bateria', isFinite(p0.device.batteryPct) ? p0.device.batteryPct + ' %' : '—');
-    add('perfil de doença', s.profile_label || activeProfile().label);
+    add('perfil de doença', activeProfile().label);
   add('fuso aplicado', `UTC${offMin() >= 0 ? '+' : '−'}${String(Math.floor(Math.abs(offMin()) / 60)).padStart(2, '0')}:${String(Math.abs(offMin()) % 60).padStart(2, '0')}`);
     bs.appendChild(kv); cs.appendChild(bs); rail.appendChild(cs);
 
@@ -1770,7 +1912,7 @@ function renderRail() {
     const cp = el('div', { class: 'card' }, [el('h3', {}, ['Perfil de doença'])]);
     const bp2 = el('div', { class: 'body' });
     bp2.appendChild(ctrlSelect('', C.PROFILE_IDS.map(id => ({ value: id, label: C.PROFILES[id].label })),
-      perfil.id, v => { S.profile = v; S.opts = {}; renderAll(); }));
+      perfil.id, v => { S.profile = v; S.opts = {}; renderAll('Aplicando perfil de doença'); }));
     bp2.appendChild(el('div', {
       class: 'note', style: 'margin-top:8px',
       html: `<b>Banda primária:</b> ${perfil.primaryBand.label} (${perfil.primaryBand.lo}–${perfil.primaryBand.hi} Hz) · ` +
@@ -1813,8 +1955,16 @@ function renderRail() {
   }
 }
 
-function renderFigures() {
+/* Figuras abertas automaticamente ao carregar. São as de leitura imediata; as
+   demais só calculam quando o usuário as abre, e aí com aviso de "calculando".
+   Manter esta lista curta é o que define quanto tempo passa entre soltar o
+   arquivo e ver o primeiro gráfico. */
+const AUTO_ABRIR = ['F1', 'F8', 'F9'];
+const _renderizadas = new Set();
+
+async function renderFigures() {
   const main = $('#figs'); main.innerHTML = '';
+  _renderizadas.clear();
   if (!S.files.length) {
     main.appendChild(el('div', { class: 'card' }, [el('div', {
       class: 'body', html:
@@ -1825,10 +1975,11 @@ function renderFigures() {
     return;
   }
   const d = ds();
+  const abrir = [];
   FIGURES.forEach(fig => {
     const ok = !!fig.has(d);
     const det = el('details', { class: 'fig ' + (ok ? 'ready' : 'na'), id: 'fig-' + fig.id });
-    if (ok && ['F1', 'F8', 'F9'].includes(fig.id)) det.open = true;
+    if (ok && AUTO_ABRIR.includes(fig.id)) abrir.push(fig);
     det.appendChild(el('summary', {}, [el('header', {}, [
       el('span', { class: 'chev', text: '▸' }),
       el('span', { class: 'id', text: fig.id }),
@@ -1836,10 +1987,25 @@ function renderFigures() {
       el('span', { class: 'state', text: ok ? 'dados presentes' : 'sem dados' })
     ])]));
     det.appendChild(el('div', { class: 'content', id: 'content-' + fig.id }));
-    det.addEventListener('toggle', () => { if (det.open) renderFigure(fig.id); });
+    /* cálculo sob demanda: abrir uma figura pesada mostra o aviso antes de
+       travar a thread, e cada figura só é calculada uma vez */
+    det.addEventListener('toggle', () => {
+      if (det.open && !_renderizadas.has(fig.id)) renderFigureAsync(fig.id);
+    });
     main.appendChild(det);
-    if (det.open) renderFigure(fig.id);
   });
+  /* a lista inteira aparece primeiro; só então começam os cálculos */
+  await proximoQuadro();
+  if (Prog.ativo) Prog.expect(abrir.length);
+  /* `open` só é ligado no momento de calcular: o evento `toggle` que ele dispara
+     chega depois, encontra a figura já em `_renderizadas` e não refaz o trabalho */
+  for (const fig of abrir) {
+    if (Prog.ativo) await Prog.step(`figura ${fig.id} — ${fig.title}`);
+    else await proximoQuadro();
+    const det = document.getElementById('fig-' + fig.id);
+    if (det) det.open = true;
+    renderFigure(fig.id);
+  }
 }
 
 function renderFigure(id) {
@@ -1847,6 +2013,7 @@ function renderFigure(id) {
   const node = document.getElementById('content-' + id);
   if (!fig || !node) return;
   node.innerHTML = '';
+  _renderizadas.add(id);
   const d = ds();
   if (!fig.has(d)) {
     node.appendChild(el('div', {
@@ -1862,30 +2029,93 @@ function renderFigure(id) {
   }
 }
 
-function renderAll() { renderRail(); renderFigures(); }
+/* Mesma coisa, mas anunciando o cálculo antes de bloquear a thread. */
+async function renderFigureAsync(id) {
+  const fig = FIGURES.find(x => x.id === id);
+  const node = document.getElementById('content-' + id);
+  if (!fig || !node) return;
+  _renderizadas.add(id);
+  node.innerHTML = '';
+  node.appendChild(el('div', {
+    class: 'calc', html: `calculando <b>${fig.id} — ${fig.title}</b>…<br>` +
+      `<b>o navegador não travou:</b> o cálculo acontece aqui mesmo e pode levar alguns segundos em registros longos`
+  }));
+  const t0 = Date.now();
+  await proximoQuadro();
+  renderFigure(id);
+  const dt = Date.now() - t0;
+  if (dt >= 1500) node.appendChild(el('div', {
+    class: 'note', style: 'margin-top:10px',
+    html: `Esta figura levou <b>${msTexto(dt)}</b> para ser calculada neste registro.`
+  }));
+}
+
+async function renderAll(titulo) {
+  const proprio = !Prog.ativo && S.files.length > 0;
+  if (proprio) Prog.begin(titulo || 'Recalculando figuras').expect(1);
+  try {
+    if (proprio) await Prog.step('montando painel do registro');
+    renderRail();
+    await renderFigures();
+    if (proprio) await Prog.finish('figuras prontas');
+  } catch (e) {
+    if (proprio) Prog.fail(e);
+    throw e;
+  }
+}
 
 /* ---------------------------------------------------------- carregamento */
-function handleFiles(fileList) {
+function lerTexto(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(new Error('falha de leitura do arquivo'));
+    r.readAsText(file);
+  });
+}
+
+async function handleFiles(fileList) {
   const files = Array.from(fileList).filter(f => /\.json$/i.test(f.name));
   if (!files.length) return;
-  let pending = files.length;
-  files.forEach(file => {
-    const r = new FileReader();
-    r.onload = () => {
+  const mb = t => isFinite(t) ? ` (${(t / 1048576).toFixed(1)} MB)` : '';
+  /* 2 etapas por arquivo (ler do disco, interpretar) + agregação + painel;
+     as figuras acrescentam suas próprias etapas quando souberem quantas são */
+  Prog.begin(`Carregando ${files.length} arquivo${files.length > 1 ? 's' : ''}`).expect(files.length * 2 + 2);
+  try {
+    for (const file of files) {
+      await Prog.step(`lendo ${file.name}${mb(file.size)}`);
+      let texto;
+      try { texto = await lerTexto(file); }
+      catch (e) { Prog.falhaEtapa(e.message); continue; }
+      await Prog.step(`interpretando ${file.name} — JSON e modalidades do Percept`);
       try {
-        const json = JSON.parse(r.result);
-        const parsed = C.parsePercept(json, file.name);
+        const parsed = C.parsePercept(JSON.parse(texto), file.name);
         const dup = S.files.findIndex(x => x.name === file.name);
         if (dup >= 0) S.files.splice(dup, 1);
         S.files.push({ name: file.name, parsed });
       } catch (e) {
+        Prog.falhaEtapa(e.message);
         alert(`Não foi possível ler "${file.name}". O arquivo precisa ser um Session Report JSON válido do Percept.\n\n${e.message}`);
       }
-      if (--pending === 0) { S.files.sort((a, b) => a.name.localeCompare(b.name)); renderAll(); }
-    };
-    r.onerror = () => { if (--pending === 0) renderAll(); };
-    r.readAsText(file);
-  });
+    }
+    S.files.sort((a, b) => a.name.localeCompare(b.name));
+    invalidarDs();
+    await Prog.step('agregando séries do registro (concatenação e desduplicação)');
+    const d = ds();
+    const nTrend = Object.keys(d.trend).reduce((a, h) => a + d.trend[h].length, 0);
+    const nBruto = d.bsTimeDomain.concat(d.montageTD).reduce((a, td) => a + (td.data ? td.data.length : 0), 0);
+    const rod = document.getElementById('procFoot');
+    if (rod) rod.innerHTML = `Registro com <b>${nTrend.toLocaleString('pt-BR')}</b> pontos de Timeline e ` +
+      `<b>${nBruto.toLocaleString('pt-BR')}</b> amostras de sinal bruto. Todo o cálculo acontece neste navegador — ` +
+      `etapas anunciadas acima estão <b>calculando</b>, não travadas.`;
+    await Prog.step('montando painel do registro');
+    renderRail();
+    await renderFigures();
+    await Prog.finish('pronto');
+  } catch (e) {
+    Prog.fail(e);
+    throw e;
+  }
 }
 
 function exportSession() {
@@ -1911,8 +2141,9 @@ function unionKeys(rows) {
   rows.forEach(r => Object.keys(r).forEach(k => { if (!seen.has(k)) { seen.add(k); out.push(k); } }));
   return out;
 }
-function exportJSON() {
-  const b = exportBundle();
+async function exportJSON() {
+  if (!S.files.length) return alert('Carregue ao menos um arquivo antes de exportar.');
+  const b = await comEtapa('Exportando JSON', 'calculando métricas de todas as sessões', exportBundle);
   if (!b) return alert('Carregue ao menos um arquivo antes de exportar.');
   const doc = {
     export: {
@@ -1924,31 +2155,49 @@ function exportJSON() {
   };
   P.downloadText(JSON.stringify(doc, null, 2), `percept_${b.subject.id}_metricas.json`, 'application/json');
 }
-function exportAcuteCSV() {
-  const b = exportBundle();
+async function exportAcuteCSV() {
+  if (!S.files.length) return alert('Carregue ao menos um arquivo antes de exportar.');
+  const b = await comEtapa('Exportando CSV de métricas agudas', 'calculando espectro, aperiódico e bursts por sessão', exportBundle);
   if (!b) return alert('Carregue ao menos um arquivo antes de exportar.');
   if (!b.acute.length) return alert('Nenhuma métrica aguda (espectro ou sinal bruto) nos arquivos carregados.');
   P.downloadText(P.toCSV(b.acute, unionKeys(b.acute)), `percept_${b.subject.id}_metricas_agudas.csv`, 'text/csv');
 }
-function exportChronicCSV() {
-  const b = exportBundle();
+async function exportChronicCSV() {
+  if (!S.files.length) return alert('Carregue ao menos um arquivo antes de exportar.');
+  const b = await comEtapa('Exportando CSV de métricas crônicas', 'ajustando cosinor e limiares sobre o Timeline', exportBundle);
   if (!b) return alert('Carregue ao menos um arquivo antes de exportar.');
   if (!b.chronic.length) return alert('Nenhum dado de Timeline (crônico) nos arquivos carregados.');
   P.downloadText(P.toCSV(b.chronic, unionKeys(b.chronic)), `percept_${b.subject.id}_metricas_cronicas.csv`, 'text/csv');
 }
 
-/* Abre e renderiza todas as figuras com dados (usado por relatório e PNG). */
-function renderAllReady() {
+/* Abre e renderiza TODAS as figuras com dados (usado por relatório e PNG).
+   É a operação mais cara do aplicativo — em registros de meses passa de dez
+   segundos — e por isso é a que mais precisa anunciar cada etapa. Figuras já
+   calculadas não são refeitas. */
+async function renderAllReady(titulo) {
   const d = ds();
-  FIGURES.forEach(fig => {
-    if (!fig.has(d)) return;
-    const det = document.getElementById('fig-' + fig.id);
-    if (det) { det.open = true; renderFigure(fig.id); }
-  });
+  const pendentes = FIGURES.filter(fig => fig.has(d));
+  const proprio = !Prog.ativo;
+  if (proprio) Prog.begin(titulo || 'Preparando todas as figuras');
+  Prog.expect(pendentes.length);
+  try {
+    for (const fig of pendentes) {
+      const det = document.getElementById('fig-' + fig.id);
+      if (!det) continue;
+      det.open = true;
+      if (_renderizadas.has(fig.id)) { await Prog.step(`figura ${fig.id} — já calculada`); continue; }
+      await Prog.step(`figura ${fig.id} — ${fig.title}`);
+      renderFigure(fig.id);
+    }
+    if (proprio) await Prog.finish('todas as figuras prontas');
+  } catch (e) {
+    if (proprio) Prog.fail(e);
+    throw e;
+  }
 }
-function downloadAllFigures() {
+async function downloadAllFigures() {
   if (!S.files.length) return alert('Carregue ao menos um arquivo antes de exportar.');
-  renderAllReady();
+  await renderAllReady('Exportando todas as figuras (PNG)');
   setTimeout(() => {
     const d = ds(), jobs = [];
     FIGURES.forEach(fig => {
@@ -2036,8 +2285,12 @@ async function buildProvenance() {
 
 async function exportChecklist(formato) {
   if (!S.files.length) return alert('Carregue ao menos um arquivo antes de gerar o checklist.');
+  Prog.begin('Gerando checklist PERCEPT-REPORT').expect(3);
+  await Prog.step('reunindo a proveniência da análise');
   const prov = await buildProvenance();
+  await Prog.step('calculando as métricas do registro');
   const b = exportBundle();
+  await Prog.step('preenchendo os itens do checklist');
   const ck = C.generateChecklist(prov.manifest(), b, activeProfile());
   const nome = `PERCEPT-REPORT_${(b && b.subject.id) || 'analise'}`;
   if (formato === 'docx') {
@@ -2049,14 +2302,19 @@ async function exportChecklist(formato) {
   } else {
     P.downloadText(ck.markdown, nome + '.md', 'text/markdown');
   }
+  await Prog.finish('checklist gerado');
   return ck;
 }
 
 async function exportManifest() {
   if (!S.files.length) return alert('Carregue ao menos um arquivo antes de exportar o manifesto.');
+  Prog.begin('Exportando manifesto de proveniência').expect(2);
+  await Prog.step('reunindo parâmetros efetivos de cada etapa');
   const prov = await buildProvenance();
   const m = prov.manifest();
+  await Prog.step('calculando o hash citável da análise (SHA-256)');
   m.manifestHash = await prov.hash();
+  await Prog.finish('manifesto pronto');
   P.downloadText(JSON.stringify(m, null, 2), `manifesto_proveniencia_${m.files[0] ? m.files[0].subjectId : 'analise'}.json`, 'application/json');
 }
 
@@ -2149,10 +2407,14 @@ function buildReportCover(b) {
   wrap.appendChild(el('div', { class: 'rc-figtitle', text: 'Figuras' }));
   return wrap;
 }
-function generateReport() {
+async function generateReport() {
   if (!S.files.length) return alert('Carregue ao menos um Session Report antes de gerar o relatório.');
-  renderAllReady();
+  Prog.begin('Gerando relatório PDF');
+  await renderAllReady();
+  Prog.expect(2);
+  await Prog.step('calculando o resumo de métricas da capa');
   const bundle = exportBundle();
+  await Prog.step('montando a capa e abrindo a caixa de impressão');
   const main = $('#figs');
   const old = document.getElementById('report-cover'); if (old) old.remove();
   if (bundle) main.insertBefore(buildReportCover(bundle), main.firstChild);
@@ -2163,6 +2425,7 @@ function generateReport() {
     window.removeEventListener('afterprint', cleanup);
   };
   window.addEventListener('afterprint', cleanup);
+  await Prog.finish('relatório pronto para impressão');
   setTimeout(() => window.print(), 500);
 }
 
@@ -2172,8 +2435,10 @@ function init() {
   $('#btnPrint').addEventListener('click', generateReport);
   $('#tz').addEventListener('change', e => {
     S.tzOverride = e.target.value === 'auto' ? null : parseInt(e.target.value, 10);
-    renderAll();
+    renderAll('Aplicando fuso horário');
   });
+  const px = document.getElementById('procX');
+  if (px) px.addEventListener('click', () => { const p = document.getElementById('proc'); if (p) p.hidden = true; });
   ['dragover', 'drop'].forEach(ev => document.addEventListener(ev, e => e.preventDefault()));
   document.addEventListener('drop', e => { if (e.dataTransfer && e.dataTransfer.files.length) handleFiles(e.dataTransfer.files); });
   let rt; window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => { if (S.files.length) $$('.fig[open]').forEach(f => renderFigure(f.id.replace('fig-', ''))); }, 260); });
@@ -2192,5 +2457,5 @@ function init() {
 }
 document.addEventListener('DOMContentLoaded', init);
 /* hook de depuração (usado pela suíte de testes; inerte em produção) */
-window.__PLS__ = { FIGURES, ds, S, renderFigure, handleFiles, offMin, exportBundle, buildReportCover };
+window.__PLS__ = { FIGURES, ds, invalidarDs, S, renderRail, renderFigure, renderFigureAsync, renderAllReady, handleFiles, offMin, exportBundle, buildReportCover, Prog, proximoQuadro };
 })();
