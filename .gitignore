@@ -31,6 +31,15 @@ output/
 # Exceção: documento de revisão que faz parte do repositório (não é dado de paciente)
 !docs/Revisao_LFP_Parkinson.pdf
 
+# Exceção: resultados do benchmark (sinal sintético, sem qualquer dado de paciente)
+!benchmark/resultados.csv
+!benchmark/baseline.json
+# Os sinais sintéticos gerados para a varredura não são versionados (regeneráveis)
+benchmark/*.truth.json
+benchmark/snr_*.json
+benchmark/loss_*.json
+benchmark/sintetico_*.json
+
 # R
 .Rhistory
 .RData

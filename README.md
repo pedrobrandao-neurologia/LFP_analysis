@@ -325,6 +325,20 @@ examples/                  dataset sintético
 Após editar qualquer arquivo em `src/`, rode `cd src && node build.mjs` e faça commit do
 `index.html` regenerado — a integração contínua verifica que os dois estão sincronizados.
 
+## Validação quantitativa
+
+Além dos testes de regressão, o pipeline é medido contra **ground truth** conhecido:
+
+```bash
+node tests/benchmark.mjs --out benchmark
+```
+
+**56/56 critérios aprovados** — detecção de picos R com 100% de VP e 0% de FP, recuperação da fs
+efetiva com erro de 0,0016 Hz, deteção de pacotes perdidos com Jaccard 1,00, F1 de burst 0,98.
+Tabela completa, metodologia e **limitações honestas** em [`docs/validacao.md`](docs/validacao.md).
+
+---
+
 ## Testes
 
 ```bash

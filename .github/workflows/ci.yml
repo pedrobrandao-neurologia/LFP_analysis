@@ -29,6 +29,13 @@ jobs:
       - name: Rodar a suíte
         run: node tests/run.mjs
 
+      - name: Benchmark quantitativo (falha se houver regressão de desempenho)
+        run: node tests/benchmark.mjs --out benchmark --check
+
+      - name: Publicar a tabela de desempenho no resumo do job
+        if: always()
+        run: cat benchmark/resultados.md >> "$GITHUB_STEP_SUMMARY"
+
   r:
     name: Sintaxe do script R
     runs-on: ubuntu-latest
