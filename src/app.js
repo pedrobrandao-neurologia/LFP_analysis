@@ -1178,6 +1178,184 @@ const FIGURES = [
           `Em streaming curto de consultório, o registro costuma ficar num único estado — o método rende mais no Timeline crônico, ao longo dos ciclos da levodopa.`
       }));
     }
+  },
+
+  /* ----------------------------------------------------------------- F15 */
+  {
+    id: 'F15', title: 'Limpeza de artefato cardíaco — três métodos e validação',
+    sub: 'detecção de picos R em duas passagens · interpolação, template e SVD',
+    has: d => d.bsTimeDomain.length || d.montageTD.length,
+    render(node, d) {
+      const src = [].concat(
+        d.bsTimeDomain.map((t, i) => ({ value: 'bs' + i, label: `Streaming ${t.label} (${(t.data.length / t.fs).toFixed(0)} s)`, td: t })),
+        d.montageTD.map((t, i) => ({ value: 'mt' + i, label: `Survey ${t.hemisphere[0]}·${t.label} (${(t.data.length / t.fs).toFixed(0)} s)`, td: t })));
+      if (!src.length) return node.appendChild(el('div', { class: 'empty', text: 'Nenhum sinal bruto disponível.' }));
+      const cur = src.find(s => s.value === opt('F15', 'src', src[0].value)) || src[0];
+      const td = cur.td, fs = td.fsEff || td.fs;
+      const metodo = opt('F15', 'metodo', 'svd');
+      const kSvd = opt('F15', 'k', 2);
+      const janela = opt('F15', 'win', 0.06);
+      const comparar = opt('F15', 'cmp', false);
+
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('sinal', src, cur.value, v => setOpt('F15', 'src', v)),
+        ctrlSelect('método', [
+          { value: 'interpolation', label: 'interpolação de QRS' },
+          { value: 'template', label: 'subtração de template' },
+          { value: 'svd', label: 'SVD (recomendado)' }
+        ], metodo, v => setOpt('F15', 'metodo', v)),
+        ctrlNumber('componentes SVD (k)', kSvd, 1, 5, 1, v => setOpt('F15', 'k', v)),
+        ctrlNumber('janela (s)', janela, 0.02, 0.3, 0.01, v => setOpt('F15', 'win', v)),
+        ctrlCheck('comparar os três métodos', comparar, v => setOpt('F15', 'cmp', v))
+      ]));
+      qualitySeal(node, td);
+
+      const det = C.detectRPeaks(td.data, fs, {});
+      if (!det.peaks.length) {
+        node.appendChild(el('div', {
+          class: 'warnbox', html: `<b>Nenhum pico R detectado.</b> ${det.reason || ''} ` +
+            `Sem detecção confiável, não há o que remover — e forçar a limpeza pioraria o sinal.`
+        }));
+        return;
+      }
+      const rem = C.removeEcg(td.data, fs, det.peaks, { method: metodo, svdComponents: kSvd, window: janela });
+      const val = C.validateEcgRemoval(td.data, rem.cleaned, fs, {});
+
+      /* barra de métricas de validação — saída obrigatória */
+      const confCls = det.confidence === 'alta' ? 'sig' : det.confidence === 'baixa' ? 'warn' : '';
+      node.appendChild(table(['métrica de validação', 'valor', 'leitura'], [
+        ['razão de supressão de ECG', `${f(val.suppressionRatioDb, 2)} dB`, 'potência removida em 0,5–40 Hz; > 0 indica supressão'],
+        ['recuperação do pico beta', f(val.betaPeakRecovery, 3), 'próximo de 1 = preservado sem amplificação espúria'],
+        ['veredito', { html: `<b>${val.verdict}</b>` }, 'leitura conjunta das duas métricas acima'],
+        ['picos R detectados', `${det.nDetected} (${f(det.bpm, 0)} bpm)`, `SDNN ${f(det.hrvSdnn, 0)} ms · polaridade ${det.polarity > 0 ? 'positiva' : 'negativa'}`],
+        ['confiança da detecção', { html: `<span class="${confCls}">${det.confidence}</span>` }, det.reason || 'casamento de template consistente']
+      ]));
+      if (det.confidence === 'baixa') node.appendChild(el('div', {
+        class: 'warnbox', html: `<b>Confiança baixa na detecção dos picos R.</b> ${det.reason || ''}`
+      }));
+
+      const grid = el('div', { class: 'plotgrid two' }); node.appendChild(grid);
+      const nVis = Math.min(td.data.length, Math.round(6 * fs));
+      const tv = Array.from({ length: nVis }, (_, i) => i / fs);
+      const bruto = Array.from(td.data.slice(0, nVis));
+      const limpo = Array.from(rem.cleaned.slice(0, nVis));
+      const amp = Math.max(...bruto.filter(isFinite).map(Math.abs)) * 1.15 || 1;
+
+      /* (a) bruto com picos R e template */
+      const b1 = plotBox(grid, 210);
+      const c1 = new P.Chart(b1.canvas, {
+        width: b1.width, height: b1.height, xlim: [0, nVis / fs], ylim: [-amp, amp],
+        xlabel: 'tempo (s)', ylabel: 'µV', title: '(a) bruto · picos R detectados', pad: { l: 58, r: 14, t: 24, b: 38 }
+      });
+      c1.axes();
+      c1.line(tv, bruto, { color: COL.ink, width: 1 });
+      det.peaks.filter(p => p < nVis).forEach(p => c1.vline(p / fs, { color: COL.right, dash: [2, 2] }));
+
+      /* (b) limpo sobreposto ao bruto */
+      const b2 = plotBox(grid, 210);
+      const c2 = new P.Chart(b2.canvas, {
+        width: b2.width, height: b2.height, xlim: [0, nVis / fs], ylim: [-amp, amp],
+        xlabel: 'tempo (s)', ylabel: 'µV', title: '(b) limpo sobre o bruto (mesma escala)', pad: { l: 58, r: 14, t: 24, b: 38 }
+      });
+      c2.axes();
+      c2.line(tv, bruto, { color: '#C9D3DC', width: 1, label: 'bruto' });
+      c2.line(tv, limpo, { color: COL.accent, width: 1.2, label: 'limpo' });
+      c2.legend({ x: c2.x0 + 8, y: c2.y1 + 6 });
+
+      /* (c) PSD bruta vs limpa em log-log */
+      const pB = C.welchPSD(td.data, fs, { nperseg: 512, overlap: .5 });
+      const pL = C.welchPSD(rem.cleaned, fs, { nperseg: 512, overlap: .5 });
+      if (pB.p && pL.p) {
+        const idx = Array.from(pB.f).map((v, i) => i).filter(i => pB.f[i] >= 1 && pB.f[i] <= 90 && pB.p[i] > 0 && pL.p[i] > 0);
+        const b3 = plotBox(grid, 230);
+        const ys = idx.map(i => pB.p[i]).concat(idx.map(i => pL.p[i]));
+        const c3 = new P.Chart(b3.canvas, {
+          width: b3.width, height: b3.height, xlog: true, ylog: true,
+          xlim: [1, 90], ylim: [Math.max(1e-6, Math.min(...ys) * .7), Math.max(...ys) * 1.4],
+          xlabel: 'frequência (Hz)', ylabel: 'potência (log)', title: '(c) espectro antes e depois', pad: { l: 62, r: 14, t: 24, b: 40 }
+        });
+        c3.axes({ xfmt: v => String(v) });
+        c3.span(13, 35, { color: '#B8912A', alpha: .12, label: 'β' });
+        c3.line(idx.map(i => pB.f[i]), idx.map(i => pB.p[i]), { color: '#9FB3C0', width: 1.4, label: 'bruto' });
+        c3.line(idx.map(i => pL.f[i]), idx.map(i => pL.p[i]), { color: COL.ink, width: 1.6, label: 'limpo' });
+        c3.legend({ x: c3.x0 + 8, y: c3.y1 + 6 });
+      }
+
+      /* (d) épocas empilhadas antes e depois */
+      const half = Math.max(2, Math.round(janela * fs));
+      const epocas = (sinal) => det.peaks
+        .filter(p => p - half >= 0 && p + half < sinal.length)
+        .slice(0, 120)
+        .map(p => Array.from(sinal.slice(p - half, p + half + 1)).map(v => isFinite(v) ? v : 0));
+      const eA = epocas(td.data), eD = epocas(rem.cleaned);
+      if (eA.length > 3) {
+        const todos = eA.flat();
+        const zmin = C.quantile(todos, .02), zmax = C.quantile(todos, .98);
+        [[eA, '(d) épocas do QRS — antes'], [eD, '(d) épocas do QRS — depois']].forEach(([M, titulo]) => {
+          const bx = plotBox(grid, 210);
+          const ch = new P.Chart(bx.canvas, {
+            width: bx.width, height: bx.height, xlim: [-janela * 1000, janela * 1000], ylim: [0, M.length],
+            xlabel: 'tempo em relação ao pico R (ms)', ylabel: 'época', title: titulo, pad: { l: 58, r: 58, t: 24, b: 40 }
+          });
+          ch.heat(M, { cmap: 'divergent', zmin, zmax, smooth: false });
+          ch.axes({ grid: false });
+          ch.colorbar({ label: 'µV' });
+        });
+      }
+
+      /* (e) espectro de valores singulares, para escolher k com evidência */
+      if (metodo === 'svd' && rem.singularValues) {
+        const sv = rem.singularValues.slice(0, 12);
+        const b5 = plotBox(grid, 210);
+        const c5 = new P.Chart(b5.canvas, {
+          width: b5.width, height: b5.height, xlim: [-.6, sv.length - .4], ylim: [0, Math.max(...sv) * 1.15],
+          xlabel: 'componente', ylabel: 'valor singular', title: `(e) espectro de valores singulares — k = ${kSvd}`,
+          pad: { l: 62, r: 14, t: 24, b: 40 }
+        });
+        c5.axes({ xticks: sv.map((_, i) => i), xfmt: v => String(v + 1) });
+        c5.bars(sv.map((_, i) => i), sv, {
+          width: (c5.X(1) - c5.X(0)) * .6,
+          color: (v, i) => i < kSvd ? COL.accent : '#B9C6D0'
+        });
+        node.appendChild(el('div', {
+          class: 'note', html: `Os <b>${kSvd}</b> primeiros componentes explicam <b>${f(rem.varianceExplained, 1)}%</b> da variância das épocas. ` +
+            `Vivien et al. recomendam mais de um componente quando a contaminação é alta — escolha k pela queda do espectro acima, não por default.`
+        }));
+      }
+
+      /* comparação dos três métodos em um clique */
+      if (comparar) {
+        const linhas = ['interpolation', 'template', 'svd'].map(m => {
+          const r = C.removeEcg(td.data, fs, det.peaks, { method: m, svdComponents: kSvd, window: janela });
+          const v = C.validateEcgRemoval(td.data, r.cleaned, fs, {});
+          return [m === 'interpolation' ? 'interpolação' : m === 'template' ? 'template' : 'SVD',
+            f(v.suppressionRatioDb, 2) + ' dB', f(v.betaPeakRecovery, 3), v.verdict];
+        });
+        node.appendChild(el('h4', { class: 'note', html: '<b>Comparação direta dos três métodos</b> (mesmos picos R)' }));
+        node.appendChild(table(['método', 'supressão', 'recuperação do pico β', 'veredito'], linhas));
+      }
+
+      node.appendChild(exportRow([
+        { label: '⤓ PNG bruto', fn: () => P.downloadCanvas(b1.canvas, 'F15a_bruto_picosR') },
+        { label: '⤓ PNG limpo', fn: () => P.downloadCanvas(b2.canvas, 'F15b_limpo') },
+        { label: '⤓ CSV sinal limpo', fn: () => P.downloadText(P.toCSV(Array.from(rem.cleaned).map((v, i) => ({ t_s: +(i / fs).toFixed(4), uV: v }))), 'F15_sinal_limpo.csv', 'text/csv') },
+        { label: '⤓ CSV picos R', fn: () => P.downloadText(P.toCSV(det.peaks.map((p, i) => ({ indice: p, t_s: +(p / fs).toFixed(4), rr_ms: i ? +det.rrIntervals[i - 1].toFixed(1) : '' }))), 'F15_picos_R.csv', 'text/csv') }
+      ]));
+
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Método.</b> Detecção de picos R em <b>duas passagens por correlação de template</b> ` +
+          `(percentis decrescentes para semear, template médio, correlação, refino e segunda passagem), como em Stam et al. (2023) e Vivien et al. (2026). ` +
+          `Três métodos de remoção comparáveis: <b>interpolação</b> do trecho (perceive), <b>subtração de template</b> ajustado em amplitude por mínimos quadrados a cada batimento (Hammer et al.), ` +
+          `e <b>SVD</b> das épocas com reconstrução por k componentes (recomendado). ` +
+          `As métricas de validação são <b>saída obrigatória</b>: sem elas não é possível saber se a limpeza removeu o artefato ou o sinal.`
+      }));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Prevenção vale mais que correção.</b> Stam et al. recomendam explicitamente prevenir a contaminação em vez de corrigi-la: ` +
+          `o artefato reduz a relação sinal-ruído e, portanto, a confiabilidade do LFP para físio-marcadores e para aDBS. ` +
+          `Medidas: <b>posicionamento do gerador</b> (Neumann et al., Brain Stimul 2021 — a contaminação por ECG é sensível ao sítio cirúrgico de implante), ` +
+          `verificação de impedância de leads e extensões, e <b>registro de ECG externo simultâneo</b> na próxima sessão, que resolve os casos em que o pico R é pequeno demais no LFP.`
+      }));
+    }
   }
 ];
 

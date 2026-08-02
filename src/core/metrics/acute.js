@@ -6,6 +6,9 @@ import { bandpassFFT, hilbertEnvelope } from '../dsp/filters.js';
 import { detectBursts } from '../dsp/bursts.js';
 import { fitAperiodic } from '../dsp/aperiodic.js';
 import { linreg, median, rnd } from '../stats/descriptive.js';
+import { detectRPeaks } from '../artifact/rpeaks.js';
+import { removeEcg } from '../artifact/ecg.js';
+import { validateEcgRemoval } from '../artifact/validate.js';
 
 export const HEMIS = ['Left', 'Right'];
 
@@ -81,6 +84,37 @@ export function burstMetrics(parsed, hemi, opts) {
     burst_median_ms: rnd(bu.medianDurationMs, 1), burst_prob_pct: rnd(100 * bu.probability, 1),
     beta_power_welch: rnd(bandPower(w.f, w.p, 13, 30), 4)
   };
+}
+
+/* Qualidade cardíaca do registro: quanto de ECG há e o que a limpeza faria.
+   Exportada junto das métricas agudas porque contaminação por ECG é critério de
+   exclusão documentado (van Rheede et al. excluíram 2 de 12 STN) e causa de
+   maladaptação em aDBS (Busch et al.). Não altera o sinal — apenas reporta. */
+export function ecgMetrics(parsed, hemi) {
+  const src = (parsed.bsTimeDomain || []).find(t => t.hemisphere === hemi)
+    || (parsed.montageTD || []).find(t => t.hemisphere === hemi);
+  if (!src || src.data.length < 8 * (src.fsEff || src.fs)) return null;
+  const fs = src.fsEff || src.fs;
+  const det = detectRPeaks(src.data, fs, {});
+  const base = {
+    ecg_n_beats: det.nDetected,
+    ecg_bpm: rnd(det.bpm, 1),
+    ecg_hrv_sdnn_ms: rnd(det.hrvSdnn, 1),
+    ecg_detection_confidence: det.confidence,
+    ecg_detection_method: det.method
+  };
+  if (det.nDetected < 5) return Object.assign(base, { ecg_detected: 0 });
+  const rem = removeEcg(src.data, fs, det.peaks, { method: 'svd' });
+  const val = validateEcgRemoval(src.data, rem.cleaned, fs, {});
+  return Object.assign(base, {
+    ecg_detected: 1,
+    ecg_suppression_db: rnd(val.suppressionRatioDb, 2),
+    ecg_beta_peak_recovery: rnd(val.betaPeakRecovery, 3),
+    ecg_cleaning_verdict: val.verdict,
+    ecg_cleaning_method: rem.params.method,
+    ecg_cleaning_window_s: rem.params.windowS,
+    ecg_svd_components: rem.params.svdComponents
+  });
 }
 
 /* Curva dose-resposta (potência × amplitude de estimulação) do BrainSenseLfp. */
