@@ -1069,6 +1069,87 @@ const FIGURES = [
         { label: '⤓ CSV', fn: () => P.downloadText(P.toCSV(d.snapshots.flatMap(s => Object.keys(s.hemi).flatMap(hh => s.hemi[hh].f.map((x, k) => ({ utc: new Date(s.t).toISOString(), evento: s.name, hemisferio: hh, f_Hz: x, magnitude: s.hemi[hh].p[k] }))))), 'F12_snapshots.csv', 'text/csv') }
       ]));
     }
+  },
+
+  /* ----------------------------------------------------------------- F13 */
+  {
+    id: 'F13', title: 'Estados ON/OFF pela amplitude do beta',
+    sub: 'classificação automática: baixo β = ON · alto β = OFF',
+    has: d => d.bsTimeDomain.length || Object.keys(d.trend).length,
+    render(node, d) {
+      const src = [];
+      d.bsTimeDomain.forEach((t, i) => src.push({ value: 'st' + i, label: `Streaming ${t.label} (${(t.data.length / t.fs).toFixed(0)} s)`, kind: 'stream', td: t }));
+      Object.keys(d.trend).forEach(h => src.push({ value: 'tl' + h, label: `Timeline crônico — STN ${hname(h)}`, kind: 'timeline', hemi: h }));
+      if (!src.length) return node.appendChild(el('div', { class: 'empty', text: 'Sem streaming nem Timeline.' }));
+      const cur = src.find(s => s.value === opt('F13', 'src', src[0].value)) || src[0];
+      const lo = opt('F13', 'lo', 13), hi = opt('F13', 'hi', 30);
+
+      const ctrls = [
+        ctrlSelect('fonte', src, cur.value, v => setOpt('F13', 'src', v)),
+        ctrlNumber('β inf.', lo, 1, 45, 1, v => setOpt('F13', 'lo', v)),
+        ctrlNumber('β sup.', hi, 5, 90, 1, v => setOpt('F13', 'hi', v))
+      ];
+      let series, isTime, minDur;
+      if (cur.kind === 'stream') {
+        const mds = opt('F13', 'mds', 2);
+        ctrls.push(ctrlNumber('dur. mín (s)', mds, 0, 30, 1, v => setOpt('F13', 'mds', v)));
+        series = C.betaEnvelopeSeries(cur.td, { lo, hi, winS: 1 }); isTime = false; minDur = mds;
+      } else {
+        const mdm = opt('F13', 'mdm', 30);
+        ctrls.push(ctrlNumber('dur. mín (min)', mdm, 0, 240, 10, v => setOpt('F13', 'mdm', v)));
+        const clean = C.removeOutliersMAD(d.trend[cur.hemi], 'lfp', 4).kept;
+        series = clean.map(r => ({ t: r.t, v: r.lfp })); isTime = true; minDur = mdm * 60000;
+      }
+      node.appendChild(el('div', { class: 'ctrls' }, ctrls));
+
+      const st = C.detectStates(series, { minDur });
+      if (!st) return node.appendChild(el('div', { class: 'empty', text: 'Dados insuficientes para classificar estados.' }));
+
+      const box = plotBox(node, 250);
+      const xs = st.points.map(p => p.t), ys = st.points.map(p => p.v);
+      const ch = new P.Chart(box.canvas, {
+        width: box.width, height: box.height, xlim: [xs[0], xs[xs.length - 1]], ylim: [0, Math.max(...ys) * 1.16],
+        xlabel: isTime ? 'data local' : 'tempo (s)', ylabel: cur.kind === 'stream' ? 'amplitude β (µV)' : 'potência β (u.a.)',
+        title: `estados por amplitude de beta (${lo}–${hi} Hz)`, pad: { l: 60, r: 14, t: 24, b: 42 }
+      });
+      ch.axes(isTime ? { nx: 7, xfmt: v => new Date(v + offMin() * 60000).toISOString().slice(5, 10).split('-').reverse().join('/') } : {});
+      st.episodes.forEach(e => { if (e.state === 'OFF') ch.span(e.startT, e.endT, { color: COL.right, alpha: .15 }); });
+      ch.line(xs, ys, { color: COL.ink, width: 1.2 });
+      ch.hline(st.threshold, { color: COL.warn, dash: [4, 3], label: `limiar β = ${f(st.threshold, 2)}` });
+
+      node.appendChild(table(['métrica', 'valor', 'o que significa'], [
+        ['limiar de beta (ON | OFF)', f(st.threshold, 2), 'acima → OFF (alto beta); abaixo → ON'],
+        ['β médio ON / OFF', `${f(st.betaLow, 2)} / ${f(st.betaHigh, 2)}`, 'nível típico de beta em cada estado'],
+        ['% do tempo em OFF', f(100 * st.offFraction, 1) + ' %', 'quanto do registro ficou em alto beta'],
+        ['episódios OFF / ON', `${st.nOff} / ${st.nOn}`, 'número de blocos de cada estado'],
+        ['duração média OFF / ON', cur.kind === 'stream' ? `${f(st.meanOffDur, 1)} / ${f(st.meanOnDur, 1)} s` : `${f(st.meanOffDur / 60000, 0)} / ${f(st.meanOnDur / 60000, 0)} min`, 'persistência de cada estado'],
+        ['contraste entre estados (d)', f(st.separation, 2), 'distância padronizada entre os níveis'],
+        ['bimodalidade (Sarle)', f(st.bimodality, 3), '> 0,555 sugere dois estados reais']
+      ]));
+      if (!(st.bimodality > 0.555)) node.appendChild(el('div', {
+        class: 'warnbox', html: `A distribuição do beta é praticamente <b>unimodal</b> (bimodalidade ${f(st.bimodality, 3)} ≤ 0,555): ` +
+          `o beta varia de forma contínua, sem dois patamares nítidos. A divisão ON/OFF aqui é apenas descritiva — interprete com cautela.`
+      }));
+      node.appendChild(exportRow([
+        { label: '⤓ PNG', fn: () => P.downloadCanvas(box.canvas, 'F13_estados_onoff') },
+        {
+          label: '⤓ CSV episódios', fn: () => P.downloadText(P.toCSV(st.episodes.map(e => ({
+            estado: e.state,
+            inicio: isTime ? new Date(e.startT + offMin() * 60000).toISOString().slice(0, 19) : +e.startT.toFixed(2),
+            fim: isTime ? new Date(e.endT + offMin() * 60000).toISOString().slice(0, 19) : +e.endT.toFixed(2),
+            duracao: isTime ? +(e.dur / 60000).toFixed(1) : +e.dur.toFixed(2),
+            unidade: isTime ? 'min' : 's', beta_medio: +e.meanV.toFixed(3)
+          }))), 'F13_estados_onoff.csv', 'text/csv')
+        }
+      ]));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Como funciona.</b> A amplitude do beta (${lo}–${hi} Hz) é separada automaticamente em dois níveis por agrupamento (k-médias): ` +
+          `<b>baixo beta = ON</b> (medicação/estimulação fazendo efeito) e <b>alto beta = OFF</b> (efeito reduzido), com um limiar entre eles e ` +
+          `duração mínima para evitar troca-troca. <b>Cuidado:</b> o beta é um <i>correlato</i> do estado clínico, não a verdade — ` +
+          `artefato de movimento infla o beta (falso OFF) e a própria estimulação o reduz; a bimodalidade indica se realmente há dois estados. ` +
+          `Em streaming curto de consultório, o registro costuma ficar num único estado — o método rende mais no Timeline crônico, ao longo dos ciclos da levodopa.`
+      }));
+    }
   }
 ];
 
@@ -1385,6 +1466,19 @@ function buildReportCover(b) {
       ])
     ));
   }
+  wrap.appendChild(el('h3', { class: 'rc-h', text: 'Como ler estas métricas' }));
+  const gl = el('dl', { class: 'kv rc-gloss' });
+  const g = (k, v) => { gl.appendChild(el('dt', { text: k })); gl.appendChild(el('dd', { html: v })); };
+  g('pico β (beta)', 'Frequência onde o beta é mais forte. O beta é o “ritmo do freio” dos núcleos da base: tende a subir quando a medicação está no fim (OFF) e a cair quando ela faz efeito (ON) ou sob estimulação eficaz.');
+  g('β presente?', 'Se há um pico beta nítido. Sua presença é pré-requisito para programar o DBS adaptativo (aDBS) guiado por beta.');
+  g('χ aperiódico', 'Inclinação de fundo do espectro (a parte não oscilatória). Reflete o balanço excitação/inibição da rede; use como métrica de apoio, não isolada.');
+  g('bursts', 'Rajadas curtas de beta. Rajadas mais longas e frequentes acompanham mais rigidez/lentidão e são o alvo do aDBS de limiar único.');
+  g('MESOR · amplitude · acrofase', 'Do ritmo de 24 h: o nível médio, o tamanho da oscilação dia↔noite e a hora do pico. Descrevem como o beta muda ao longo do dia.');
+  g('cosinor p* · Rayleigh p', 'Testam se o ritmo de 24 h é real (p* já corrigido para a forte autocorrelação do sinal a cada 10 min) e se o horário do pico se repete entre os dias.');
+  g('% abaixo / entre / acima', 'Quanto tempo o beta passa em cada faixa de limiar. Guia a escolha dos limiares do aDBS: se quase tudo cai numa faixa, o aparelho quase não modula.');
+  g('estados ON/OFF (β)', 'Divisão automática do sinal em baixo beta (ON, efeito presente) e alto beta (OFF). “% em OFF” resume quanto do registro ficou em alto beta. É um correlato — artefato de movimento pode simular OFF.');
+  wrap.appendChild(gl);
+
   wrap.appendChild(el('div', {
     class: 'note rc-note', html:
       '<b>Notas metodológicas.</b> Espectro por Welch (Hann, 50% de sobreposição) ou nativo do dispositivo; componente aperiódico por ' +

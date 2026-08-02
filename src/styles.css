@@ -177,6 +177,9 @@ footer.foot{padding:24px 20px 40px;text-align:center;font:11px/1.7 var(--mono);c
 .rc-note{margin:12px 0}
 .rc-figtitle{font:600 11px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink);
   margin-top:16px;border-top:1px solid var(--rule);padding-top:10px}
+.rc-gloss{grid-template-columns:minmax(120px,auto) 1fr;gap:5px 12px;font:11px/1.5 var(--sans)}
+.rc-gloss dt{font-weight:600;color:var(--ink)}
+.rc-gloss dd{margin:0;color:var(--ink-2)}
 
 @media print{
   header.top,.spine,aside.rail,footer.foot,.ctrls,.drop{display:none!important}

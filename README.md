@@ -11,8 +11,14 @@ O repositório contém duas peças que se complementam:
 | **Percept LFP Studio** | aplicativo web progressivo (PWA) em arquivo único | inspeção rápida em consultório, exploração interativa, figuras para apresentação |
 | **`R/percept_lfp.R`** | 61 funções em R | análise definitiva para publicação: modelos mistos, GAMM, figuras em 300 dpi |
 
-Ambos leem o mesmo arquivo — o `Report_Json_Session_Report_*.json` exportado do programador —
-e produzem o mesmo conjunto de figuras, F1 a F12, descritas em [`docs/estado-da-arte.md`](docs/estado-da-arte.md).
+Ambos leem o mesmo arquivo — o `Report_Json_Session_Report_*.json` exportado do programador — e
+produzem em grande parte as mesmas figuras (F1–F12, descritas em [`docs/estado-da-arte.md`](docs/estado-da-arte.md));
+o aplicativo inclui ainda a **F13**, detecção automática de estados **ON/OFF** pela amplitude do beta.
+
+> **Como ler este README.** Cada bloco traz a explicação **técnica** — o que a função faz e como calcula —
+> e, em linguagem simples, **o que cada variável significa para o médico** que vai ler o aplicativo ou o
+> relatório em PDF. O [Glossário clínico das variáveis](#glossário-clínico-das-variáveis) reúne todas as
+> medidas com essa dupla leitura. Nada aqui é diagnóstico: são marcadores de pesquisa e apoio à decisão.
 
 ---
 
@@ -82,20 +88,23 @@ valores conhecidos — a suíte de testes verifica que o pipeline os recupera.
 
 ## Figuras
 
-| ID | Figura | Fonte necessária |
-|----|--------|------------------|
-| F1 | Espectro anotado (linear + log-log), tabela de bandas | Signal Test, Survey ou Signal Check |
-| F2 | Decomposição periódico/aperiódico | qualquer espectro ou sinal bruto |
-| F3 | Impedâncias monopolares e matriz bipolar | `Impedance` |
-| F4 | Linha do tempo da sessão, grupos, parâmetros de sensing | `EventLogs`, `Groups` |
-| F5 | Mapa canal × frequência do Survey + ranking de picos | `LFPMontage` |
-| F6 | Traçado, espectrograma, envelope, bursts, sensibilidade ao limiar | `BrainSenseTimeDomain` |
-| F7 | Potência × amplitude de estimulação, dose-resposta | `BrainSenseLfp` |
-| F8 | Timeline crônico multi-dia, bilateral | `LFPTrendLogs` |
-| F9 | Heatmap dia × hora, perfil diurno, polar, cosinor | `LFPTrendLogs` (≥ 2 dias) |
-| F10 | Resposta alinhada a evento (−60/+180 min) | `LFPTrendLogs` + snapshots |
-| F11 | Distribuição de potência e limiares de aDBS | `LFPTrendLogs` |
-| F12 | Espectros medianos por tipo de evento | `LfpFrequencySnapshotEvents` |
+A coluna **Leitura clínica** resume, em uma frase, o que cada figura diz ao médico.
+
+| ID | Figura (técnico) | Fonte necessária | Leitura clínica |
+|----|------------------|------------------|-----------------|
+| F1 | Espectro anotado (linear + log-log), tabela de bandas | Signal Test, Survey ou Signal Check | Onde está a força do sinal e onde fica o **pico beta** (marcador de rigidez/lentidão). |
+| F2 | Decomposição periódico/aperiódico | qualquer espectro ou sinal bruto | Separa o **pico verdadeiro** do "fundo" 1/f — confirma se o beta é oscilação real. |
+| F3 | Impedâncias monopolares e matriz bipolar | `Impedance` | Integridade dos contatos do eletrodo e sua estabilidade ao longo do tempo. |
+| F4 | Linha do tempo da sessão, grupos, parâmetros de sensing | `EventLogs`, `Groups` | O que foi **programado** (grupos, contatos, sensing) e quando. |
+| F5 | Mapa canal × frequência do Survey + ranking de picos | `LFPMontage` | Qual par de contatos **capta melhor o beta** — escolha do sensing crônico. |
+| F6 | Traçado, espectrograma, envelope, bursts, sensibilidade ao limiar | `BrainSenseTimeDomain` | Sinal cru e **rajadas de beta** (bursts), alvo do aDBS de limiar único. |
+| F7 | Potência × amplitude de estimulação, dose-resposta | `BrainSenseLfp` | Se **aumentar a estimulação reduz o beta** (resposta esperada). |
+| F8 | Timeline crônico multi-dia, bilateral | `LFPTrendLogs` | Como o beta **varia ao longo dos dias**, nos dois lados. |
+| F9 | Heatmap dia × hora, perfil diurno, polar, cosinor | `LFPTrendLogs` (≥ 2 dias) | **Ritmo dia↔noite** do beta e a hora do pico. |
+| F10 | Resposta alinhada a evento (−60/+180 min) | `LFPTrendLogs` + snapshots | Resposta do beta a um **evento marcado** (ex.: tomar levodopa). |
+| F11 | Distribuição de potência e limiares de aDBS | `LFPTrendLogs` | **Quanto tempo** o beta passa em cada faixa — define limiares do aDBS. |
+| F12 | Espectros medianos por tipo de evento | `LfpFrequencySnapshotEvents` | Compara o espectro entre **tipos de evento** do paciente. |
+| **F13** | **Estados ON/OFF pela amplitude do beta** | `BrainSenseTimeDomain` ou `LFPTrendLogs` | Divide o registro em **ON (baixo beta)** e **OFF (alto beta)** automaticamente. |
 
 Cada figura exporta PNG e os dados subjacentes em CSV.
 
@@ -120,13 +129,101 @@ os desfechos ficam prontos para modelos longitudinais sem reprocessamento. As va
 - **Agudas (sessão × hemisfério):** pico beta (Hz e magnitude), potência relativa β↓/β↑, presença de
   pico beta (`has_beta_peak` — critério de elegibilidade a aDBS), pico teta-alfa (relevante em distonia),
   expoente e offset aperiódicos (specparam/FOOOF), taxa/duração/probabilidade de bursts (com o percentil
-  registrado), e inclinação dose-resposta quando há rampa de estimulação.
+  registrado), inclinação dose-resposta quando há rampa de estimulação e, no streaming, a fração do tempo
+  em **alto beta (estado OFF)**.
 - **Crônicas (Timeline):** n de pontos/dias, mediana e IQR, MESOR, amplitude e acrofase de 24 h,
   R² e *p* do cosinor **corrigido para autocorrelação AR(1)**, η² da hora do dia, *R* e *p* de Rayleigh,
-  e a distribuição da potência frente aos limiares de aDBS (% abaixo/entre/acima, p10/p90).
+  a distribuição da potência frente aos limiares de aDBS (% abaixo/entre/acima, p10/p90) e a **segmentação
+  automática em estados ON/OFF** (% do tempo em OFF, número e duração dos episódios).
 
 Os identificadores de paciente já saem pseudonimizados do parser (`sub-XXXXXXXX`); nenhum nome, data de
 nascimento, prontuário ou número de série é incluído nas exportações.
+
+---
+
+## Glossário clínico das variáveis
+
+Cada variável abaixo aparece nas tabelas do aplicativo, no CSV/JSON e no relatório em PDF. A ideia é que
+tanto **quem programa o DBS** quanto **quem faz a análise estatística** leiam a mesma linha e entendam.
+
+> **A intuição do beta.** O beta (13–35 Hz) é o "ritmo do freio" dos núcleos da base. Ele tende a ficar
+> **alto quando a medicação está no fim (OFF)** e mais sintomas aparecem, e **cai quando a levodopa faz
+> efeito (ON)** ou sob estimulação eficaz. Quase tudo aqui gira em torno de medir esse beta de formas
+> diferentes. **Atenção:** são *correlatos* de estado clínico, não a verdade — movimento e a própria
+> estimulação alteram o beta.
+
+### Espectro e picos (medidas agudas)
+
+| Variável (CSV/JSON) | O que é, em linguagem simples | Como é medido | O que sugere clinicamente |
+|---|---|---|---|
+| `beta_peak_hz`, `beta_peak_mag` | A **frequência** e a **força** do beta mais forte | máximo do espectro entre 13–35 Hz | beta forte acompanha estado OFF / mais rigidez e lentidão; cai com levodopa e estimulação eficaz |
+| `has_beta_peak` | **Existe** um pico beta nítido? (sim/não) | pico no resíduo após remover o fundo 1/f | pré-requisito para programar **aDBS guiado por beta**; parte dos hemisférios simplesmente não tem pico |
+| `low_beta_rel_pct`, `high_beta_rel_pct` | Quanto do sinal está no beta **baixo** (13–20) e **alto** (20–35) | potência relativa por banda | o beta baixo é o que mais responde à levodopa |
+| `theta_alpha_peak_hz` | Pico entre **4–12 Hz** | máximo do espectro em 4–12 Hz | biomarcador na **distonia** (GPi); em Parkinson costuma refletir tremor/ruído |
+| `gamma_peak_hz` | Pico entre **55–95 Hz** | máximo do espectro em 55–95 Hz | gama "finamente sintonizada" liga-se a melhora motora e a discinesia |
+
+### Componente aperiódico — specparam/FOOOF (medidas agudas)
+
+| Variável | Em linguagem simples | Como é medido | O que sugere |
+|---|---|---|---|
+| `aperiodic_exponent` (χ) | A **inclinação do "fundo"** do espectro (parte não oscilatória) | regressão robusta em escala log-log | relacionado ao balanço excitação/inibição da rede; use como métrica de apoio |
+| `aperiodic_offset` | A **altura geral** desse fundo | idem | potência de banda larga |
+| `aperiodic_r2` | **Quão bem** o fundo foi ajustado | R² do modelo | indica se a separação "pico × fundo" é confiável |
+
+### Bursts de beta (medidas agudas)
+
+| Variável | Em linguagem simples | Como é medido | O que sugere |
+|---|---|---|---|
+| `burst_rate_hz` | Quantas **rajadas** de beta por segundo | envelope de Hilbert + limiar no percentil | rajadas frequentes acompanham mais sintoma motor |
+| `burst_mean_ms`, `burst_prob_pct` | **Duração média** das rajadas e **fração do tempo** em rajada | idem | rajadas longas são o alvo do **aDBS de limiar único** |
+| `burst_percentile` | O **percentil** usado como limiar (registro) | parâmetro do método | muda o resultado sistematicamente — **pré-registre-o** |
+
+### Resposta à estimulação (medidas agudas)
+
+| Variável | Em linguagem simples | Como é medido | O que sugere |
+|---|---|---|---|
+| `dose_slope`, `dose_r2` | **Quanto o beta cai** por mA de estimulação | regressão potência × amplitude | inclinação negativa forte = **supressão beta dose-dependente** (sinal de estimulação eficaz) |
+
+### Ritmo circadiano — Timeline (medidas crônicas)
+
+| Variável | Em linguagem simples | Como é medido | O que sugere |
+|---|---|---|---|
+| `mesor` | O **nível médio** do beta no ciclo de 24 h | cosinor (24+12 h) | linha de base do dia |
+| `amp_24h` | O **tamanho** da oscilação dia↔noite | idem | ritmo forte sugere modulação circadiana real do beta |
+| `acrophase_24h` | A **hora do pico** de beta | idem | quando o "freio" está mais ativo — costuma ser de manhã |
+| `cosinor_p`, `cosinor_p_adj_ar1` | O ritmo de 24 h é **real**? | teste do cosinor; `*_adj_ar1` corrige a autocorrelação | use sempre o **corrigido** — o *p* bruto exagera a significância |
+| `rho_ar1` | Quão "grudados" são pontos consecutivos | autocorrelação de 1ª ordem dos resíduos | valores altos (>0,9) são esperados a cada 10 min |
+| `eta2_hour_pct` | **Quanto** da variação do beta a hora do dia explica | ANOVA por hora | fração da variância atribuível ao horário |
+| `rayleigh_R`, `rayleigh_p` | O horário do pico **se repete** entre os dias? | teste de Rayleigh das acrofases diárias | ritmo consistente vs. disperso |
+
+### Distribuição e limiares de aDBS — Timeline (medidas crônicas)
+
+| Variável | Em linguagem simples | Como é medido | O que sugere |
+|---|---|---|---|
+| `lfp_median`, `lfp_iqr_low/high` | **Centro e dispersão** do beta crônico | mediana e quartis | resumo robusto da série |
+| `pct_below`, `pct_between`, `pct_above` | **% do tempo** abaixo / entre / acima dos limiares | contagem frente aos limiares | se quase tudo cai numa faixa, o aDBS quase não modula |
+| `p10`, `p90` | Candidatos **empíricos** a limiar | percentis 10 e 90 | pontos de partida para programar limiares |
+| `thr_lower`, `thr_upper`, `thr_source` | Limiares usados e sua **origem** | do aparelho, senão Q1/Q3 dos dados | rastreabilidade da decisão |
+
+### Estados ON/OFF pela amplitude do beta — F13 (agudas e crônicas)
+
+| Variável | Em linguagem simples | Como é medido | O que sugere |
+|---|---|---|---|
+| `off_pct` / `stream_off_pct` | **% do tempo em alto beta** (estado OFF-like) | k-médias sobre a amplitude de beta | mais tempo em OFF sugere controle motor pior no período |
+| `n_off_episodes`, `mean_off_min` | **Quantos** blocos de OFF e **quão longos** | segmentação com duração mínima | fragmentação e persistência dos períodos ruins |
+| `beta_low_state`, `beta_high_state` | Nível **típico** de beta em ON e em OFF | centróides dos dois grupos | contraste absoluto entre os estados |
+| `beta_state_sep` | O **contraste** entre os dois níveis | distância padronizada (tipo *d*) | maior = estados mais separados |
+| `beta_bimodality` / `stream_beta_bimodality` | **Há mesmo dois estados?** | coeficiente de bimodalidade de Sarle | **> 0,555** sugere dois patamares reais; abaixo disso, a divisão ON/OFF é só descritiva |
+
+### Chaves de identificação (em toda linha exportada)
+
+| Variável | Significado |
+|---|---|
+| `subject_id` | identificador pseudonimizado do paciente (`sub-XXXXXXXX`) |
+| `implant_date` | data de implante do gerador |
+| `session_date_local` | data da sessão (hora local) |
+| `days_since_implant` | dias entre o implante e a sessão — eixo natural para acompanhamento longitudinal |
+| `hemisphere`, `target` | lado (Left/Right) e alvo (STN/GPi/VIM) |
 
 ---
 
@@ -149,6 +246,15 @@ teste de Rayleigh das acrofases diárias. No R, `cosinor_misto()` ajusta o model
 mistos com `nlme::corAR1` e `gamm_circadiano()` oferece spline cíclica para ritmo não senoidal.
 
 **Eventos** — média alinhada com normalização pela linha de base e teste de permutação.
+
+**Estados ON/OFF (F13)** — a série de **amplitude de beta** — envelope de Hilbert do sinal bruto
+(`betaEnvelopeSeries`) no streaming, ou a potência de 10 min do Timeline — é separada em dois níveis por
+**k-médias (k = 2)** com inicialização determinística em Q1/Q3, limiar no ponto médio dos centróides e
+limpeza morfológica de **duração mínima** para evitar oscilação (`detectStates`). Alto beta ≈ OFF, baixo
+beta ≈ ON. O **coeficiente de bimodalidade de Sarle** (`bimodalityCoefficient`, > 0,555 sugere dois modos)
+indica honestamente se de fato existem dois estados — ao contrário da distância entre clusters, que o
+k-médias sempre infla. É um **correlato**: artefato de movimento infla o beta (falso OFF) e a própria
+estimulação o reduz; em Parkinson o método rende mais no Timeline crônico, ao longo dos ciclos da levodopa.
 
 ---
 
@@ -173,8 +279,8 @@ mistos com `nlme::corAR1` e `gamm_circadiano()` oferece spline cíclica para rit
 Para habilitar as figuras que aparecerem como "sem dados", na próxima sessão de programação:
 
 1. **BrainSense Survey** bilateral, com estimulação desligada → F5, F6
-2. **BrainSense Streaming** ≥ 60 s em repouso, com rampa de amplitude → F6, F7
-3. **BrainSense Timeline** habilitado nos **dois** hemisférios → F8, F9, F11
+2. **BrainSense Streaming** ≥ 60 s em repouso, com rampa de amplitude → F6, F7, F13
+3. **BrainSense Timeline** habilitado nos **dois** hemisférios → F8, F9, F11, F13
 4. **Registro de eventos pelo paciente** ativado, ≥ 5 dias de registro domiciliar → F10, F12
 5. Baixar sempre o **JSON**, nunca só o PDF
 6. Anotar mudanças de horário de verão e viagens entre fusos
@@ -189,9 +295,9 @@ manifest.webmanifest       metadados da PWA
 sw.js                      service worker (offline)
 icon-*.png                 ícones
 src/                       fontes editáveis da aplicação
-  percept-core.js            parser do JSON, DSP, estatística e extração de métricas
+  percept-core.js            parser do JSON, DSP, estatística, extração de métricas e estados ON/OFF
   percept-plot.js            biblioteca de plotagem em Canvas 2D
-  app.js                     UI, renderizadores F1–F12 e exportação (PDF/CSV/JSON)
+  app.js                     UI, renderizadores F1–F13 e exportação (PDF/CSV/JSON)
   styles.css                 folha de estilos
   index.template.html        template
   build.mjs                  gera index.html
@@ -199,7 +305,7 @@ R/percept_lfp.R            61 funções: leitura, DSP, estatística, figuras ggp
 docs/estado-da-arte.md     revisão de literatura e mapa da estrutura do JSON
 docs/Revisao_LFP_Parkinson.pdf  revisão sobre LFP na doença de Parkinson
 tools/gerar_exemplo.mjs    gerador do dataset sintético
-tests/run.mjs              suíte de 47 testes
+tests/run.mjs              suíte de 57 testes
 examples/                  dataset sintético
 ```
 
@@ -213,7 +319,8 @@ node tools/gerar_exemplo.mjs examples
 node tests/run.mjs
 ```
 
-52 testes cobrindo parser, DSP, estatística, camada gráfica, os 12 renderizadores e a extração de métricas.
+57 testes cobrindo parser, DSP, estatística, camada gráfica, os 13 renderizadores, a extração de métricas
+e a detecção de estados ON/OFF.
 
 ---
 

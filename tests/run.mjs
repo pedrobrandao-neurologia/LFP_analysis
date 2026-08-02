@@ -268,6 +268,49 @@ sec('extração de métricas (relatório · CSV · JSON)');
   });
 }
 
+/* --------------------------------------------------- 7. estados ON/OFF (β) -- */
+sec('detecção automática de estados ON/OFF pela amplitude do beta');
+t('série bimodal separa em dois estados (baixo=ON, alto=OFF)', () => {
+  const ser = [];
+  for (let i = 0; i < 200; i++) ser.push({ t: i, v: (i % 40 < 20) ? 1 + (i % 7) * 0.01 : 6 + (i % 7) * 0.01 });
+  const st = C.detectStates(ser, { minDur: 0 });
+  assert(st, 'sem resultado');
+  assert(st.labels.length === ser.length, 'labels != pontos');
+  assert(st.betaHigh > st.betaLow, 'clusters invertidos');
+  assert(st.bimodality > 0.555, 'bimodalidade baixa em série claramente bimodal: ' + st.bimodality);
+  assert(st.nOff > 0 && st.nOn > 0, 'não encontrou ambos os estados');
+  const off = st.labels.reduce((a, x) => a + x, 0) / st.labels.length;
+  assert(Math.abs(off - 0.5) < 0.15, 'fração OFF inesperada: ' + off);
+  return `OFF% ${(100 * st.offFraction).toFixed(0)}, sep ${st.separation.toFixed(1)}, BC ${st.bimodality.toFixed(2)}`;
+});
+t('duração mínima funde episódios curtos', () => {
+  const ser = [];                                   // ON longo · OFF curto espúrio (3) · ON · OFF longo (30)
+  for (let i = 0; i < 100; i++) { let v = 1; if (i >= 40 && i <= 42) v = 10; if (i >= 70) v = 10; ser.push({ t: i, v }); }
+  const noMin = C.detectStates(ser, { minDur: 0 });
+  const withMin = C.detectStates(ser, { minDur: 5 });
+  assert(noMin && withMin, 'sem resultado');
+  assert(noMin.nOff === 2, 'esperava 2 episódios OFF sem minDur, veio ' + noMin.nOff);
+  assert(withMin.nOff === 1, 'minDur deveria fundir o OFF curto, veio ' + withMin.nOff);
+  return `episódios OFF: ${noMin.nOff} → ${withMin.nOff} com minDur`;
+});
+t('coeficiente de bimodalidade: bimodal > gaussiano', () => {
+  const bim = [], gau = [];
+  for (let i = 0; i < 400; i++) { bim.push(i < 200 ? 0 : 10); let s = 0; for (let k = 0; k < 12; k++) s += ((i * 97 + k * 57) % 1000) / 1000; gau.push(s - 6); }
+  const bcB = C.bimodalityCoefficient(bim), bcG = C.bimodalityCoefficient(gau);
+  assert(bcB > 0.555, 'bimodal não detectado: ' + bcB);
+  assert(bcG < bcB, 'gaussiano não é menor que bimodal');
+  return `BC bimodal ${bcB.toFixed(2)} > gauss ${bcG.toFixed(2)}`;
+});
+t('envelope de beta a partir do sinal bruto', () => {
+  const td = parsed.flatMap(p => (p.bsTimeDomain || []).concat(p.montageTD || []))[0];
+  if (!td) return 'sem sinal bruto no exemplo';
+  const ser = C.betaEnvelopeSeries(td, { lo: 13, hi: 30, winS: 1 });
+  assert(ser.length > 2, 'série curta');
+  assert(ser.every(s => isFinite(s.v) && isFinite(s.t)), 'valores não finitos');
+  for (let i = 1; i < ser.length; i++) assert(ser[i].t > ser[i - 1].t, 't não crescente');
+  return `${ser.length} pontos de envelope`;
+});
+
 /* ------------------------------------------------------------- resultado -- */
 console.log(`\n${'='.repeat(58)}`);
 console.log(`  ${ok} passaram   ${falhas} falharam   ${pulados} sem dados`);
