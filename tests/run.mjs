@@ -1666,6 +1666,104 @@ sec('DSP avançada — multitaper, specparam, wavelet, PAC e gama');
   });
 }
 
+/* ------------------- varredura do Survey: ranking dos pares bipolares ------ */
+sec('varredura do Survey — ranking dos pares bipolares (F1)');
+{
+  /* espectro sintético: 1/f com offset e expoente dados, mais um bump gaussiano */
+  const espectro = (offset, chi, bumpAlt, bumpHz, bumpSg) => {
+    const f = [], mag = [];
+    for (let k = 1; k <= 100; k++) {
+      const x = k * 0.977;
+      let logp = offset - chi * Math.log10(x);
+      if (bumpAlt) logp += bumpAlt * Math.exp(-Math.pow(x - bumpHz, 2) / (2 * bumpSg * bumpSg));
+      f.push(+x.toFixed(4)); mag.push(Math.pow(10, logp));
+    }
+    return { f, mag };
+  };
+  const canal = (hemi, rotulo, e) => Object.assign({
+    hemisphere: hemi, electrodes: rotulo.replace('-', '_AND_') + '_' + hemi.toUpperCase(),
+    label: rotulo, artifact: ''
+  }, e);
+
+  t('ordena os pares por hemisfério, com posições de 1 a n', () => {
+    const mont = [
+      canal('Left', '0-1', espectro(1.0, 1.5, 0.2, 20, 3)),
+      canal('Left', '0-2', espectro(1.0, 1.5, 0.7, 20, 3)),
+      canal('Left', '1-3', espectro(1.0, 1.5, 0.4, 20, 3)),
+      canal('Right', '0-2', espectro(1.0, 1.5, 0.3, 22, 3)),
+      canal('Right', '1-3', espectro(1.0, 1.5, 0.9, 22, 3))
+    ];
+    const r = C.rankSurveyChannels(mont, { lo: 13, hi: 35, criterion: 'aperiodic' });
+    assert(r, 'ranking nulo');
+    assert(r.hemispheres.Left.length === 3 && r.hemispheres.Right.length === 2, 'contagem por hemisfério');
+    assert(r.hemispheres.Left[0].label === '0-2', 'melhor à esquerda: ' + r.hemispheres.Left[0].label);
+    assert(r.hemispheres.Right[0].label === '1-3', 'melhor à direita: ' + r.hemispheres.Right[0].label);
+    r.hemispheres.Left.forEach((c, i) => assert(c.rank === i + 1, 'posição fora de ordem'));
+    return `E: ${r.hemispheres.Left.map(c => c.label).join(' > ')} · D: ${r.hemispheres.Right.map(c => c.label).join(' > ')}`;
+  });
+
+  t('descontar o 1/f muda a ordem — é o motivo de o critério ser esse', () => {
+    /* A tem oscilação; B só tem o fundo mais alto (mais ruído, impedância
+       diferente). Na área bruta B ganha; acima do aperiódico, A ganha. */
+    const A = canal('Left', '0-2', espectro(1.0, 1.5, 0.6, 20, 3));
+    const B = canal('Left', '1-3', espectro(1.6, 1.5, 0, 20, 3));
+    const bruto = C.rankSurveyChannels([A, B], { lo: 13, hi: 35, criterion: 'raw' });
+    const corr = C.rankSurveyChannels([A, B], { lo: 13, hi: 35, criterion: 'aperiodic' });
+    assert(bruto.hemispheres.Left[0].label === '1-3', 'na área bruta deveria ganhar o de fundo alto');
+    assert(corr.hemispheres.Left[0].label === '0-2', 'acima do 1/f deveria ganhar o que tem oscilação');
+    return `bruto → ${bruto.hemispheres.Left[0].label} · acima do 1/f → ${corr.hemispheres.Left[0].label}`;
+  });
+
+  t('pares repetidos entre registros viram um só, pela mediana', () => {
+    const base = espectro(1.0, 1.5, 0.6, 20, 3);
+    const alto = { f: base.f, mag: base.mag.map(v => v * 3) };     // registro contaminado
+    const mont = [
+      canal('Left', '0-2', base), canal('Left', '0-2', base), canal('Left', '0-2', alto),
+      canal('Left', '1-3', espectro(1.0, 1.5, 0.3, 20, 3))
+    ];
+    const r = C.rankSurveyChannels(mont, { lo: 13, hi: 35 });
+    const c = r.hemispheres.Left.find(x => x.label === '0-2');
+    assert(r.hemispheres.Left.length === 2, 'não agrupou: ' + r.hemispheres.Left.length + ' entradas');
+    assert(c.nRecords === 3, 'nRecords: ' + c.nRecords);
+    /* a mediana de [v, v, 3v] é v — o registro contaminado não puxa o ranking */
+    const so = C.rankSurveyChannels([canal('Left', '0-2', base)], { lo: 13, hi: 35 });
+    const dif = Math.abs(c.bandArea - so.hemispheres.Left[0].bandArea) / so.hemispheres.Left[0].bandArea;
+    assert(dif < 0.02, 'a mediana não neutralizou o registro contaminado: ' + (100 * dif).toFixed(1) + '%');
+    return `3 registros → 1 par, área ${c.bandArea} (mediana; registro 3× não contaminou)`;
+  });
+
+  t('canal sem ajuste aperiódico utilizável fica fora da ordenação, não no topo', () => {
+    /* ordenar pela área bruta um canal que os outros mediram acima do 1/f
+       misturaria escalas e inventaria uma ordem — ele vai para o fim, marcado */
+    const f = [], mag = [];
+    for (let k = 1; k <= 100; k++) { const x = k * 0.977; f.push(x); mag.push(30 + 25 * Math.sin(x)); }
+    const bom = canal('Left', '0-2', espectro(1.0, 1.5, 0.6, 20, 3));
+    const ruim = canal('Left', '1-3', { f, mag });
+    const r = C.rankSurveyChannels([bom, ruim], { lo: 13, hi: 35, criterion: 'aperiodic' });
+    const cr = r.hemispheres.Left.find(c => c.label === '1-3');
+    assert(cr, 'canal ausente');
+    assert(!cr.rankable, 'deveria ser marcado como não ordenável (R² ' + cr.aperiodicR2 + ')');
+    assert(cr.rank === r.hemispheres.Left.length, 'não foi para o fim da lista');
+    assert(!r.top.Left.some(c => c.label === '1-3'), 'canal não ordenável apareceu entre os melhores');
+    assert(/NÃO entraram na ordenação/.test(r.caveat), 'o aviso não explica a exclusão');
+    /* e a área bruta dele é muito maior — é exatamente por isso que ordenar
+       misturando escalas produziria a ordem errada */
+    assert(cr.bandArea > r.top.Left[0].bandArea, 'o caso construído não é o pretendido');
+    return `R² ${cr.aperiodicR2} → fora da ordenação (área bruta ${cr.bandArea} vs ${r.top.Left[0].bandArea} do #1)`;
+  });
+
+  t('F1 monta a varredura e a tabela dos três melhores', () => {
+    const fig = H.FIGURES.find(x => x.id === 'F1');
+    const n = document.createElement('div');
+    const d = H.ds();
+    fig.render(n, d);
+    assert(n.children.length > 6, 'poucos blocos na F1: ' + n.children.length);
+    const rk = C.rankSurveyChannels(d.montage, { lo: 13, hi: 35, criterion: 'aperiodic' });
+    assert(rk && rk.top.Left && rk.top.Left.length <= 3, 'top 3 ausente');
+    return `${n.children.length} blocos · ${rk.nChannels} pares ordenados`;
+  });
+}
+
 /* ------------------------------------------------------------- resultado -- */
 console.log(`\n${'='.repeat(58)}`);
 console.log(`  ${ok} passaram   ${falhas} falharam   ${pulados} sem dados`);

@@ -23,6 +23,7 @@ import { detectStates, betaEnvelopeSeries, streamOnOff } from './stats/states.js
 import { peakInBand, pickSpectrum, spectralMetrics, burstMetrics, doseResponse, ecgMetrics, deviceStateMetrics, deviceStateMetrics } from './metrics/acute.js';
 import { mergeTrend, collectThresholds, chronicMetrics, thresholdSummary } from './metrics/chronic.js';
 import { extractMetrics, daysSince } from './metrics/extract.js';
+import { rankSurveyChannels } from './metrics/survey.js';
 import { PROFILES, PROFILE_IDS, getProfile, suggestProfile, bandsOf, normalizeSpectrum, detectTremorFrequency, spearman, movingAverageDays } from './profiles/index.js';
 import { createProvenance, verifyManifest, sha256Hex, canonical } from './provenance/index.js';
 import { generateChecklist, checklistDocx, CHECKLIST_ITEMS } from './report/checklist.js';
@@ -54,6 +55,8 @@ const API = {
   permutationTest, thresholdSummary, histogram, ecdf, fPValue, tPValue, normCDF,
   peakInBand, daysSince, pickSpectrum, spectralMetrics, burstMetrics, doseResponse, ecgMetrics, deviceStateMetrics,
   mergeTrend, collectThresholds, chronicMetrics, extractMetrics,
+  /* ranking dos pares bipolares do Survey (F1) */
+  rankSurveyChannels,
   detectStates, betaEnvelopeSeries, streamOnOff, bimodalityCoefficient,
   /* integridade do sinal bruto (Onda 1 — L01, L02, L05, L07) */
   parseIntList, unwrapCounter, unwrapTicks, analyzePackets, insertNaNGaps, effectiveFs, stitchStreams,

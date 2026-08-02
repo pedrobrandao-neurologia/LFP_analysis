@@ -340,13 +340,141 @@ function opt(figId, key, def) {
    longos esse recálculo também custa segundos. */
 function setOpt(figId, key, v) { S.opts[figId] = S.opts[figId] || {}; S.opts[figId][key] = v; renderFigureAsync(figId); }
 
-function plotBox(parent, h) {
-  const box = el('div', { class: 'plotbox' });
+function plotBox(parent, h, classe) {
+  const box = el('div', { class: 'plotbox' + (classe ? ' ' + classe : '') });
   const cv = el('canvas');
   box.appendChild(cv); parent.appendChild(box);
   const w = parent.clientWidth || 640;
   cv.style.width = '100%'; cv.style.height = (h || 260) + 'px';
-  return { canvas: cv, width: Math.max(280, (box.clientWidth || w) - 12), height: h || 260 };
+  return { canvas: cv, box, width: Math.max(280, (box.clientWidth || w) - 12), height: h || 260 };
+}
+
+/* Cor do beta baixo — a mesma da tabela de bandas e do sombreado, para que o
+   destaque no painel de varredura fale a mesma língua do resto da figura. */
+const CORBETA = '#B8912A';
+
+/* ---------------------------------------------------- painel de varredura --
+   POR QUE EXISTE. Um Survey de eletrodo anelar rende 6 pares bipolares por
+   hemisfério; com eletrodo direcional passa de 15. Abrir um a um num menu para
+   descobrir onde o marcador é mais forte é trabalhoso e compara mal — o olho não
+   guarda a curva anterior. Aqui todos os pares do hemisfério aparecem juntos,
+   cada um sobre sua própria linha de base (gráfico de cumeeira, "ridgeline"),
+   que é o arranjo que evita a sobreposição das curvas.
+
+   O par de maior marcador fica destacado na cor do beta baixo. O mouse sobre
+   qualquer curva revela a combinação de contatos e os números daquele par; o
+   clique abre esse par no detalhe abaixo.
+
+   A altura é comparável entre pares do MESMO hemisfério (escala única). Com
+   "normalizar cada par" ligado, cada curva usa a própria escala — aí só a FORMA
+   é comparável, não a amplitude, e a nota da figura diz isso.                */
+function painelVarredura(parent, canais, hemi, o) {
+  const n = canais.length;
+  const altura = Math.max(190, 52 + n * 24);
+  const bx = plotBox(parent, altura, 'svbox');
+  const tip = el('div', { class: 'svtip' });
+  if (bx.box && bx.box.appendChild) bx.box.appendChild(tip);
+  if (bx.canvas.style) bx.canvas.style.cursor = 'pointer';
+
+  const fmax = o.fmax;
+  const curvas = canais.map(c => {
+    const xs = [], ys = [];
+    for (let i = 0; i < c.f.length; i++) if (c.f[i] <= fmax) { xs.push(c.f[i]); ys.push(c.mag[i]); }
+    const validos = ys.filter(isFinite);
+    return { xs, ys, max: validos.length ? Math.max.apply(null, validos) : 1e-9 };
+  });
+  const maxGlobal = Math.max.apply(null, curvas.map(c => c.max).concat([1e-9]));
+  const escalaDe = i => 1.35 / (o.normalizar ? (curvas[i].max || 1e-9) : maxGlobal);
+
+  let hover = -1, ch = null;
+
+  /* a largura é medida no momento do desenho, não no da criação: o painel pode
+     ter sido reposicionado pelo layout entre um e outro */
+  const larguraAtual = () => Math.max(280, ((bx.box && bx.box.clientWidth) || bx.width + 12) - 12);
+  const desenha = () => {
+    ch = new P.Chart(bx.canvas, {
+      width: larguraAtual(), height: altura, xlim: [0, fmax], ylim: [0, n + 0.45],
+      xlabel: 'frequência (Hz)',
+      title: `STN ${hname(hemi)} — ${n} pares bipolares`,
+      pad: { l: 78, r: 14, t: 24, b: 40 }
+    });
+    ch.axes({
+      grid: false,
+      yticks: canais.map((_, i) => n - 1 - i + 0.1),
+      yfmt: v => { const i = n - 1 - Math.round(v - 0.1); return canais[i] ? canais[i].label : ''; }
+    });
+    if (o.showBands) profileBands().forEach(b => { if (b.lo < fmax) ch.span(b.lo, Math.min(b.hi, fmax), { color: b.color, alpha: .09 }); });
+    ch.span(o.blo, Math.min(o.bhi, fmax), { color: CORBETA, alpha: .07 });
+    /* do topo para baixo: quem está mais abaixo é desenhado por último e fica à
+       frente, que é o que dá a leitura de profundidade da cumeeira */
+    canais.forEach((c, i) => {
+      const base = n - 1 - i, esc = escalaDe(i);
+      const alto = curvas[i].ys.map(v => isFinite(v) ? base + v * esc : NaN);
+      const baixo = curvas[i].xs.map(() => base);
+      const melhor = c.rank === 1, ativo = i === hover;
+      const selecionado = o.cur && o.cur.canal && o.cur.canal.key === c.key;
+      const cor = ativo ? COL.accent : melhor ? CORBETA : hcol(hemi);
+      /* preenchimento opaco antes da cor: é o que impede a curva de baixo de
+         aparecer através da de cima */
+      ch.area(curvas[i].xs, baixo, alto, { color: '#FBFCFD', alpha: 1 });
+      ch.area(curvas[i].xs, baixo, alto, { color: cor, alpha: (ativo || melhor) ? .5 : .2 });
+      ch.line(curvas[i].xs, alto, { color: cor, width: ativo ? 2.2 : melhor ? 1.9 : .9 });
+      if (selecionado) ch.line([0, fmax], [base, base], { color: COL.ink, width: 1.3, dash: [3, 3] });
+    });
+  };
+  desenha();
+
+  /* Qual curva está sob o cursor: percorre de cima para baixo e fica com a
+     ÚLTIMA que contém o ponto — a última desenhada é a que está visível. */
+  const alvoDe = (px, py) => {
+    if (!ch) return -1;
+    const fx = ch.invX(px), fy = ch.invY(py);
+    let achado = -1;
+    for (let i = 0; i < n; i++) {
+      const base = n - 1 - i;
+      if (fy < base) continue;
+      const xs = curvas[i].xs;
+      let j = 0, dist = Infinity;
+      for (let k = 0; k < xs.length; k++) { const dd = Math.abs(xs[k] - fx); if (dd < dist) { dist = dd; j = k; } }
+      const topo = base + (isFinite(curvas[i].ys[j]) ? curvas[i].ys[j] * escalaDe(i) : 0);
+      if (fy <= topo) achado = i;
+    }
+    if (achado < 0) {
+      const i = n - 1 - Math.floor(fy);
+      if (i >= 0 && i < n) achado = i;
+    }
+    return achado;
+  };
+
+  const posicao = ev => {
+    const r = bx.canvas.getBoundingClientRect();
+    return [ev.clientX - r.left, ev.clientY - r.top];
+  };
+  bx.canvas.addEventListener('mousemove', ev => {
+    const [px, py] = posicao(ev);
+    const i = alvoDe(px, py);
+    if (i !== hover) { hover = i; desenha(); }
+    if (i >= 0) {
+      const c = canais[i];
+      tip.innerHTML = `<b>${c.label}</b> · STN ${hname(hemi)} · <b>#${c.rank}</b> de ${n}<br>` +
+        `pico ${isFinite(c.peakHz) ? f(c.peakHz, 1) + ' Hz' : '—'} · acima do 1/f ${f(c.bandAreaCorrected, 2)} · bruta ${f(c.bandArea, 2)}` +
+        (c.hasDistinctPeak ? '' : '<br><i>sem pico destacado do fundo aperiódico</i>') +
+        (c.nRecords > 1 ? `<br><i>mediana de ${c.nRecords} registros</i>` : '');
+      tip.style.display = 'block';
+      tip.style.left = Math.max(4, Math.min(px + 14, larguraAtual() - 170)) + 'px';
+      tip.style.top = Math.max(4, py - 52) + 'px';
+    } else tip.style.display = 'none';
+  });
+  bx.canvas.addEventListener('mouseleave', () => {
+    tip.style.display = 'none';
+    if (hover >= 0) { hover = -1; desenha(); }
+  });
+  bx.canvas.addEventListener('click', ev => {
+    const [px, py] = posicao(ev);
+    const i = alvoDe(px, py);
+    if (i >= 0 && o.svValor && o.svValor[canais[i].key]) setOpt('F1', 'src', o.svValor[canais[i].key]);
+  });
+  return bx;
 }
 /* Selo de qualidade do dado (Onda 1): toda figura que consome série bruta
    declara quantas amostras são válidas e quanto falta. Acima de 20% de dados
@@ -396,34 +524,123 @@ const pHtml = p => `<span class="${p < 0.05 ? 'sig' : 'ns'}">${pTag(p)}</span>`;
 const FIGURES = [
   /* ------------------------------------------------------------------ F1 */
   {
-    id: 'F1', title: 'Espectro de potência anotado',
-    sub: 'Signal Test · Survey · Snapshot — escala linear e log-log',
+    id: 'F1', title: 'Espectro de potência anotado e varredura do Survey',
+    sub: 'todos os pares bipolares de uma vez, ordenados pelo marcador · detalhe do par escolhido',
     has: d => d.sensingSetup.length || d.signalCheck.length || d.montage.length,
     render(node, d) {
-      const src = [];
-      d.sensingSetup.forEach((s, i) => s.psd && src.push({ value: 'ss' + i, label: `SignalTest ${s.channel} (${s.hemisphere})`, f: s.psd.f, p: s.psd.p, hemi: s.hemisphere, center: s.centerFreq, artifact: s.psd.artifact }));
-      d.signalCheck.forEach((s, i) => src.push({ value: 'sc' + i, label: `SignalCheck ${C.prettyChannel(s.channel)}`, f: s.f, p: s.p, hemi: /LEFT/i.test(s.channel) ? 'Left' : 'Right', artifact: s.artifact }));
-      d.montage.forEach((m, i) => src.push({ value: 'mo' + i, label: `Survey ${m.hemisphere[0]} · ${m.label}`, f: m.f, p: m.mag, hemi: m.hemisphere, artifact: m.artifact }));
-      if (!src.length) return node.appendChild(el('div', { class: 'empty', text: 'Nenhum espectro disponível.' }));
-      const cur = src.find(s => s.value === opt('F1', 'src', src[0].value)) || src[0];
+      const pb = profileBands().primary || { lo: 13, hi: 35, label: 'beta' };
+      const blo = opt('F1', 'blo', pb.lo), bhi = opt('F1', 'bhi', pb.hi);
+      const criterio = opt('F1', 'crit', 'aperiodic');
       const showBands = opt('F1', 'bands', true);
+      const normalizar = opt('F1', 'norm', false);
+      const fmax = opt('F1', 'fmax', 60);
+
+      /* ranking de todos os pares do Survey, por hemisfério --------------- */
+      const rk = d.montage.length ? C.rankSurveyChannels(d.montage, { lo: blo, hi: bhi, criterion: criterio, topN: 3 }) : null;
+
+      /* fontes do painel de detalhe: SignalTest, SignalCheck e um item por
+         PAR do Survey (não por registro) — já na ordem do ranking */
+      const src = [];
+      d.sensingSetup.forEach((s, i) => s.psd && src.push({ value: 'ss' + i, label: `SignalTest ${s.channel} (${hname(s.hemisphere)})`, f: s.psd.f, p: s.psd.p, hemi: s.hemisphere, center: s.centerFreq, artifact: s.psd.artifact }));
+      d.signalCheck.forEach((s, i) => src.push({ value: 'sc' + i, label: `SignalCheck ${C.prettyChannel(s.channel)}`, f: s.f, p: s.p, hemi: /LEFT/i.test(s.channel) ? 'Left' : 'Right', artifact: s.artifact }));
+      const canaisRk = [], svValor = {};
+      if (rk) ['Left', 'Right'].concat(Object.keys(rk.hemispheres).filter(h => !['Left', 'Right'].includes(h)))
+        .forEach(h => (rk.hemispheres[h] || []).forEach(c => {
+          canaisRk.push(c);
+          svValor[c.key] = 'sv' + canaisRk.length;
+          src.push({
+            value: 'sv' + canaisRk.length, canal: c,
+            label: `Survey ${String(c.hemisphere)[0]} · ${c.label} — #${c.rank} de ${rk.hemispheres[h].length}`,
+            f: c.f, p: c.mag, hemi: c.hemisphere, artifact: c.artifact
+          });
+        }));
+      if (!src.length) return node.appendChild(el('div', { class: 'empty', text: 'Nenhum espectro disponível.' }));
+      const padrao = (src.find(s => s.canal && s.canal.rank === 1) || src[0]).value;
+      const cur = src.find(s => s.value === opt('F1', 'src', padrao)) || src[0];
 
       node.appendChild(el('div', { class: 'ctrls' }, [
-        ctrlSelect('canal', src, cur.value, v => setOpt('F1', 'src', v)),
-        ctrlCheck('faixas de frequência', showBands, v => setOpt('F1', 'bands', v))
+        ctrlSelect('ordenar por', [
+          { value: 'aperiodic', label: 'acima do fundo 1/f' },
+          { value: 'raw', label: 'área bruta na banda' },
+          { value: 'peak', label: 'magnitude do pico' }
+        ], criterio, v => setOpt('F1', 'crit', v)),
+        ctrlNumber('banda de (Hz)', blo, 1, 60, 1, v => setOpt('F1', 'blo', v)),
+        ctrlNumber('banda até (Hz)', bhi, 3, 90, 1, v => setOpt('F1', 'bhi', v)),
+        ctrlNumber('f máx. do gráfico (Hz)', fmax, 20, 100, 5, v => setOpt('F1', 'fmax', v)),
+        ctrlCheck('faixas de frequência', showBands, v => setOpt('F1', 'bands', v)),
+        ctrlCheck('normalizar cada par (compara forma, não amplitude)', normalizar, v => setOpt('F1', 'norm', v))
       ]));
-      const grid = el('div', { class: 'plotgrid two' }); node.appendChild(grid);
 
-      const fmax = 60;
+      /* ---------------------------------------------- (a) varredura ------ */
+      if (rk) {
+        node.appendChild(el('h4', {
+          class: 'qc-title',
+          html: `<b>(a) Varredura do Survey</b> — todos os pares bipolares de cada hemisfério ao mesmo tempo. ` +
+            `Em <span style="color:${CORBETA};font-weight:600">amarelo</span>, o par com mais ${pb.label || 'marcador'} ` +
+            `(${rk.criterionLabel}). Passe o mouse para ver a combinação de contatos; clique para abrir no detalhe abaixo.`
+        }));
+        const lados = ['Left', 'Right'].concat(Object.keys(rk.hemispheres).filter(h => !['Left', 'Right'].includes(h)))
+          .filter(h => (rk.hemispheres[h] || []).length);
+        const grid = el('div', { class: 'plotgrid' + (lados.length > 1 ? ' two' : '') }); node.appendChild(grid);
+        lados.forEach(h => painelVarredura(grid, rk.hemispheres[h], h, { fmax, blo, bhi, showBands, normalizar, cur, svValor }));
+
+        /* --------------------------------------------- top 3 por lado ---- */
+        const linhas = [];
+        Object.keys(rk.top).forEach(h => rk.top[h].forEach(c => linhas.push([
+          { html: `<span class="hemi-${String(h)[0]}">${hname(h)}</span>` },
+          `#${c.rank}`,
+          { html: `<b>${c.label}</b>` },
+          isFinite(c.peakHz) ? f(c.peakHz, 1) + ' Hz' : '—',
+          { html: c.hasDistinctPeak ? '<span class="sig">sim</span>' : '<span class="ns">não</span>' },
+          f(c.bandAreaCorrected, 2),
+          f(c.bandArea, 2),
+          isFinite(c.relPct) ? f(c.relPct, 1) + ' %' : '—',
+          f(c.aperiodicR2, 2) + (c.fallback ? ' ⚠' : ''),
+          c.nRecords > 1 ? `${c.nRecords} registros (mediana)` : (c.artifact || '—')
+        ])));
+        node.appendChild(el('h4', {
+          class: 'qc-title',
+          html: `<b>Três melhores pares por hemisfério</b> — ordenados por ${rk.criterionLabel} em ${blo}–${bhi} Hz`
+        }));
+        node.appendChild(table(
+          ['hemisfério', 'ordem', 'contatos', `pico em ${blo}–${bhi} Hz`, 'pico distinto?', 'área acima do 1/f', 'área bruta', 'relativa', 'R² do 1/f', 'observação'],
+          linhas));
+        node.appendChild(el('div', {
+          class: rk.nFallback ? 'warnbox' : 'note',
+          html: `<b>Como esta ordem foi obtida.</b> ${rk.nChannels} pares avaliados com o mesmo critério: ` +
+            `<b>${rk.criterionLabel}</b>, banda ${blo}–${bhi} Hz. ${rk.caveat}`
+        }));
+        node.appendChild(exportRow([
+          {
+            label: '⤓ CSV ranking completo', fn: () => P.downloadText(P.toCSV(
+              Object.keys(rk.hemispheres).flatMap(h => rk.hemispheres[h].map(c => ({
+                hemisferio: h, ordem: c.rank, contatos: c.label, eletrodos: c.electrodes,
+                pico_hz: c.peakHz, pico_magnitude: c.peakMag, pico_distinto: c.hasDistinctPeak ? 1 : 0,
+                area_acima_1f: c.bandAreaCorrected, area_bruta: c.bandArea, relativa_pct: c.relPct,
+                expoente_aperiodico: c.aperiodicExponent, r2_aperiodico: c.aperiodicR2,
+                criterio: c.criterionUsed, n_registros: c.nRecords, artefato: c.artifact,
+                banda_lo: blo, banda_hi: bhi
+              })))), 'F1_ranking_survey.csv', 'text/csv')
+          }
+        ]));
+      }
+
+      /* ------------------------------------------------- (b) detalhe ----- */
+      node.appendChild(el('h4', { class: 'qc-title', html: '<b>Detalhe do par selecionado</b>' }));
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('canal em detalhe', src, cur.value, v => setOpt('F1', 'src', v))
+      ]));
+      const grid2 = el('div', { class: 'plotgrid two' }); node.appendChild(grid2);
+
       const idx = cur.f.map((_, i) => i).filter(i => cur.f[i] <= fmax);
       const xs = idx.map(i => cur.f[i]), ys = idx.map(i => cur.p[i]);
       let peakI = 0; ys.forEach((v, i) => { if (xs[i] >= 4 && v > ys[peakI]) peakI = i; });
 
-      /* (a) linear */
-      const b1 = plotBox(grid, 268);
+      const b1 = plotBox(grid2, 268);
       const ch1 = new P.Chart(b1.canvas, {
         width: b1.width, height: b1.height, xlim: [0, fmax], ylim: [0, Math.max(...ys) * 1.22],
-        xlabel: 'frequência (Hz)', ylabel: 'magnitude (µVp/√Hz)', title: '(a) escala linear',
+        xlabel: 'frequência (Hz)', ylabel: 'magnitude (µVp/√Hz)',
+        title: `(b) ${cur.label} — escala linear`,
         pad: { l: 58, r: 14, t: 24, b: 40 }
       });
       ch1.axes();
@@ -432,38 +649,39 @@ const FIGURES = [
       ch1.line(xs, ys, { color: COL.ink, width: 1.6 });
       ch1.marker(xs[peakI], ys[peakI], { color: COL.right, shape: 'tri', size: 4.5, label: `${xs[peakI].toFixed(1)} Hz · ${f(ys[peakI], 2)}`, align: xs[peakI] > fmax * .6 ? 'right' : 'left' });
 
-      /* (b) log-log */
       const pos = idx.filter(i => cur.f[i] >= 1 && cur.p[i] > 0);
       const lx = pos.map(i => cur.f[i]), ly = pos.map(i => cur.p[i]);
-      const b2 = plotBox(grid, 268);
+      const b2 = plotBox(grid2, 268);
       const ch2 = new P.Chart(b2.canvas, {
         width: b2.width, height: b2.height, xlog: true, ylog: true,
         xlim: [1, Math.max(...cur.f)], ylim: [Math.max(1e-4, Math.min(...ly) * .7), Math.max(...ly) * 1.5],
-        xlabel: 'frequência (Hz)', ylabel: 'magnitude (log)', title: '(b) escala log-log',
+        xlabel: 'frequência (Hz)', ylabel: 'magnitude (log)', title: '(c) escala log-log',
         pad: { l: 62, r: 14, t: 24, b: 40 }
       });
       ch2.axes({ xfmt: v => v >= 1 ? String(v) : v.toFixed(1) });
       ch2.line(lx, ly, { color: COL.ink, width: 1.6 });
 
-      /* tabela de bandas */
       const bt = C.bandTable(cur.f, cur.p);
       node.appendChild(table(['banda', 'faixa', 'potência abs.', 'relativa %', 'pico (Hz)', 'magnitude'],
         bt.map(b => [{ html: `<span style="color:${b.color};font-weight:600">${b.label} ${b.key}</span>` },
         `${b.lo}–${b.hi}`, b.absolute, b.relative, b.peakF, b.peakV])));
 
       node.appendChild(exportRow([
-        { label: '⤓ PNG (a)', fn: () => P.downloadCanvas(b1.canvas, 'F1a_psd_linear') },
-        { label: '⤓ PNG (b)', fn: () => P.downloadCanvas(b2.canvas, 'F1b_psd_loglog') },
+        { label: '⤓ PNG (b)', fn: () => P.downloadCanvas(b1.canvas, 'F1b_psd_linear') },
+        { label: '⤓ PNG (c)', fn: () => P.downloadCanvas(b2.canvas, 'F1c_psd_loglog') },
         { label: '⤓ CSV espectro', fn: () => P.downloadText(P.toCSV(cur.f.map((v, i) => ({ frequencia_Hz: v, magnitude: cur.p[i] }))), 'F1_espectro.csv', 'text/csv') }
       ]));
       node.appendChild(el('div', {
         class: 'note', html: `<b>Método.</b> Espectro nativo do dispositivo (FFT de 256 pontos sobre 250 Hz de amostragem, Δf ≈ 0,977 Hz). ` +
           `Estado do artefato reportado pelo Percept: <b>${cur.artifact || '—'}</b>. ` +
           (cur.center ? `Faixa laranja = janela de sensing crônico (${f(cur.center, 1)} ± 2,5 Hz). ` : '') +
-          `A escala log-log é a forma canônica na literatura porque lineariza o componente aperiódico 1/f.`
+          `A escala log-log é a forma canônica na literatura porque lineariza o componente aperiódico 1/f. ` +
+          (rk ? `<b>Sobre a varredura:</b> as curvas do painel (a) estão deslocadas verticalmente uma em relação à outra ` +
+            `(<i>ridgeline</i>) justamente para não se sobreporem; a altura é comparável entre pares do mesmo hemisfério ` +
+            `${normalizar ? '— exceto agora, com “normalizar cada par” ligado, em que só a FORMA é comparável, não a amplitude' : ''}. ` +
+            `Pares repetidos entre sessões entram pela mediana ponto a ponto.` : '')
       }));
-    }
-  },
+    }  },
 
   /* ------------------------------------------------------------------ F2 */
   {

@@ -133,7 +133,7 @@ A coluna **Leitura clínica** resume, em uma frase, o que cada figura diz ao mé
 
 | ID | Figura (técnico) | Fonte necessária | Leitura clínica |
 |----|------------------|------------------|-----------------|
-| F1 | Espectro anotado (linear + log-log), tabela de bandas | Signal Test, Survey ou Signal Check | Onde está a força do sinal e onde fica o **pico beta** (marcador de rigidez/lentidão). |
+| F1 | **Varredura do Survey** (todos os pares bipolares por hemisfério) + espectro anotado do par escolhido | Signal Test, Survey ou Signal Check | Em **qual par de contatos** o marcador é mais forte, sem abrir um a um — e onde está o **pico beta** naquele par. |
 | F2 | Decomposição periódico/aperiódico | qualquer espectro ou sinal bruto | Separa o **pico verdadeiro** do "fundo" 1/f — confirma se o beta é oscilação real. |
 | F3 | Impedâncias monopolares e matriz bipolar | `Impedance` | Integridade dos contatos do eletrodo e sua estabilidade ao longo do tempo. |
 | F4 | Linha do tempo da sessão, grupos, parâmetros de sensing | `EventLogs`, `Groups` | O que foi **programado** (grupos, contatos, sensing) e quando. |
@@ -312,6 +312,28 @@ tanto **quem programa o DBS** quanto **quem faz a análise estatística** leiam 
 **Espectral** — Welch (Hann, sobreposição 50 %, detrend linear por segmento); espectrograma STFT;
 parametrização periódico/aperiódico por regressão robusta iterativa em log-log, aproximando o
 specparam/FOOOF (F1, F2).
+
+**Varredura do Survey (F1)** — um Survey de eletrodo anelar rende 6 pares bipolares por
+hemisfério; com eletrodo direcional passa de 15. Abrir um a um num menu para descobrir onde o
+marcador é mais forte é trabalhoso e compara mal — o olho não guarda a curva anterior. A figura
+mostra **todos os pares do hemisfério juntos**, cada um sobre a própria linha de base (gráfico de
+cumeeira, *ridgeline*), que é o arranjo que evita a sobreposição das curvas. O par com mais
+marcador fica destacado na cor do beta baixo; o mouse sobre qualquer curva revela a **combinação
+de contatos** e os números daquele par; o clique abre esse par no detalhe abaixo. Uma tabela lista
+os **três melhores de cada hemisfério**.
+
+A ordenação usa, por padrão, a **área acima do fundo aperiódico** dentro da banda — e não a área
+bruta. O motivo é direto: a magnitude bruta soma a oscilação COM o fundo 1/f, então um par com
+impedância diferente ou mais ruído sobe sem ter mais oscilação. Há teste que constrói exatamente
+esse caso e verifica que os dois critérios dão ordens diferentes. Quando o ajuste aperiódico de um
+par não é utilizável (R² < 0,5), ele **não entra na ordenação** — vai para o fim da lista,
+marcado: comparar sua área bruta com a área corrigida dos outros produziria uma ordem sem
+significado. Pares repetidos entre sessões entram pela **mediana ponto a ponto**, para que um
+registro contaminado por artefato não puxe o ranking.
+
+Esta ordem descreve onde o marcador é mais forte no registro carregado. Não é, por si só, a
+escolha do contato de estimulação: proximidade ao alvo, efeitos colaterais e janela terapêutica
+entram na decisão e não estão neste dado — e a figura diz isso.
 
 **Multitaper de Slepian (F18)** — as sequências DPSS são calculadas **do zero** pelo problema
 tridiagonal simétrico de Percival & Walden: autovalores por bissecção com sequência de Sturm,

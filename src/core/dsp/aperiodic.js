@@ -14,19 +14,30 @@ export function fitAperiodic(f, p, opts) {
   let lx = idx.map(i => Math.log10(f[i])), ly = idx.map(i => Math.log10(p[i]));
   let keep = idx.map(() => true);
   let a = 0, b = 0;
-  for (let it = 0; it < 6; it++) {                    // ajuste robusto iterativo
+  /* Ajuste robusto iterativo: a cada passo os pontos com resíduo POSITIVO
+     grande (os picos) saem, e a reta é reajustada só sobre o fundo.
+
+     Duas guardas que faltavam e que fazem o ajuste degenerar em espectro quase
+     perfeito (sintético, ou real muito limpo): (1) quando o resíduo já é
+     numericamente nulo, o critério "res < sd" passa a separar ruído de
+     arredondamento e descarta metade dos pontos sem motivo; (2) sem piso de
+     tamanho, o conjunto encolhe até a regressão devolver NaN — e um NaN aqui se
+     propaga como "sem ajuste" para figuras e rankings. */
+  const pisoPontos = Math.max(8, Math.round(0.3 * lx.length));
+  for (let it = 0; it < 6; it++) {
     const X = [], Y = [];
     for (let i = 0; i < lx.length; i++) if (keep[i]) { X.push(lx[i]); Y.push(ly[i]); }
+    if (X.length < 4) break;
     const r = linreg(X, Y); a = r.intercept; b = r.slope;
     const res = lx.map((v, i) => ly[i] - (a + b * v));
     const kept = res.filter((_, i) => keep[i]);
-    const sd = Math.sqrt(variance(kept)) || 1e-9;
+    const sd = Math.sqrt(variance(kept));
+    const escala = Math.max(1e-12, Math.max.apply(null, ly.map(Math.abs)));
+    if (!(sd > 1e-9 * escala)) break;                 // já ajustou; não há o que podar
+    const novo = res.map(v => v < 1.0 * sd);
+    if (novo.filter(Boolean).length < pisoPontos) break;
     let changed = false;
-    for (let i = 0; i < res.length; i++) {
-      const k = res[i] < 1.0 * sd;                    // remove picos (resíduo positivo)
-      if (k !== keep[i]) changed = true;
-      keep[i] = k;
-    }
+    for (let i = 0; i < res.length; i++) { if (novo[i] !== keep[i]) changed = true; keep[i] = novo[i]; }
     if (!changed) break;
   }
   const model = idx.map((i, k) => Math.pow(10, a + b * lx[k]));

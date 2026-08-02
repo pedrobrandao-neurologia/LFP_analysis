@@ -132,7 +132,12 @@ main{display:flex;flex-direction:column;gap:16px;min-width:0}
 .ctrls{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;padding:9px 11px;margin-bottom:12px;
   background:var(--panel-2);border:1px solid var(--rule-2);border-radius:3px}
 .plotgrid{display:grid;gap:14px}
-.plotgrid.two{grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
+/* Duas colunas FIXAS, não auto-fit: com auto-fit o primeiro gráfico do par
+   media a largura da linha inteira (ele é filho único no instante em que é
+   criado) e depois é espremido quando o segundo entra — o desenho saía cortado
+   à direita em toda figura de dois painéis. */
+.plotgrid.two{grid-template-columns:repeat(2,minmax(0,1fr))}
+@media(max-width:920px){.plotgrid.two{grid-template-columns:1fr}}
 .plotbox{background:#fff;border:1px solid var(--rule-2);border-radius:3px;padding:6px;overflow:hidden}
 .plotbox canvas{display:block;width:100%}
 .note{font:11.5px/1.55 var(--mono);color:var(--ink-2);margin-top:11px;padding-left:10px;border-left:2px solid var(--rule)}
@@ -301,3 +306,11 @@ footer.foot{padding:24px 20px 40px;text-align:center;font:11px/1.7 var(--mono);c
 .onboard p{margin:0 0 11px;font:12px/1.65 var(--sans);color:var(--ink-2)}
 .onboard .btn{margin-top:2px}
 @media print{.modeswitch{display:none!important}.onboard{display:none!important}}
+
+/* ---------- painel de varredura do Survey (F1) ---------- */
+.svbox{position:relative}
+.svtip{position:absolute;display:none;pointer-events:none;z-index:5;
+  background:var(--ink);color:var(--panel);border-radius:3px;padding:6px 9px;
+  font:10.5px/1.5 var(--mono);max-width:270px;box-shadow:0 5px 16px rgba(14,26,36,.28)}
+.svtip b{font-weight:600;color:#fff}
+.svtip i{font-style:normal;color:#A9BCC9}
