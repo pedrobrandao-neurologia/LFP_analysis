@@ -336,7 +336,7 @@ R/percept_lfp.R            61 funções: leitura, DSP, estatística, figuras ggp
 docs/estado-da-arte.md     revisão de literatura e mapa da estrutura do JSON
 docs/Revisao_LFP_Parkinson.pdf  revisão sobre LFP na doença de Parkinson
 tools/gerar_exemplo.mjs    gerador do dataset sintético
-tests/run.mjs              suíte de 95 testes
+tests/run.mjs              suíte de 102 testes
 examples/                  dataset sintético
 ```
 
@@ -364,16 +364,40 @@ node tools/gerar_exemplo.mjs examples
 node tests/run.mjs
 ```
 
-95 testes cobrindo parser, DSP tolerante a lacunas, integridade de pacotes, estatística, camada gráfica,
+102 testes cobrindo parser, DSP tolerante a lacunas, integridade de pacotes, estatística, camada gráfica,
 os 14 renderizadores, a extração de métricas, os estados ON/OFF e a remoção de artefato cardíaco
 (varredura de SNR com ground truth).
 e a detecção de estados ON/OFF.
 
 ---
 
+## Reprodutibilidade e padrão de reporte
+
+Toda análise pode exportar um **manifesto de proveniência** com os parâmetros **efetivamente
+usados** em cada passo (não os default), o n de entrada e saída de cada etapa, o que foi descartado
+e por quê, o SHA-256 de cada arquivo de entrada e um **hash final citável** como identificador de
+versão de análise. `verifyManifest()` recarrega os mesmos arquivos, refaz a análise e **confirma que
+os resultados batem** — reprodutibilidade verificável, não declarada.
+
+Sobre esse manifesto o software gera o **PERCEPT-REPORT**, uma proposta de checklist de itens
+mínimos de reporte para estudos de LFP com dispositivos de sensing — lacuna documentada do campo,
+que não tem equivalente ao CONSORT/STROBE/PRISMA. **30 dos 41 itens são preenchidos
+automaticamente**; o que o software não consegue extrair é marcado como *não determinado*, nunca
+deixado em branco. Saída em Markdown e em **DOCX**, pronta para anexar como material suplementar.
+
+Proposta completa, com a fundamentação de cada item, em
+[`docs/PERCEPT-REPORT.md`](docs/PERCEPT-REPORT.md).
+
+---
+
 ## Como citar
 
 Ver [`CITATION.cff`](CITATION.cff).
+
+**Para obter um DOI** (necessário para citação formal): conecte o repositório ao
+[Zenodo](https://zenodo.org/account/settings/github/), publique um *release* com tag
+(`git tag -a v0.5.0 -m "..." && git push --tags`), e o DOI é emitido automaticamente. Depois,
+descomente e preencha os campos `doi` e `identifiers` em `CITATION.cff`. Sem DOI, ninguém cita.
 
 ## Aviso
 

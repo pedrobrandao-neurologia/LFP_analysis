@@ -13,7 +13,11 @@ abstract: >-
   pacientes com doença de Parkinson. Inclui um aplicativo web progressivo (PWA)
   que processa os arquivos inteiramente no navegador e um pacote de funções em R
   para análise circadiana (cosinor de efeitos mistos com estrutura AR(1)),
-  detecção de bursts beta e parametrização espectral.
+  detecção de bursts beta e parametrização espectral. Traz perfis por doença
+  (Parkinson, distonia, tremor essencial, epilepsia), tratamento de perda de
+  pacotes, remoção de artefato cardíaco por três métodos com validação
+  quantificada, benchmark contra ground truth sintético e a proposta de
+  checklist de reporte PERCEPT-REPORT.
 keywords:
   - deep brain stimulation
   - subthalamic nucleus
@@ -22,5 +26,17 @@ keywords:
   - adaptive DBS
   - circadian rhythm
   - cosinor
+  - dystonia
+  - essential tremor
+  - reproducibility
+  - reporting standard
 license: MIT
-repository-code: "https://github.com/USUARIO/LFP_analysis"
+repository-code: "https://github.com/pedrobrandao-neurologia/LFP_analysis"
+url: "https://pedrobrandao-neurologia.github.io/LFP_analysis/"
+version: "0.5.0"
+# DOI do Zenodo — preencher após o primeiro release (ver README, "Como citar")
+# doi: "10.5281/zenodo.XXXXXXX"
+# identifiers:
+#   - type: doi
+#     value: "10.5281/zenodo.XXXXXXX"
+#     description: "DOI concept, sempre aponta para a versão mais recente"

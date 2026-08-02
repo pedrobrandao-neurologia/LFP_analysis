@@ -30,6 +30,10 @@ const t = (nome, fn) => {
   try { const r = fn(); ok++; console.log('  \u2713 ' + nome + (r ? '  \u2014 ' + r : '')); }
   catch (e) { falhas++; console.log('  \u2717 ' + nome + '  ->  ' + e.message); }
 };
+const ta = async (nome, fn) => {
+  try { const r = await fn(); ok++; console.log('  \u2713 ' + nome + (r ? '  \u2014 ' + r : '')); }
+  catch (e) { falhas++; console.log('  \u2717 ' + nome + '  ->  ' + e.message); }
+};
 const assert = (cond, msg) => { if (!cond) throw new Error(msg); };
 const sec = s => console.log('\n\u2500\u2500 ' + s);
 
@@ -808,6 +812,105 @@ sec('perfis de doença');
     });
     H.S.profile = antes;
     return usados.length + ' perfis renderizam F1';
+  });
+}
+
+/* ------------------------ 12. proveniência e PERCEPT-REPORT (Onda 7.2) -- */
+sec('proveniência auditável e checklist de reporte');
+{
+  const montarProv = () => {
+    const prov = C.createProvenance({
+      appVersion: '0.5.0', now: '2026-08-02T12:00:00Z',
+      profileId: 'pd', profileLabel: 'Doença de Parkinson (STN/GPi)', timezoneOffsetMin: -180
+    });
+    prov.file({ name: 'a.json', sha256: 'abc123', subjectId: 'sub-676dc462', firmware: '07.05.05', deviceModel: 'Percept PC' });
+    prov.record('io.analyzePackets', { method: 'sequences', pctMissing: 0 }, { nIn: 1260, nOut: 1260, nDropped: 0 });
+    prov.record('dsp.welchPSD', { window: 'hann', nperseg: 512, overlap: 0.5, maxNanPct: 0 }, { nIn: 1260, nOut: 257, figure: 'F1' });
+    prov.record('stats.cosinor', { harmonics: '24+12', nBoot: 200 }, { figure: 'F9' });
+    return prov;
+  };
+
+  t('manifesto registra passos com os parâmetros efetivos e a contabilidade', () => {
+    const m = montarProv().manifest();
+    assert(m.header.appVersion === '0.5.0' && m.header.profileId === 'pd', 'cabeçalho incompleto');
+    assert(m.files.length === 1 && m.files[0].sha256 === 'abc123', 'arquivo sem hash');
+    assert(m.steps.length === 3, 'passos: ' + m.steps.length);
+    const w = m.steps.find(s => s.step === 'dsp.welchPSD');
+    assert(w.params.nperseg === 512 && w.params.overlap === 0.5, 'parâmetros efetivos não registrados');
+    assert(w.nIn === 1260 && w.nOut === 257, 'contagens não registradas');
+    assert(m.figures.F1 && m.figures.F1.includes(w.id), 'grafo figura→passo ausente');
+    return `${m.steps.length} passos, ${Object.keys(m.figures).length} figuras no grafo`;
+  });
+  t('nenhum identificador direto entra no manifesto', () => {
+    const m = montarProv().manifest();
+    const txt = JSON.stringify(m);
+    assert(/sub-[0-9a-f]{8}/.test(txt), 'deveria conter o id pseudonimizado');
+    ['PatientId', 'DateOfBirth', 'SerialNumber', 'PatientFirstName'].forEach(k =>
+      assert(!txt.includes(k), 'manifesto contém identificador direto: ' + k));
+    return 'apenas subject_id hasheado';
+  });
+  await ta('hash do manifesto é estável para a mesma análise e muda com o parâmetro', async () => {
+    const h1 = await montarProv().hash();
+    const h2 = await montarProv().hash();
+    assert(h1 === h2, 'hash instável entre execuções idênticas');
+    const alterado = montarProv();
+    alterado.record('dsp.welchPSD', { window: 'hann', nperseg: 1024, overlap: 0.5 }, {});
+    const h3 = await alterado.hash();
+    assert(h3 !== h1, 'hash não mudou ao mudar um parâmetro');
+    assert(/^[0-9a-f]{32,64}$/.test(h1), 'formato de hash inesperado: ' + h1);
+    return `${h1.slice(0, 16)}… estável; muda com o parâmetro`;
+  });
+  t('verifyManifest confirma reprodução e detecta divergência', () => {
+    const a = montarProv().manifest();
+    const igual = C.verifyManifest(a, montarProv().manifest());
+    assert(igual.ok, 'reprodução idêntica não foi confirmada: ' + igual.verdict);
+    /* muda um parâmetro efetivo → tem de acusar */
+    const b = montarProv();
+    const m2 = b.manifest();
+    m2.steps.find(s => s.step === 'dsp.welchPSD').params.nperseg = 1024;
+    const dif = C.verifyManifest(a, m2);
+    assert(!dif.ok && dif.nDivergences >= 1, 'não detectou a divergência de parâmetro');
+    assert(dif.divergences[0].campo.includes('welchPSD'), 'divergência apontou o campo errado');
+    /* muda o hash do arquivo → tem de acusar */
+    const m3 = montarProv().manifest();
+    m3.files[0].sha256 = 'outro';
+    assert(!C.verifyManifest(a, m3).ok, 'não detectou arquivo diferente');
+    return `idêntico → ok; parâmetro alterado → ${dif.nDivergences} divergência(s)`;
+  });
+  t('checklist PERCEPT-REPORT preenche automaticamente a partir do manifesto', () => {
+    const b = C.extractMetrics(parsed, null, { profileId: 'pd' });
+    const ck = C.generateChecklist(montarProv().manifest(), b, C.getProfile('pd'));
+    assert(ck.nTotal >= 35, 'checklist curto demais: ' + ck.nTotal);
+    assert(ck.nFilled > 0, 'nada preenchido automaticamente');
+    const todos = ck.items.flatMap(g => g.itens);
+    /* o que não dá para extrair precisa DIZER que não deu, nunca ficar vazio */
+    todos.forEach(i => assert(i.valor && String(i.valor).length > 0, 'item vazio: ' + i.chave));
+    const naoDet = todos.filter(i => !i.preenchido);
+    assert(naoDet.every(i => /não determinado|não aplicável/.test(i.valor)), 'item não preenchido sem justificativa');
+    const est = todos.find(i => i.chave === 'estimator');
+    assert(/nperseg 512/.test(est.valor), 'parâmetros de Welch não chegaram ao checklist: ' + est.valor);
+    return `${ck.nFilled}/${ck.nTotal} itens preenchidos automaticamente`;
+  });
+  t('checklist sai em Markdown e em DOCX válido', () => {
+    const b = C.extractMetrics(parsed, null, { profileId: 'pd' });
+    const ck = C.generateChecklist(montarProv().manifest(), b, C.getProfile('pd'));
+    assert(/^# PERCEPT-REPORT/.test(ck.markdown), 'markdown sem título');
+    assert(ck.markdown.includes('| Item | Valor usado |'), 'markdown sem tabela');
+    const docx = C.checklistDocx(ck);
+    assert(docx instanceof Uint8Array && docx.length > 400, 'docx vazio');
+    /* assinatura de arquivo ZIP (PK\x03\x04) — um .docx é um ZIP */
+    assert(docx[0] === 0x50 && docx[1] === 0x4B && docx[2] === 0x03 && docx[3] === 0x04, 'docx não é um ZIP válido');
+    const txt = new TextDecoder().decode(docx);
+    assert(txt.includes('word/document.xml') && txt.includes('[Content_Types].xml'), 'docx sem as partes obrigatórias');
+    return `${ck.markdown.split('\n').length} linhas de Markdown, DOCX de ${(docx.length / 1024).toFixed(1)} KB`;
+  });
+  t('escritor ZIP produz CRC32 correto', () => {
+    /* vetor de referência: CRC32("123456789") = 0xCBF43926 */
+    const crc = C.crc32(new TextEncoder().encode('123456789'));
+    assert(crc === 0xCBF43926, 'CRC32 incorreto: 0x' + crc.toString(16));
+    const z = C.makeZip([{ name: 'a.txt', data: 'olá' }, { name: 'b/c.txt', data: 'mundo' }]);
+    assert(z[0] === 0x50 && z[1] === 0x4B, 'ZIP sem assinatura');
+    return 'CRC32 confere com o vetor de referência';
   });
 }
 
