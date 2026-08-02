@@ -1410,6 +1410,262 @@ sec('modo clínico, leituras em linguagem simples e pipelines');
   });
 }
 
+/* ------------------------- DSP avançada: multitaper, specparam, wavelet,
+                              PAC e gama (Onda 3) --------------------------- */
+sec('DSP avançada — multitaper, specparam, wavelet, PAC e gama');
+{
+  const FS3 = 250;
+  let sem3 = 20260802;
+  const rnd3 = () => { sem3 = (Math.imul(sem3, 1664525) + 1013904223) >>> 0; return sem3 / 4294967296; };
+  const gauss3 = () => { let u = 0, v = 0; while (u === 0) u = rnd3(); while (v === 0) v = rnd3(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+
+  /* ------------------------------------------------------------ multitaper */
+  t('DPSS: tapers ortonormais com k cruzamentos de zero na ordem k', () => {
+    const s = C.dpss(256, 4, 7);
+    assert(s && s.tapers.length === 7, 'dpss não devolveu 7 tapers');
+    let pior = 0;
+    for (let a = 0; a < 7; a++) for (let b = a; b < 7; b++) {
+      let d = 0; for (let i = 0; i < 256; i++) d += s.tapers[a][i] * s.tapers[b][i];
+      pior = Math.max(pior, Math.abs(d - (a === b ? 1 : 0)));
+    }
+    assert(pior < 1e-8, 'desvio de ortonormalidade: ' + pior.toExponential(2));
+    s.tapers.forEach((v, k) => {
+      let z = 0; for (let i = 1; i < v.length; i++) if (v[i - 1] * v[i] < 0) z++;
+      assert(z === k, `taper de ordem ${k} tem ${z} cruzamentos de zero`);
+    });
+    return `ortonormalidade ${pior.toExponential(1)}; cruzamentos de zero 0…6 na ordem`;
+  });
+
+  t('DPSS: concentrações decrescentes e ≈1 até a ordem 2NW−2', () => {
+    const s = C.dpss(512, 4, 8);
+    for (let k = 1; k < s.concentrations.length; k++)
+      assert(s.concentrations[k] <= s.concentrations[k - 1] + 1e-9, 'concentração subiu na ordem ' + k);
+    for (let k = 0; k < 2 * 4 - 2; k++)
+      assert(s.concentrations[k] > 0.99, `λ${k} = ${s.concentrations[k].toFixed(4)} abaixo de 0,99`);
+    return `λ = ${s.concentrations.slice(0, 8).map(v => v.toFixed(4)).join(' ')}`;
+  });
+
+  t('multitaper recupera pico conhecido em registro curto e devolve IC', () => {
+    const N = FS3 * 8;                              // 8 s: poucos segmentos de Welch
+    const x = new Float64Array(N);
+    for (let i = 0; i < N; i++) x[i] = Math.sin(2 * Math.PI * 21.5 * i / FS3) + 0.8 * gauss3();
+    const mt = C.multitaperPSD(x, FS3, { NW: 3 });
+    assert(mt && mt.p, 'multitaper falhou');
+    let bf = NaN, bv = -Infinity;
+    for (let i = 0; i < mt.f.length; i++) if (mt.f[i] > 10 && mt.f[i] < 35 && mt.p[i] > bv) { bv = mt.p[i]; bf = mt.f[i]; }
+    assert(Math.abs(bf - 21.5) < 0.6, 'pico em ' + bf.toFixed(2) + ' Hz');
+    assert(mt.ciLow && mt.ciHigh, 'sem IC por jackknife');
+    const ib = mt.f.findIndex(v => Math.abs(v - bf) < 1e-9);
+    assert(mt.ciLow[ib] < mt.p[ib] && mt.p[ib] < mt.ciHigh[ib], 'IC não contém a estimativa');
+    return `pico ${bf.toFixed(2)} Hz (verdadeiro 21,5) · K = ${mt.K} · ${mt.dofApprox} gl`;
+  });
+
+  t('multitaper recusa quando não há trecho contíguo utilizável', () => {
+    const x = new Float64Array(2000);
+    for (let i = 0; i < 2000; i++) x[i] = (i % 7 === 0) ? NaN : Math.sin(i / 5);
+    const mt = C.multitaperPSD(x, FS3, { NW: 3 });
+    assert(mt && mt.p === null, 'devolveu espectro apesar das lacunas');
+    assert(/contíguo/.test(mt.reason), 'motivo não menciona o trecho contíguo: ' + mt.reason);
+    return mt.reason;
+  });
+
+  /* ------------------------------------------------------------- specparam */
+  const espectroSintetico = (chi, offset, picos) => {
+    const f = [], p = [];
+    for (let k = 1; k <= 200; k++) {
+      const x = k * 0.5;
+      let logp = offset - chi * Math.log10(x);
+      picos.forEach(([a, c, sg]) => { logp += a * Math.exp(-Math.pow(x - c, 2) / (2 * sg * sg)); });
+      f.push(x); p.push(Math.pow(10, logp));
+    }
+    return { f, p };
+  };
+
+  t('specparam recupera expoente, offset e picos de espectro sintético', () => {
+    const e = espectroSintetico(1.5, 1.2, [[0.6, 22, 3], [0.3, 8, 1.5]]);
+    const m = C.specparam(e.f, e.p, { fmin: 2, fmax: 95 });
+    assert(m, 'specparam devolveu null');
+    assert(Math.abs(m.exponent - 1.5) < 0.1, 'expoente ' + m.exponent);
+    assert(Math.abs(m.offset - 1.2) < 0.15, 'offset ' + m.offset);
+    assert(m.r2 > 0.95, 'R² ' + m.r2);
+    const cf = m.peaks.map(x => x.cf);
+    assert(cf.some(v => Math.abs(v - 22) < 1), 'não achou o pico de 22 Hz: ' + cf.join(','));
+    assert(cf.some(v => Math.abs(v - 8) < 1), 'não achou o pico de 8 Hz: ' + cf.join(','));
+    const p22 = m.peaks.find(x => Math.abs(x.cf - 22) < 1);
+    assert(Math.abs(p22.bw - 6) < 2.5, 'largura do pico de 22 Hz: ' + p22.bw);
+    return `χ ${m.exponent} (1,5) · offset ${m.offset} (1,2) · R² ${m.r2} · picos ${cf.map(v => v.toFixed(1)).join(', ')} Hz`;
+  });
+
+  t('specparam escolhe joelho quando há joelho e reta quando não há', () => {
+    const fj = [], pj = [];
+    for (let k = 1; k <= 200; k++) { const x = k * 0.5; fj.push(x); pj.push(Math.pow(10, 1.5) / (10 + Math.pow(x, 2))); }
+    const comJoelho = C.specparamCompare(fj, pj, { fmin: 1, fmax: 95 });
+    assert(comJoelho.best === 'knee', 'não escolheu joelho: ' + comJoelho.best);
+    assert(Math.abs(comJoelho.knee.exponent - 2) < 0.2, 'expoente com joelho: ' + comJoelho.knee.exponent);
+    const reta = espectroSintetico(1.4, 1.0, [[0.5, 20, 3]]);
+    const semJoelho = C.specparamCompare(reta.f, reta.p, { fmin: 2, fmax: 95 });
+    assert(semJoelho.best === 'fixed', 'escolheu joelho onde não há: ' + semJoelho.best);
+    return `com joelho → "${comJoelho.best}" (ΔAIC ${comJoelho.deltaAic}) · sem joelho → "${semJoelho.best}"`;
+  });
+
+  t('specparam avisa quando o ajuste não descreve o espectro', () => {
+    const f = [], p = [];
+    for (let k = 1; k <= 200; k++) { const x = k * 0.5; f.push(x); p.push(1 + 0.9 * Math.sin(x)); }
+    const m = C.specparam(f, p, { fmin: 2, fmax: 95 });
+    if (!m) return 'espectro rejeitado antes do ajuste';
+    if (m.r2 < 0.8) { assert(m.warning && /R²/.test(m.warning), 'sem aviso de R² baixo'); return `R² ${m.r2} → "${m.quality}", aviso emitido`; }
+    return `R² ${m.r2} (ajuste inesperadamente bom) — qualidade "${m.quality}"`;
+  });
+
+  /* ----------------------------------------------------------------- wavelet */
+  t('CWT de Morlet localiza a frequência correta e marca o cone de influência', () => {
+    const N = FS3 * 6, x = new Float64Array(N);
+    for (let i = 0; i < N; i++) x[i] = Math.sin(2 * Math.PI * 18 * i / FS3);
+    const freqs = []; for (let ff = 10; ff <= 30; ff += 1) freqs.push(ff);
+    const cwt = C.morletCWT(x, FS3, freqs, { nCycles: 7 });
+    assert(cwt, 'CWT falhou');
+    const meio = Math.floor(N / 2);
+    let bk = -1, bv = -Infinity;
+    cwt.power.forEach((linha, k) => { if (linha[meio] > bv) { bv = linha[meio]; bk = k; } });
+    assert(Math.abs(freqs[bk] - 18) <= 1, 'máximo em ' + freqs[bk] + ' Hz');
+    assert(!Number.isFinite(cwt.power[bk][0]), 'a borda deveria ser NaN (cone de influência)');
+    return `máximo em ${freqs[bk]} Hz · cone de influência ${cwt.coneOfInfluenceSec[bk]} s em cada borda`;
+  });
+
+  t('detecção e delimitação de burst são parâmetros separados', () => {
+    const N = FS3 * 40, x = new Float64Array(N);
+    let env = 0.3;
+    for (let i = 0; i < N; i++) {
+      env = 0.94 * env + 0.06 * (rnd3() < 0.02 ? 3 : 0.3);
+      x[i] = 2 * env * Math.cos(2 * Math.PI * 20 * i / FS3) + 0.5 * gauss3();
+    }
+    const freqs = []; for (let ff = 13; ff <= 30; ff += 1.5) freqs.push(ff);
+    const cwt = C.morletCWT(x, FS3, freqs, { nCycles: 7 });
+    const env2 = C.waveletBandEnvelope(cwt, 13, 30);
+    const meia = C.waveletBursts(env2.env, FS3, { percentile: 75, edgeFraction: 0.5 });
+    const rente = C.waveletBursts(env2.env, FS3, { percentile: 75, edgeFraction: 1.0 });
+    assert(meia && rente, 'detecção falhou');
+    assert(meia.meanDurationMs > rente.meanDurationMs * 1.3,
+      `a fração de borda não mudou a duração: ${meia.meanDurationMs} vs ${rente.meanDurationMs}`);
+    assert(meia.threshold === rente.threshold, 'o limiar de detecção deveria ser o mesmo');
+    return `mesmo limiar, borda 50% → ${meia.meanDurationMs} ms · borda 100% → ${rente.meanDurationMs} ms`;
+  });
+
+  t('limiar por linha de base 1/f não se move quando a oscilação cresce', () => {
+    /* o percentil é circular: se o paciente passa mais tempo em beta alto, ele
+       sobe junto e "não há mais bursts". O limiar aperiódico não. */
+    const fraco = espectroSintetico(1.5, 1.2, [[0.3, 20, 3]]);
+    const forte = espectroSintetico(1.5, 1.2, [[1.2, 20, 3]]);
+    const mf = C.specparam(fraco.f, fraco.p, { fmin: 2, fmax: 95 });
+    const ms = C.specparam(forte.f, forte.p, { fmin: 2, fmax: 95 });
+    const tf = C.aperiodicBurstThreshold(mf, 13, 30, { k: 2 });
+    const ts = C.aperiodicBurstThreshold(ms, 13, 30, { k: 2 });
+    assert(tf && ts, 'limiar aperiódico não calculado');
+    const varLimiar = Math.abs(ts.threshold - tf.threshold) / tf.threshold;
+    /* o percentil da própria banda muda muito mais */
+    const banda = (e) => { let s = 0, n = 0; e.f.forEach((x, i) => { if (x >= 13 && x <= 30) { s += e.p[i]; n++; } }); return s / n; };
+    const varBanda = Math.abs(banda(forte) - banda(fraco)) / banda(fraco);
+    assert(varLimiar < 0.2, 'o limiar aperiódico variou ' + (100 * varLimiar).toFixed(0) + '%');
+    assert(varBanda > 1.0, 'a potência da banda deveria mudar muito: ' + (100 * varBanda).toFixed(0) + '%');
+    return `potência da banda +${(100 * varBanda).toFixed(0)}% · limiar aperiódico ${(100 * varLimiar).toFixed(1)}%`;
+  });
+
+  /* --------------------------------------------------------------------- PAC */
+  const sinalPac = (acoplado) => {
+    const N = FS3 * 60, x = new Float64Array(N);
+    let fase = 0, env = 0.3;
+    for (let i = 0; i < N; i++) {
+      const fb = 20 + 1.5 * Math.sin(2 * Math.PI * 0.13 * i / FS3) + 0.4 * gauss3();
+      fase += 2 * Math.PI * fb / FS3;
+      env = 0.94 * env + 0.06 * (rnd3() < 0.02 ? 3 : 0.3);
+      const mod = acoplado ? (1 + Math.cos(fase)) / 2 : (1 + Math.cos(2 * Math.PI * 3.3 * i / FS3)) / 2;
+      x[i] = 2 * env * Math.cos(fase) + 1.0 * mod * Math.sin(2 * Math.PI * 80 * i / FS3) + 0.6 * gauss3();
+    }
+    return x;
+  };
+
+  t('PAC separa sinal acoplado de sinal não acoplado', () => {
+    const a = C.pacTort(sinalPac(true), FS3, { phaseBand: [13, 30], ampBand: [50, 120], nSurrogates: 150 });
+    const b = C.pacTort(sinalPac(false), FS3, { phaseBand: [13, 30], ampBand: [50, 120], nSurrogates: 150 });
+    assert(a.significant, `acoplado não deu significativo: z=${a.z}, p=${a.pEmpirical}`);
+    assert(!b.significant, `não acoplado deu significativo: z=${b.z}, p=${b.pEmpirical}`);
+    assert(a.z > b.z + 5, `z do acoplado (${a.z}) não é claramente maior que o do controle (${b.z})`);
+    return `acoplado z=${a.z} p=${a.pEmpirical} · controle z=${b.z} p=${b.pEmpirical}`;
+  });
+
+  t('PAC é reprodutível: mesma semente, mesmo resultado', () => {
+    const x = sinalPac(true);
+    const a = C.pacTort(x, FS3, { phaseBand: [13, 30], ampBand: [50, 120], nSurrogates: 60, seed: 4242 });
+    const b = C.pacTort(x, FS3, { phaseBand: [13, 30], ampBand: [50, 120], nSurrogates: 60, seed: 4242 });
+    assert(a.z === b.z && a.pEmpirical === b.pEmpirical, 'resultado mudou entre execuções idênticas');
+    return `z = ${a.z} reproduzido com a semente ${a.seed}`;
+  });
+
+  t('assimetria de forma de onda separa seno de dente de serra', () => {
+    const N = FS3 * 30;
+    const seno = new Float64Array(N), serra = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      seno[i] = Math.sin(2 * Math.PI * 20 * i / FS3) + 0.05 * gauss3();
+      const ph = (i / FS3 * 20) % 1;
+      serra[i] = 2 * ph - 1 + 0.05 * gauss3();
+    }
+    const a = C.waveformAsymmetry(seno, FS3, 13, 30);
+    const b = C.waveformAsymmetry(serra, FS3, 13, 30);
+    assert(!a.nonSinusoidal, 'seno marcado como não senoidal: ' + a.peakTroughSymmetry);
+    assert(b.nonSinusoidal, 'dente de serra não marcado: ' + b.peakTroughSymmetry);
+    assert(Math.abs(a.peakTroughSymmetry - 0.5) < 0.05, 'simetria do seno: ' + a.peakTroughSymmetry);
+    return `simetria pico-vale: seno ${a.peakTroughSymmetry} (0,5 = simétrico) · serra ${b.peakTroughSymmetry}`;
+  });
+
+  /* -------------------------------------------------------------------- gama */
+  const espectroGama = (picoHz) => {
+    const f = [], p = [];
+    for (let k = 1; k <= 250; k++) {
+      const x = k * 0.5;
+      let logp = 1.0 - 1.4 * Math.log10(x);
+      logp += 0.9 * Math.exp(-Math.pow(x - picoHz, 2) / (2 * 1.2 * 1.2));
+      f.push(x); p.push(Math.pow(10, logp));
+    }
+    return { f, p };
+  };
+
+  t('gama em f_stim/2 é classificada como entrained, não como endógena', () => {
+    const e = espectroGama(65);
+    const g = C.detectGamma(e.f, e.p, { stimRateHz: 130, tolHz: 2.5 });
+    assert(g.entrained, 'não classificou como entrained: ' + g.verdict);
+    assert(Math.abs(g.entrained.hz - 65) < 1.5, 'pico em ' + g.entrained.hz);
+    assert(/estimulação/.test(g.clinicalNote || ''), 'nota clínica não explica o engate');
+    const g2 = C.detectGamma(e.f, e.p, { stimRateHz: 160, tolHz: 2.5 });
+    assert(g2.ftg && !g2.entrained, 'com f_stim = 160 o mesmo pico deveria ser endógeno: ' + g2.verdict);
+    return `65 Hz com f_stim 130 → "${g.verdict}" · com f_stim 160 → "${g2.verdict}"`;
+  });
+
+  t('sem a frequência de estimulação, gama não é classificada', () => {
+    const e = espectroGama(65);
+    const g = C.detectGamma(e.f, e.p, {});
+    assert(/indistinguível/.test(g.verdict), 'veredito: ' + g.verdict);
+    assert(!g.entrained, 'afirmou entrained sem f_stim');
+    assert(g.reason && /opostas/.test(g.reason), 'não explica por que se recusa');
+    return g.verdict;
+  });
+
+  t('mudar a frequência de estimulação confirma o entrainment', () => {
+    const r = C.confirmEntrainment([
+      Object.assign({ label: 'A', stimRateHz: 130 }, espectroGama(65)),
+      Object.assign({ label: 'B', stimRateHz: 160 }, espectroGama(80))
+    ], { tolHz: 2.5 });
+    assert(r.conclusive && /entrained/.test(r.verdict), 'veredito: ' + r.verdict);
+    const parado = C.confirmEntrainment([
+      Object.assign({ label: 'A', stimRateHz: 130 }, espectroGama(75)),
+      Object.assign({ label: 'B', stimRateHz: 160 }, espectroGama(75))
+    ], { tolHz: 2.5 });
+    assert(parado.conclusive && /endógeno/.test(parado.verdict), 'veredito parado: ' + parado.verdict);
+    const um = C.confirmEntrainment([Object.assign({ stimRateHz: 130 }, espectroGama(65))], {});
+    assert(!um.conclusive, 'concluiu com um registro só');
+    return `pico acompanha → "${r.verdict}" · pico parado → "${parado.verdict}"`;
+  });
+}
+
 /* ------------------------------------------------------------- resultado -- */
 console.log(`\n${'='.repeat(58)}`);
 console.log(`  ${ok} passaram   ${falhas} falharam   ${pulados} sem dados`);

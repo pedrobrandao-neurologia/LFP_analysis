@@ -33,7 +33,7 @@ node tests/benchmark.mjs --out benchmark          # tabela de desempenho
 node tests/benchmark.mjs --check                  # falha se regredir (CI)
 ```
 
-## Desempenho atual — 56/56 critérios aprovados
+## Desempenho atual — 87/87 critérios aprovados
 
 A tabela completa, com valor por condição, está em [`benchmark/resultados.md`](../benchmark/resultados.md)
 (regenerada a cada execução da CI). Resumo:
@@ -53,6 +53,27 @@ A tabela completa, com valor por condição, está em [`benchmark/resultados.md`
 | Recuperação do expoente aperiódico | < 40% | 0,5–2,0% |
 | Detecção de bursts (F1) | > 0,80 | **0,98** |
 | Confiança declarada com artefato fraco | não reivindicar "alta" | cumprido (SNR +5 e +10 dB) |
+
+### DSP avançada (Onda 3)
+
+| Métrica | Critério | Resultado |
+|---|---|---|
+| Ortonormalidade das DPSS (N=512, NW=4, K=7) | < 1e−8 | **0** (exato até o ponto flutuante) |
+| Concentração λ até a ordem 2NW−2 | > 0,99 | **0,995** |
+| Pico por multitaper em registro de 4 s | < 0,5 Hz | **0,016 Hz** — o Welch se recusa (2 segmentos) |
+| Pico por multitaper em 8 e 16 s | < 0,5 Hz | 0,016 e 0,077 Hz |
+| specparam — expoente χ (três valores verdadeiros) | < 0,10 | **0,001–0,002** |
+| specparam — offset | < 0,15 | 0,003–0,005 |
+| specparam — frequência do pico | < 0,5 Hz | **0,005–0,007 Hz** |
+| specparam — largura do pico | < 2,5 Hz | 0,06–0,10 Hz |
+| specparam — R² do modelo | > 0,95 | **1,000** |
+| Seleção de modelo aperiódico (joelho vs. reta) | acerto | **2/2** |
+| Bursts por wavelet de Morlet (F1) | > 0,75 | **0,98** |
+| PAC — detecta acoplamento simulado | z > 5 | **z = 23,7** |
+| PAC — rejeita controle sem acoplamento | z < 3 | **z = −0,20** |
+| Gama — classifica entrained em f_stim/2 | acerto | **1/1** |
+| Gama — classifica endógena fora de f_stim/2 | acerto | **1/1** |
+| Gama — recusa classificar sem f_stim | acerto | **1/1** |
 
 ### Comparação dos três métodos de remoção de ECG
 

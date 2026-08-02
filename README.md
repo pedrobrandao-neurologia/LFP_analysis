@@ -150,6 +150,11 @@ A coluna **Leitura clínica** resume, em uma frase, o que cada figura diz ao mé
 | **F16** | **QC — reprodutibilidade do pico entre registros** | `LFPMontage` (≥ 2 registros) | O mesmo canal, medido de novo, **dá o mesmo pico**? |
 | **F17** | **Painel de controle de qualidade** | qualquer arquivo | Semáforo do checklist de artefatos, item a item, **com o que não é verificável declarado**. |
 | **F23** | **aDBS — elegibilidade e simulador de limiar** | `LFPMontage` e/ou `LFPTrendLogs` | **É elegível a aDBS?** E, se for, **que limiares** — com duty cycle e transições/h simulados. |
+| **F18** | **Espectro multitaper (DPSS) com IC por jackknife** | `BrainSenseTimeDomain` ou `LfpMontageTimeDomain` | O pico do espectro **com barra de incerteza**, e se ele muda conforme o método de estimativa. |
+| **F19** | **specparam completo — reta ou joelho, largura, R²** | qualquer espectro | O expoente do fundo 1/f e os picos **com largura e qualidade de ajuste**, sem os quais o número não é reportável. |
+| **F20** | **Wavelet de Morlet — escalograma e bursts delimitados** | `BrainSenseTimeDomain` | As rajadas **onde começam e onde terminam**, e se a duração medida é do cérebro ou da escolha de resolução. |
+| **F21** | **PAC — acoplamento fase-amplitude e comodulograma** | `BrainSenseTimeDomain` (fs ≥ 250 Hz) | Se a **amplitude do gama acompanha a fase do beta** — marcador de interação entre ritmos, elevado no OFF. |
+| **F22** | **Gama finamente sintonizada vs. entrained em f_stim/2** | qualquer espectro que chegue a 95 Hz | Se um pico de gama é **endógeno** (associado a ON/discinesia) ou **eco da própria estimulação**. |
 
 Cada figura exporta PNG e os dados subjacentes em CSV.
 
@@ -306,7 +311,57 @@ tanto **quem programa o DBS** quanto **quem faz a análise estatística** leiam 
 
 **Espectral** — Welch (Hann, sobreposição 50 %, detrend linear por segmento); espectrograma STFT;
 parametrização periódico/aperiódico por regressão robusta iterativa em log-log, aproximando o
-specparam/FOOOF.
+specparam/FOOOF (F1, F2).
+
+**Multitaper de Slepian (F18)** — as sequências DPSS são calculadas **do zero** pelo problema
+tridiagonal simétrico de Percival & Walden: autovalores por bissecção com sequência de Sturm,
+autovetores por iteração inversa com o algoritmo de Thomas, ortogonalização de Gram-Schmidt entre
+ordens. A razão de concentração λ de cada taper sai por Parseval (integral de |V(f)|² dentro de
+±W) e é **reportada** — tapers pouco concentrados vazam e são descartados com contagem explícita.
+O multitaper aplica K janelas ortogonais ao **mesmo trecho**, em vez de picar o registro, o que
+importa em streaming curto: num registro de 4 s o Welch se recusa por falta de segmentos e o
+multitaper recupera a frequência de pico com erro < 0,02 Hz. IC 95 % por jackknife entre tapers em
+escala logarítmica (Thomson & Chave).
+
+**specparam completo (F19)** — o procedimento do artigo de Donoghue et al., não a aproximação:
+ajuste aperiódico robusto (reajustado só sobre os pontos abaixo da primeira curva, para os picos
+não puxarem a inclinação), busca **iterativa** de gaussianas com **limites de largura**, reajuste
+**simultâneo** de todos os picos por Levenberg-Marquardt e reajuste final do aperiódico sobre o
+espectro sem picos. Dois modos de aperiódico — reta (`b − χ·log₁₀f`) e **com joelho**
+(`b − log₁₀(k + f^χ)`) — ajustados e comparados por **AIC**, de modo que a escolha fique
+justificada por número. Recuperação medida contra ground truth: erro do expoente < 0,01,
+do offset < 0,01, da frequência de pico < 0,01 Hz e da largura < 0,1 Hz.
+
+**Wavelet de Morlet (F20)** — CWT complexa por convolução via FFT, com σ_t = n_ciclos/(2πf₀) e
+normalização em energia. As bordas dentro do **cone de influência** (2σ de cada lado) voltam como
+NaN: são desconhecidas, não zero. A delimitação de burst separa **detecção** (cruzar o limiar) de
+**delimitação** (descer a uma fração dele, padrão 0,5) — sem isso a duração medida vira função do
+limiar escolhido e comparações entre estudos deixam de significar algo. Junto vem a **curva de
+sensibilidade ao número de ciclos**: se a duração média muda mais de 25 % entre 3 e 10 ciclos, ela
+é do método, não do cérebro.
+
+**Limiar de burst pela linha de base 1/f (F20)** — o percentil do próprio registro é circular: se
+o paciente passa mais tempo em beta alto, o percentil sobe junto e "não há mais bursts". Um limiar
+ancorado no **componente aperiódico** não se move com a atividade oscilatória. Medido: triplicar a
+potência da banda muda o limiar aperiódico em 0,3 %. O preço é depender do ajuste, e por isso o R²
+sai junto e o limiar é declarado frágil abaixo de 0,8.
+
+**PAC — acoplamento fase-amplitude (F21)** — índice de modulação de Tort (divergência KL da
+distribuição de amplitude por bin de fase em relação à uniforme) e **comodulograma**. Nada aqui
+devolve MI cru sozinho: sempre vêm o **z contra surrogados** por deslocamento temporal (semente
+fixa, reprodutível) e o p empírico. Junto roda a **checagem de forma de onda** (simetria pico-vale
+de Cole & Voytek), porque uma onda não senoidal gera harmônicos que se acoplam à própria
+fundamental — PAC espúrio, sem nenhuma interação entre redes. Validação: z = 24 em sinal acoplado
+simulado, z ≈ 0 no controle sem acoplamento.
+
+**Gama endógena vs. entrained (F22)** — dois fenômenos na mesma faixa com leituras clínicas
+**opostas**: a gama finamente sintonizada (60–90 Hz) acompanha o estado ON e discinesia; a gama
+*entrained* é o engate 1:2 da rede com a própria estimulação, travado em f_stim/2. O
+discriminador é aritmético e explícito (proximidade a f_stim/2, estreiteza, dobras de aliasing), e
+**sem a frequência de estimulação o software se recusa a classificar** em vez de escolher a
+interpretação mais interessante. A confirmação definitiva exige registrar o mesmo canal com duas
+frequências de estimulação: se o pico acompanha f_stim/2, é entrained; se fica parado, é
+endógeno — e `confirmEntrainment` faz esse teste.
 
 **Bursts** — passa-banda de fase zero por FFT, envelope de Hilbert, limiar por percentil,
 exclusão de bursts curtos, histograma de duração e **curva de sensibilidade ao percentil**

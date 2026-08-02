@@ -143,6 +143,139 @@ console.log('── bursts: F1 de sobreposição temporal contra o ground truth'
   reg('detecção de bursts (F1)', 'SNR 20 dB, p75', f1, '> 0,80', f1 > 0.80, 'F1');
 }
 
+/* ------------------------------- 5. DSP avançada (Onda 3) ---------------- */
+console.log('\n── multitaper, specparam, wavelet, PAC e gama contra ground truth');
+{
+  let sem = 31415927;
+  const rnd = () => { sem = (Math.imul(sem, 1664525) + 1013904223) >>> 0; return sem / 4294967296; };
+  const gauss = () => { let u = 0, v = 0; while (u === 0) u = rnd(); while (v === 0) v = rnd(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+
+  /* multitaper × Welch em registro CURTO: é onde o multitaper deve ganhar */
+  [4, 8, 16].forEach(seg => {
+    const N = FS * seg, x = new Float64Array(N);
+    for (let i = 0; i < N; i++) x[i] = Math.sin(2 * Math.PI * 21.5 * i / FS) + 1.2 * gauss();
+    const mt = C.multitaperPSD(x, FS, { NW: 3 });
+    const w = C.welchPSD(x, FS, { nperseg: 512, overlap: .5 });
+    const eMt = Math.abs(picoDe(mt.f, mt.p, 12, 32) - 21.5);
+    reg('pico por multitaper', `${seg} s de registro`, eMt, '< 0,5 Hz', eMt < 0.5, 'Hz');
+    /* o Welch precisa de ao menos 3 segmentos; em registro curto ele se recusa,
+       e é exatamente aí que o multitaper entrega estimativa — o benchmark
+       registra a recusa em vez de omitir a linha */
+    if (w.p) {
+      const eW = Math.abs(picoDe(w.f, w.p, 12, 32) - 21.5);
+      reg('pico por Welch (referência)', `${seg} s de registro`, eW, 'informativo', true, 'Hz');
+    } else {
+      reg('Welch se recusa (poucos segmentos)', `${seg} s de registro`, w.nSegments, 'informativo', true, 'segmentos');
+    }
+  });
+
+  /* DPSS: ortonormalidade e concentração — propriedades matemáticas exatas */
+  {
+    const sl = C.dpss(512, 4, 7);
+    let pior = 0;
+    for (let a = 0; a < 7; a++) for (let b = a; b < 7; b++) {
+      let d = 0; for (let i = 0; i < 512; i++) d += sl.tapers[a][i] * sl.tapers[b][i];
+      pior = Math.max(pior, Math.abs(d - (a === b ? 1 : 0)));
+    }
+    reg('ortonormalidade das DPSS', 'N=512, NW=4, K=7', pior, '< 1e-8', pior < 1e-8, '');
+    const menor = Math.min.apply(null, sl.concentrations.slice(0, 6));
+    reg('concentração mínima até 2NW−2', 'N=512, NW=4', menor, '> 0,99', menor > 0.99, 'λ');
+  }
+
+  /* specparam: recuperação de expoente, offset, frequência e largura de pico */
+  [[1.0, 0.8], [1.5, 1.2], [2.2, 1.5]].forEach(([chi, off]) => {
+    const f = [], p = [];
+    for (let k = 1; k <= 200; k++) {
+      const x = k * 0.5;
+      const logp = off - chi * Math.log10(x) + 0.6 * Math.exp(-Math.pow(x - 22, 2) / (2 * 3 * 3));
+      f.push(x); p.push(Math.pow(10, logp));
+    }
+    const m = C.specparam(f, p, { fmin: 2, fmax: 95 });
+    const eChi = Math.abs(m.exponent - chi);
+    const eOff = Math.abs(m.offset - off);
+    reg('specparam — expoente', `χ verdadeiro ${chi}`, eChi, '< 0,10', eChi < 0.10, '');
+    reg('specparam — offset', `χ verdadeiro ${chi}`, eOff, '< 0,15', eOff < 0.15, '');
+    const pk = m.peaks.reduce((a, b) => Math.abs(b.cf - 22) < Math.abs((a || { cf: 1e9 }).cf - 22) ? b : a, null);
+    const eCf = pk ? Math.abs(pk.cf - 22) : NaN;
+    const eBw = pk ? Math.abs(pk.bw - 6) : NaN;
+    reg('specparam — frequência do pico', `χ verdadeiro ${chi}`, eCf, '< 0,5 Hz', eCf < 0.5, 'Hz');
+    reg('specparam — largura do pico', `χ verdadeiro ${chi}`, eBw, '< 2,5 Hz', eBw < 2.5, 'Hz');
+    reg('specparam — R² do modelo', `χ verdadeiro ${chi}`, m.r2, '> 0,95', m.r2 > 0.95, '');
+  });
+
+  /* seleção de modelo aperiódico: joelho quando há, reta quando não há */
+  {
+    const fj = [], pj = [];
+    for (let k = 1; k <= 200; k++) { const x = k * 0.5; fj.push(x); pj.push(Math.pow(10, 1.5) / (10 + Math.pow(x, 2))); }
+    const cj = C.specparamCompare(fj, pj, { fmin: 1, fmax: 95 });
+    reg('seleção de modelo aperiódico', 'espectro com joelho', cj.best === 'knee' ? 1 : 0, '= 1', cj.best === 'knee', 'acerto');
+    const fr = [], pr = [];
+    for (let k = 1; k <= 200; k++) { const x = k * 0.5; fr.push(x); pr.push(Math.pow(10, 1.0 - 1.4 * Math.log10(x))); }
+    const cr = C.specparamCompare(fr, pr, { fmin: 2, fmax: 95 });
+    reg('seleção de modelo aperiódico', 'lei de potência pura', cr.best === 'fixed' ? 1 : 0, '= 1', cr.best === 'fixed', 'acerto');
+  }
+
+  /* bursts por wavelet contra o ground truth do gerador */
+  {
+    const g = gerarSinal({ preset: 'pd', snrDb: 20, tremor: false });
+    const freqs = []; for (let ff = 13; ff <= 30; ff += 1.5) freqs.push(ff);
+    const cwt = C.morletCWT(g.limpo, FS, freqs, { nCycles: 7 });
+    const env = C.waveletBandEnvelope(cwt, 13, 30);
+    const det = C.waveletBursts(env.env, FS, { percentile: 75, minDurationMs: 200, edgeFraction: 1.0 });
+    const verdade = g.truth.bursts;
+    const sobrepoe = (a, b) => Math.max(0, Math.min(a.startIdx / FS + a.durationMs / 1000, b.endS) - Math.max(a.startIdx / FS, b.startS)) > 0.05;
+    let vp = 0; const usados = new Set();
+    det.bursts.forEach(b => {
+      const i = verdade.findIndex((v, j) => !usados.has(j) && sobrepoe(b, v));
+      if (i >= 0) { vp++; usados.add(i); }
+    });
+    const prec = det.bursts.length ? vp / det.bursts.length : 0;
+    const rec = verdade.length ? vp / verdade.length : 0;
+    const f1 = (prec + rec) > 0 ? 2 * prec * rec / (prec + rec) : 0;
+    reg('bursts por wavelet (F1)', 'SNR 20 dB, p75', f1, '> 0,75', f1 > 0.75, 'F1');
+  }
+
+  /* PAC: detecção com e sem acoplamento */
+  {
+    const monta = acoplado => {
+      const N = FS * 60, x = new Float64Array(N);
+      let fase = 0, env = 0.3;
+      for (let i = 0; i < N; i++) {
+        const fb = 20 + 1.5 * Math.sin(2 * Math.PI * 0.13 * i / FS) + 0.4 * gauss();
+        fase += 2 * Math.PI * fb / FS;
+        env = 0.94 * env + 0.06 * (rnd() < 0.02 ? 3 : 0.3);
+        const mod = acoplado ? (1 + Math.cos(fase)) / 2 : (1 + Math.cos(2 * Math.PI * 3.3 * i / FS)) / 2;
+        x[i] = 2 * env * Math.cos(fase) + 1.0 * mod * Math.sin(2 * Math.PI * 80 * i / FS) + 0.6 * gauss();
+      }
+      return x;
+    };
+    const a = C.pacTort(monta(true), FS, { phaseBand: [13, 30], ampBand: [50, 120], nSurrogates: 150 });
+    const b = C.pacTort(monta(false), FS, { phaseBand: [13, 30], ampBand: [50, 120], nSurrogates: 150 });
+    reg('PAC — detecta acoplamento verdadeiro', 'beta→gama simulado', a.z, '> 5', a.z > 5, 'z');
+    reg('PAC — rejeita controle sem acoplamento', 'sem acoplamento', b.z, '< 3', b.z < 3, 'z');
+  }
+
+  /* gama: entrained vs. finamente sintonizada */
+  {
+    const espectro = picoHz => {
+      const f = [], p = [];
+      for (let k = 1; k <= 250; k++) {
+        const x = k * 0.5;
+        f.push(x);
+        p.push(Math.pow(10, 1.0 - 1.4 * Math.log10(x) + 0.9 * Math.exp(-Math.pow(x - picoHz, 2) / (2 * 1.2 * 1.2))));
+      }
+      return { f, p };
+    };
+    const e = espectro(65);
+    const ent = C.detectGamma(e.f, e.p, { stimRateHz: 130, tolHz: 2.5 });
+    const ftg = C.detectGamma(e.f, e.p, { stimRateHz: 160, tolHz: 2.5 });
+    const semF = C.detectGamma(e.f, e.p, {});
+    reg('gama — classifica entrained em f_stim/2', 'pico 65 Hz, f_stim 130', ent.entrained ? 1 : 0, '= 1', !!ent.entrained, 'acerto');
+    reg('gama — classifica endógena fora de f_stim/2', 'pico 65 Hz, f_stim 160', (ftg.ftg && !ftg.entrained) ? 1 : 0, '= 1', !!(ftg.ftg && !ftg.entrained), 'acerto');
+    reg('gama — recusa sem f_stim', 'f_stim desconhecida', semF.entrained ? 0 : 1, '= 1', !semF.entrained, 'acerto');
+  }
+}
+
 /* ------------------------------------------------------------- relatório - */
 const aprovados = linhas.filter(l => l.aprovado).length;
 const total = linhas.length;
