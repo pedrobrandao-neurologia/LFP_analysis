@@ -10,6 +10,7 @@ import { detectRPeaks } from '../artifact/rpeaks.js';
 import { removeEcg } from '../artifact/ecg.js';
 import { validateEcgRemoval } from '../artifact/validate.js';
 import { getProfile, detectTremorFrequency } from '../profiles/index.js';
+import { inferDeviceState } from '../io/devicestate.js';
 
 export const HEMIS = ['Left', 'Right'];
 
@@ -140,6 +141,27 @@ export function ecgMetrics(parsed, hemi) {
     ecg_cleaning_window_s: rem.params.windowS,
     ecg_svd_components: rem.params.svdComponents
   });
+}
+
+/* Estado do dispositivo — coluna OBRIGATÓRIA em toda linha aguda (Hammer et al.:
+   ON a 0 mA já introduz artefato ausente no OFF, logo comparar sem declarar o
+   estado é erro metodológico). */
+export function deviceStateMetrics(parsed, hemi) {
+  const bs = (parsed.bsLfp || []).find(b => b.series && b.series[hemi]);
+  const td = (parsed.bsTimeDomain || []).find(t => t.hemisphere === hemi)
+    || (parsed.montageTD || []).find(t => t.hemisphere === hemi);
+  const st = inferDeviceState(bs || td || { hemisphere: hemi }, parsed, {
+    modality: bs ? 'streaming' : (td ? 'survey' : null)
+  });
+  return {
+    device_state: st.state,
+    device_state_confidence: st.confidence,
+    device_state_evidence: st.evidence.join('; '),
+    stim_amplitude_ma: st.amplitudeMa,
+    stim_rate_hz: st.rateHz,
+    stim_pulse_width_us: st.pulseWidthUs,
+    stim_group: st.groupId
+  };
 }
 
 /* Curva dose-resposta (potência × amplitude de estimulação) do BrainSenseLfp. */

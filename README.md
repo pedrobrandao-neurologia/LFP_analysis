@@ -106,6 +106,8 @@ A coluna **Leitura clínica** resume, em uma frase, o que cada figura diz ao mé
 | F12 | Espectros medianos por tipo de evento | `LfpFrequencySnapshotEvents` | Compara o espectro entre **tipos de evento** do paciente. |
 | **F13** | **Estados ON/OFF pela amplitude do beta** | `BrainSenseTimeDomain` ou `LFPTrendLogs` | Divide o registro em **ON (baixo beta)** e **OFF (alto beta)** automaticamente. |
 | **F15** | **Limpeza de artefato cardíaco — 3 métodos + validação** | `BrainSenseTimeDomain` ou `LfpMontageTimeDomain` | Quanto do sinal é **batimento cardíaco**, e se a limpeza tirou o artefato **sem tirar o sinal**. |
+| **F16** | **QC — reprodutibilidade do pico entre registros** | `LFPMontage` (≥ 2 registros) | O mesmo canal, medido de novo, **dá o mesmo pico**? |
+| **F17** | **Painel de controle de qualidade** | qualquer arquivo | Semáforo do checklist de artefatos, item a item, **com o que não é verificável declarado**. |
 
 Cada figura exporta PNG e os dados subjacentes em CSV.
 
@@ -336,7 +338,7 @@ R/percept_lfp.R            61 funções: leitura, DSP, estatística, figuras ggp
 docs/estado-da-arte.md     revisão de literatura e mapa da estrutura do JSON
 docs/Revisao_LFP_Parkinson.pdf  revisão sobre LFP na doença de Parkinson
 tools/gerar_exemplo.mjs    gerador do dataset sintético
-tests/run.mjs              suíte de 102 testes
+tests/run.mjs              suíte de 118 testes
 examples/                  dataset sintético
 ```
 
@@ -364,7 +366,7 @@ node tools/gerar_exemplo.mjs examples
 node tests/run.mjs
 ```
 
-102 testes cobrindo parser, DSP tolerante a lacunas, integridade de pacotes, estatística, camada gráfica,
+118 testes cobrindo parser, DSP tolerante a lacunas, integridade de pacotes, estatística, camada gráfica,
 os 14 renderizadores, a extração de métricas, os estados ON/OFF e a remoção de artefato cardíaco
 (varredura de SNR com ground truth).
 e a detecção de estados ON/OFF.

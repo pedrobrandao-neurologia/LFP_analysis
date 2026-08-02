@@ -203,3 +203,16 @@ footer.foot{padding:24px 20px 40px;text-align:center;font:11px/1.7 var(--mono);c
   a[href]:after{content:''}
 }
 @media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+/* ---------- painel de QC (F17) ---------- */
+.qc-title{font:11.5px/1.5 var(--mono);color:var(--ink-2);margin:14px 0 6px;font-weight:400}
+.qcgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:7px}
+.qcitem{border:1px solid var(--rule-2);border-left-width:3px;border-radius:3px;padding:7px 9px;
+  background:var(--panel-2);display:flex;flex-direction:column;gap:2px}
+.qcitem b{font:10.5px/1.3 var(--mono);font-weight:600}
+.qcitem .v{font:11.5px/1.3 var(--mono)}
+.qcitem .m{font:10px/1.35 var(--sans);color:var(--ink-3)}
+.qcitem.verde{border-left-color:var(--ok);background:#EFF7F2}
+.qcitem.amarelo{border-left-color:var(--warn);background:#FBF3EA}
+.qcitem.vermelho{border-left-color:var(--right);background:#FBEDF0}
+.qcitem.cinza{border-left-color:var(--rule);background:var(--panel-2);opacity:.85}

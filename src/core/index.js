@@ -20,13 +20,20 @@ import { fPValue, tPValue, normCDF } from './stats/distributions.js';
 import { cosinor, cosinorBootstrap, rayleigh, varianceByHour, diurnalProfile } from './stats/circadian.js';
 import { eventAligned, permutationTest } from './stats/events.js';
 import { detectStates, betaEnvelopeSeries, streamOnOff } from './stats/states.js';
-import { peakInBand, pickSpectrum, spectralMetrics, burstMetrics, doseResponse, ecgMetrics } from './metrics/acute.js';
+import { peakInBand, pickSpectrum, spectralMetrics, burstMetrics, doseResponse, ecgMetrics, deviceStateMetrics, deviceStateMetrics } from './metrics/acute.js';
 import { mergeTrend, collectThresholds, chronicMetrics, thresholdSummary } from './metrics/chronic.js';
 import { extractMetrics, daysSince } from './metrics/extract.js';
 import { PROFILES, PROFILE_IDS, getProfile, suggestProfile, bandsOf, normalizeSpectrum, detectTremorFrequency, spearman, movingAverageDays } from './profiles/index.js';
 import { createProvenance, verifyManifest, sha256Hex, canonical } from './provenance/index.js';
 import { generateChecklist, checklistDocx, CHECKLIST_ITEMS } from './report/checklist.js';
 import { makeZip, makeDocx, crc32 } from './export/zip.js';
+import { inferDeviceState, statesComparable } from './io/devicestate.js';
+import { dstTransitions, detectOffsetBreaks, resolveOffsets, segmentByOffset } from './io/timezone.js';
+import { detectRampArtifacts, removeRampArtifact, detectPolyphasic } from './artifact/ramp.js';
+import { checkHarmonics } from './qc/harmonics.js';
+import { peakReproducibility, screenChronicByEcg } from './qc/reproducibility.js';
+import { qcPanel } from './qc/panel.js';
+import { notchFFT, suggestLineFrequency } from './dsp/notch.js';
 
 const API = {
   parsePercept, MODALITIES, BANDS, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId,
@@ -35,7 +42,7 @@ const API = {
   mean, median, sd, variance, quantile, mad, removeOutliersMAD, linreg, pearson,
   cosinor, cosinorBootstrap, rayleigh, varianceByHour, diurnalProfile, eventAligned,
   permutationTest, thresholdSummary, histogram, ecdf, fPValue, tPValue, normCDF,
-  peakInBand, daysSince, pickSpectrum, spectralMetrics, burstMetrics, doseResponse, ecgMetrics,
+  peakInBand, daysSince, pickSpectrum, spectralMetrics, burstMetrics, doseResponse, ecgMetrics, deviceStateMetrics,
   mergeTrend, collectThresholds, chronicMetrics, extractMetrics,
   detectStates, betaEnvelopeSeries, streamOnOff, bimodalityCoefficient,
   /* integridade do sinal bruto (Onda 1 — L01, L02, L05, L07) */
@@ -50,7 +57,13 @@ const API = {
   /* proveniência e padrão de reporte (Onda 7.2 — L49, L50) */
   createProvenance, verifyManifest, sha256Hex, canonical,
   generateChecklist, checklistDocx, CHECKLIST_ITEMS,
-  makeZip, makeDocx, crc32
+  makeZip, makeDocx, crc32,
+  /* fidelidade e QC (Ondas 1.3 e 2.2 — L03, L04, L06, L13–L17, L19) */
+  inferDeviceState, statesComparable,
+  dstTransitions, detectOffsetBreaks, resolveOffsets, segmentByOffset,
+  detectRampArtifacts, removeRampArtifact, detectPolyphasic,
+  checkHarmonics, peakReproducibility, screenChronicByEcg, qcPanel,
+  notchFFT, suggestLineFrequency
 };
 
 export default API;

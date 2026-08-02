@@ -57,6 +57,29 @@ function stripModuleSyntax(src) {
 
 const ENTRY = path.join(AQUI, 'core/index.js');
 const modules = topoOrder(ENTRY);
+
+/* Como os módulos são concatenados num único escopo, dois arquivos não podem
+   declarar o mesmo identificador de topo. Detectamos isso AQUI, com o arquivo e
+   o nome, em vez de deixar o bundle quebrar em tempo de execução. */
+const DECL_RE = /^(?:export\s+)?(?:async\s+function|function\s*\*|function|const|let|var|class)\s+([A-Za-z_$][\w$]*)/gm;
+const donos = new Map(), colisoes = [];
+modules.forEach(m => {
+  const rel = path.relative(AQUI, m).replace(/\\/g, '/');
+  const src = fs.readFileSync(m, 'utf8');
+  DECL_RE.lastIndex = 0;
+  let g;
+  while ((g = DECL_RE.exec(src))) {
+    const nome = g[1];
+    if (donos.has(nome) && donos.get(nome) !== rel) colisoes.push({ nome, a: donos.get(nome), b: rel });
+    else donos.set(nome, rel);
+  }
+});
+if (colisoes.length) {
+  console.error('Colisão de identificadores no bundle (mesmo escopo após concatenação):');
+  colisoes.forEach(c => console.error(`  • "${c.nome}" declarado em ${c.a} e em ${c.b}`));
+  console.error('Renomeie um dos dois — o bundle é um único escopo.');
+  process.exit(1);
+}
 const nucleo = [
   '/* ==========================================================================',
   '   PERCEPT LFP STUDIO — núcleo (gerado de src/core/** por build.mjs)',
