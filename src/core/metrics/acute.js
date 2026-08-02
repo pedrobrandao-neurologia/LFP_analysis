@@ -9,6 +9,7 @@ import { linreg, median, rnd } from '../stats/descriptive.js';
 import { detectRPeaks } from '../artifact/rpeaks.js';
 import { removeEcg } from '../artifact/ecg.js';
 import { validateEcgRemoval } from '../artifact/validate.js';
+import { getProfile, detectTremorFrequency } from '../profiles/index.js';
 
 export const HEMIS = ['Left', 'Right'];
 
@@ -38,15 +39,39 @@ export function pickSpectrum(parsed, hemi) {
 
 /* Métricas espectrais agudas a partir de um espectro (f, p). */
 
-export function spectralMetrics(spec) {
+export function spectralMetrics(spec, profileId) {
   const { f, p } = spec;
+  /* métricas do perfil ativo: a banda primária deixa de ser sempre beta.
+     As colunas beta_* seguem sendo exportadas para compatibilidade e porque
+     beta é banda de contraste útil também em distonia e TE.                */
+  const perfil = getProfile(profileId || 'pd');
+  const pb = perfil.primaryBand;
+  const primario = peakInBand(f, p, pb.lo, pb.hi);
+  const extra = {
+    profile_id: perfil.id,
+    primary_band: `${pb.lo}-${pb.hi}`,
+    primary_band_label: pb.label,
+    primary_peak_hz: rnd(primario.f, 2),
+    primary_peak_mag: rnd(primario.v),
+    normalization: perfil.normalization
+  };
+  if (perfil.id === 'et') {
+    const tr = detectTremorFrequency(f, p, { searchRange: [2, 12] });
+    if (tr) Object.assign(extra, {
+      tremor_fundamental_hz: rnd(tr.fundamentalHz, 2),
+      tremor_supraharmonic_hz: rnd(tr.supraharmonicHz, 2),
+      tremor_supra_ratio: rnd(tr.supraToFundamentalRatio, 3),
+      tremor_has_supraharmonic: tr.hasSupraharmonic ? 1 : 0,
+      tremor_source: tr.source
+    });
+  }
   const ap = fitAperiodic(f, p, { fmin: 2, fmax: 95 });
   const bt = bandTable(f, p);
   const rel = k => { const b = bt.find(x => x.key === k); return b ? b.relative : NaN; };
   const beta = peakInBand(f, p, 13, 35), ta = peakInBand(f, p, 4, 12), gamma = peakInBand(f, p, 55, 95);
   const betaPeaks = ap ? ap.peaks.filter(pk => pk.band === 'lowbeta' || pk.band === 'highbeta') : [];
   const taPeaks = ap ? ap.peaks.filter(pk => pk.band === 'theta' || pk.band === 'alpha') : [];
-  return {
+  return Object.assign(extra, {
     spectrum_source: spec.source, spectrum_channel: spec.channel || '',
     sensing_center_hz: isFinite(spec.center) ? rnd(spec.center, 1) : NaN,
     device_artifact: spec.artifact || '',
@@ -61,7 +86,7 @@ export function spectralMetrics(spec) {
     aperiodic_exponent: rnd(ap ? ap.exponent : NaN, 4),
     aperiodic_offset: rnd(ap ? ap.offset : NaN, 4),
     aperiodic_r2: rnd(ap ? ap.r2 : NaN, 4)
-  };
+  });
 }
 
 /* Métricas de burst a partir do sinal bruto (streaming, senão survey). */

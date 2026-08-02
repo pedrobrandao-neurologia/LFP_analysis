@@ -142,6 +142,24 @@ nascimento, prontuário ou número de série é incluído nas exportações.
 
 ---
 
+## Perfis de doença
+
+O software deixou de falar uma doença só. Bandas, normalização, leitura clínica e glossário vêm do
+**perfil ativo**, sugerido automaticamente pelo `Diagnosis` e pelo `LeadLocation` do JSON:
+
+| Perfil | Banda primária | Normalização | Sinal externo recomendado |
+|---|---|---|---|
+| Parkinson (STN/GPi) | beta 13–35 Hz | corrigida pelo aperiódico | — |
+| **Distonia (GPi)** | **teta-alfa 4–12 Hz** | **`sd_6_96hz`** | **IMU** |
+| **Tremor essencial (VIM)** | **frequência do tremor** (medida) | relativa | **acelerômetro** |
+| Epilepsia (ANT) | teta 4–8 Hz | relativa | — |
+| Genérico | definida pelo usuário | relativa | — |
+
+Tabela completa, justificativa de cada escolha e armadilhas específicas em
+[`docs/perfis.md`](docs/perfis.md). O perfil usado sai em `profile_id` em toda linha exportada.
+
+---
+
 ## Glossário clínico das variáveis
 
 Cada variável abaixo aparece nas tabelas do aplicativo, no CSV/JSON e no relatório em PDF. A ideia é que
@@ -318,7 +336,7 @@ R/percept_lfp.R            61 funções: leitura, DSP, estatística, figuras ggp
 docs/estado-da-arte.md     revisão de literatura e mapa da estrutura do JSON
 docs/Revisao_LFP_Parkinson.pdf  revisão sobre LFP na doença de Parkinson
 tools/gerar_exemplo.mjs    gerador do dataset sintético
-tests/run.mjs              suíte de 85 testes
+tests/run.mjs              suíte de 95 testes
 examples/                  dataset sintético
 ```
 
@@ -346,7 +364,7 @@ node tools/gerar_exemplo.mjs examples
 node tests/run.mjs
 ```
 
-85 testes cobrindo parser, DSP tolerante a lacunas, integridade de pacotes, estatística, camada gráfica,
+95 testes cobrindo parser, DSP tolerante a lacunas, integridade de pacotes, estatística, camada gráfica,
 os 14 renderizadores, a extração de métricas, os estados ON/OFF e a remoção de artefato cardíaco
 (varredura de SNR com ground truth).
 e a detecção de estados ON/OFF.

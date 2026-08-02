@@ -23,6 +23,7 @@ import { detectStates, betaEnvelopeSeries, streamOnOff } from './stats/states.js
 import { peakInBand, pickSpectrum, spectralMetrics, burstMetrics, doseResponse, ecgMetrics } from './metrics/acute.js';
 import { mergeTrend, collectThresholds, chronicMetrics, thresholdSummary } from './metrics/chronic.js';
 import { extractMetrics, daysSince } from './metrics/extract.js';
+import { PROFILES, PROFILE_IDS, getProfile, suggestProfile, bandsOf, normalizeSpectrum, detectTremorFrequency, spearman, movingAverageDays } from './profiles/index.js';
 
 const API = {
   parsePercept, MODALITIES, BANDS, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId,
@@ -39,7 +40,10 @@ const API = {
   nanStats, segmentsWithoutNan, interpolateForFilter, detrendLinearNaN,
   /* artefato cardíaco: três métodos + validação quantificada (Onda 2 — L08, L10, L11, L12) */
   detectRPeaks, removeEcg, cleanEcg, svdJacobi, lowRankApprox,
-  ecgSuppressionRatio, betaPeakRecovery, bandPowerPreservation, correlation, validateEcgRemoval
+  ecgSuppressionRatio, betaPeakRecovery, bandPowerPreservation, correlation, validateEcgRemoval,
+  /* perfis de doença (Onda 5 — L37, L38, L39) */
+  PROFILES, PROFILE_IDS, getProfile, suggestProfile, bandsOf, normalizeSpectrum,
+  detectTremorFrequency, spearman, movingAverageDays
 };
 
 export default API;

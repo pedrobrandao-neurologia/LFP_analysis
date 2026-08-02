@@ -32,7 +32,41 @@ const S = {
   tzOverride: null,     // minutos
   subject: null,        // idHash do registro ativo
   opts: {},             // opções por figura
+  profile: null,        // id do perfil de doença; null = sugerir pelo JSON
+  symptomSeries: null,  // série clínica importada (distonia): [{t, v}]
 };
+
+/* Perfil de doença ativo (Onda 5). Sugerido a partir de Diagnosis e
+   LeadLocation, confirmado ou trocado pelo usuário, e persistido. Nenhuma banda
+   ou leitura clínica pode ficar hardcoded — tudo vem daqui. */
+function activeProfileId() {
+  if (S.profile) return S.profile;
+  const p0 = (activeFiles()[0] || S.files[0] || {}).parsed;
+  return p0 ? C.suggestProfile(p0) : 'pd';
+}
+function activeProfile() { return C.getProfile(activeProfileId()); }
+/* bandas do perfil; em TE dependem da frequência de tremor medida */
+function profileBands() {
+  const perfil = activeProfile();
+  let tremorHz = NaN;
+  if (perfil.id === 'et') {
+    const d = ds();
+    const src = (d.sensingSetup.find(s => s.psd) || {}).psd
+      || (d.montage[0] ? { f: d.montage[0].f, p: d.montage[0].mag } : null);
+    if (src) { const tr = C.detectTremorFrequency(src.f, src.p, {}); if (tr) tremorHz = tr.fundamentalHz; }
+  }
+  return C.bandsOf(perfil, { tremorHz });
+}
+/* Avisos declarados pelo perfil, conforme os sinais externos disponíveis. */
+function profileWarnings(node) {
+  const perfil = activeProfile();
+  (perfil.warnings || []).forEach(w => {
+    const semImu = !S.externalChannels || !S.externalChannels.some(c => c.kind === 'imu');
+    const semAcc = !S.externalChannels || !S.externalChannels.some(c => c.kind === 'accelerometer');
+    const mostrar = w.when === 'always' || (w.when === 'no_imu' && semImu) || (w.when === 'no_accelerometer' && semAcc);
+    if (mostrar) node.appendChild(el('div', { class: 'warnbox', html: w.html }));
+  });
+}
 
 /* Agrupa arquivos por registro. Arquivos de pessoas diferentes NUNCA são
    agregados: misturar séries de pacientes distintos invalidaria toda análise. */
@@ -212,7 +246,7 @@ const FIGURES = [
         pad: { l: 58, r: 14, t: 24, b: 40 }
       });
       ch1.axes();
-      if (showBands) C.BANDS.forEach(b => { if (b.lo < fmax) ch1.span(b.lo, Math.min(b.hi, fmax), { color: b.color, alpha: .09, label: b.label }); });
+      if (showBands) profileBands().forEach(b => { if (b.lo < fmax) ch1.span(b.lo, Math.min(b.hi, fmax), { color: b.color, alpha: .09, label: b.label }); });
       if (cur.center) ch1.span(cur.center - 2.5, cur.center + 2.5, { color: COL.warn, alpha: .16 });
       ch1.line(xs, ys, { color: COL.ink, width: 1.6 });
       ch1.marker(xs[peakI], ys[peakI], { color: COL.right, shape: 'tri', size: 4.5, label: `${xs[peakI].toFixed(1)} Hz · ${f(ys[peakI], 2)}`, align: xs[peakI] > fmax * .6 ? 'right' : 'left' });
@@ -296,7 +330,7 @@ const FIGURES = [
         xlabel: 'frequência (Hz)', ylabel: 'potência periódica', title: '(b) componente periódico (resíduo)', pad: { l: 58, r: 14, t: 24, b: 40 }
       });
       ch2.axes();
-      C.BANDS.forEach(b => ch2.span(b.lo, Math.min(b.hi, fmax), { color: b.color, alpha: .08, label: b.label }));
+      profileBands().forEach(b => ch2.span(b.lo, Math.min(b.hi, fmax), { color: b.color, alpha: .08, label: b.label }));
       ch2.hline(0, { color: COL.rule, dash: [2, 2] });
       ch2.line(ap.f, ap.periodic, { color: COL.accent, width: 1.7 });
       ap.peaks.slice(0, 3).forEach(pk => ch2.marker(pk.cf, pk.power, { color: COL.right, size: 3.4, label: `${f(pk.cf, 1)}` }));
@@ -455,9 +489,11 @@ const FIGURES = [
         ch.heat(M.slice().reverse(), { cmap: 'magma', smooth: true });
         ch.axes({ grid: false, yticks: rows.map((_, i) => i + .5), yfmt: v => (rows[rows.length - 1 - Math.floor(v)] || {}).label || '' });
         ch.colorbar({ label: norm ? 'norm.' : 'µVp' });
-        C.BANDS.filter(b => b.key.includes('beta')).forEach(b => {
-          ch.vline(b.lo, { color: '#fff', dash: [3, 3] }); ch.vline(Math.min(b.hi, fmax), { color: '#fff', dash: [3, 3] });
-        });
+        /* marca a banda PRIMÁRIA do perfil ativo (beta em DP, teta-alfa em
+           distonia, frequência do tremor em TE) — não mais "beta" fixo */
+        const pbF5 = activeProfile().primaryBand;
+        ch.vline(pbF5.lo, { color: '#fff', dash: [3, 3] });
+        ch.vline(Math.min(pbF5.hi, fmax), { color: '#fff', dash: [3, 3] });
       });
       const rank = d.montage.slice().sort((a, b) => b.peakMag - a.peakMag).slice(0, 12).map(m => [
         { html: `<span class="hemi-${m.hemisphere[0]}">${hname(m.hemisphere)}</span>` }, m.label, m.peakF, m.peakMag,
@@ -1061,7 +1097,7 @@ const FIGURES = [
         xlabel: 'frequência (Hz)', ylabel: 'magnitude (µVp)', title: `espectro mediano por evento — STN ${hname(h)}`, pad: { l: 62, r: 14, t: 24, b: 42 }
       });
       ch.axes();
-      C.BANDS.forEach(b => { if (b.lo < fmax) ch.span(b.lo, Math.min(b.hi, fmax), { color: b.color, alpha: .07, label: b.label }); });
+      profileBands().forEach(b => { if (b.lo < fmax) ch.span(b.lo, Math.min(b.hi, fmax), { color: b.color, alpha: .07, label: b.label }); });
       groups.forEach(g => {
         if (showAll) g.items.forEach(s => ch.line(g.f, s.hemi[h].p, { color: g.color, width: .6 }));
         ch.line(g.f, g.med, { color: g.color, width: 2.2, label: `${g.name} (n=${g.items.length})` });
@@ -1453,8 +1489,33 @@ function renderRail() {
     add('implante', String(p0.device.implantDate || '').slice(0, 10) || '—');
     add('alvos', p0.leads.map(l => `${l.hemisphere[0]}:${l.target}`).join(' ') || '—');
     add('bateria', isFinite(p0.device.batteryPct) ? p0.device.batteryPct + ' %' : '—');
-    add('fuso aplicado', `UTC${offMin() >= 0 ? '+' : '−'}${String(Math.floor(Math.abs(offMin()) / 60)).padStart(2, '0')}:${String(Math.abs(offMin()) % 60).padStart(2, '0')}`);
+    add('perfil de doença', s.profile_label || activeProfile().label);
+  add('fuso aplicado', `UTC${offMin() >= 0 ? '+' : '−'}${String(Math.floor(Math.abs(offMin()) / 60)).padStart(2, '0')}:${String(Math.abs(offMin()) % 60).padStart(2, '0')}`);
     bs.appendChild(kv); cs.appendChild(bs); rail.appendChild(cs);
+
+    /* perfil de doença (Onda 5) */
+    const sugerido = C.suggestProfile(p0);
+    const perfil = activeProfile();
+    const cp = el('div', { class: 'card' }, [el('h3', {}, ['Perfil de doença'])]);
+    const bp2 = el('div', { class: 'body' });
+    bp2.appendChild(ctrlSelect('', C.PROFILE_IDS.map(id => ({ value: id, label: C.PROFILES[id].label })),
+      perfil.id, v => { S.profile = v; S.opts = {}; renderAll(); }));
+    bp2.appendChild(el('div', {
+      class: 'note', style: 'margin-top:8px',
+      html: `<b>Banda primária:</b> ${perfil.primaryBand.label} (${perfil.primaryBand.lo}–${perfil.primaryBand.hi} Hz) · ` +
+        `<b>normalização:</b> ${perfil.normalization} · <b>banda crônica:</b> ${perfil.chronicBandSelection}<br>` +
+        `<span style="color:var(--ink-3)">${perfil.glossary.intuicao}</span>`
+    }));
+    if (perfil.id === sugerido) bp2.appendChild(el('div', {
+      class: 'note', style: 'margin-top:6px;color:var(--ok)',
+      html: `Sugerido automaticamente por <b>${p0.patient.diagnosis || '—'}</b> / <b>${(p0.leads[0] || {}).target || '—'}</b>.`
+    }));
+    else bp2.appendChild(el('div', {
+      class: 'note', style: 'margin-top:6px',
+      html: `Escolhido manualmente. O JSON sugeria <b>${C.PROFILES[sugerido].label}</b>.`
+    }));
+    profileWarnings(bp2);
+    cp.appendChild(bp2); rail.appendChild(cp);
 
     /* exportação */
     const ce = el('div', { class: 'card' }, [el('h3', {}, ['Exportar'])]);
@@ -1569,7 +1630,7 @@ function exportSession() {
 /* ---------------------------------------------- exportação de métricas -- */
 function exportBundle() {
   const ps = activeFiles().map(x => x.parsed);
-  return ps.length ? C.extractMetrics(ps, offMin()) : null;
+  return ps.length ? C.extractMetrics(ps, offMin(), { profileId: activeProfileId() }) : null;
 }
 function unionKeys(rows) {
   const seen = new Set(), out = [];
@@ -1643,6 +1704,7 @@ function buildReportCover(b) {
   add('dispositivo', `${s.device_model || '—'} · fw ${s.firmware || '—'} · ${s.device_location || '—'}`);
   add('data de implante', s.implant_date || '—');
   add('alvos', s.targets.map(t => `${(t.hemisphere || '')[0]}:${t.target}`).join('  ') || '—');
+  add('perfil de doença', `${s.profile_label || activeProfile().label} · banda primária ${activeProfile().primaryBand.label} (${activeProfile().primaryBand.lo}–${activeProfile().primaryBand.hi} Hz) · normalização ${activeProfile().normalization}`);
   add('fuso aplicado', `UTC${off >= 0 ? '+' : '−'}${String(Math.floor(Math.abs(off) / 60)).padStart(2, '0')}:${String(Math.abs(off) % 60).padStart(2, '0')}`);
   add('sessões', `${b.sessions.length}` + (b.sessions.length ? ` (${b.sessions[0].session_date_local || '—'} → ${b.sessions[b.sessions.length - 1].session_date_local || '—'})` : ''));
   wrap.appendChild(kv);
@@ -1675,8 +1737,12 @@ function buildReportCover(b) {
   wrap.appendChild(el('h3', { class: 'rc-h', text: 'Como ler estas métricas' }));
   const gl = el('dl', { class: 'kv rc-gloss' });
   const g = (k, v) => { gl.appendChild(el('dt', { text: k })); gl.appendChild(el('dd', { html: v })); };
+  /* o glossário segue o PERFIL ativo: em distonia o marcador é teta-alfa, em
+     tremor essencial é a frequência do tremor — não "beta" fixo */
+  const glos = activeProfile().glossary;
+  g(glos.primario, `${glos.picoTexto} ${glos.intuicao}`);
+  g('elegibilidade', glos.elegibilidade);
   g('pico β (beta)', 'Frequência onde o beta é mais forte. O beta é o “ritmo do freio” dos núcleos da base: tende a subir quando a medicação está no fim (OFF) e a cair quando ela faz efeito (ON) ou sob estimulação eficaz.');
-  g('β presente?', 'Se há um pico beta nítido. Sua presença é pré-requisito para programar o DBS adaptativo (aDBS) guiado por beta.');
   g('χ aperiódico', 'Inclinação de fundo do espectro (a parte não oscilatória). Reflete o balanço excitação/inibição da rede; use como métrica de apoio, não isolada.');
   g('bursts', 'Rajadas curtas de beta. Rajadas mais longas e frequentes acompanham mais rigidez/lentidão e são o alvo do aDBS de limiar único.');
   g('MESOR · amplitude · acrofase', 'Do ritmo de 24 h: o nível médio, o tamanho da oscilação dia↔noite e a hora do pico. Descrevem como o beta muda ao longo do dia.');
