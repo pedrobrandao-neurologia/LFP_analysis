@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Percept LFP Studio — análise de LFP subtalâmico</title>
+<meta name="description" content="Análise e visualização de potenciais de campo local do Medtronic Percept PC. Processamento 100% local no navegador.">
+<meta name="theme-color" content="#0E1A24">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="apple-touch-icon" href="./icon-192.png">
+<style>/*__CSS__*/</style>
+</head>
+<body>
+
+<div class="spine" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+
+<header class="top">
+  <div class="brand">
+    <b>PERCEPT LFP STUDIO</b>
+    <span>STN · potenciais de campo local · análise local</span>
+  </div>
+  <div class="tools">
+    <label class="field">fuso
+      <select id="tz">
+        <option value="auto">do arquivo</option>
+        <option value="-120">UTC−02 (BRT verão)</option>
+        <option value="-180">UTC−03 (BRT)</option>
+        <option value="-240">UTC−04</option>
+        <option value="-300">UTC−05</option>
+        <option value="0">UTC</option>
+        <option value="60">UTC+01</option>
+        <option value="120">UTC+02</option>
+      </select>
+    </label>
+    <button class="btn" id="btnExport">⤓ CSV para R</button>
+    <button class="btn" id="btnPrint">imprimir / PDF</button>
+    <button class="btn primary" onclick="document.getElementById('fileInput').click()">+ carregar JSON</button>
+    <input type="file" id="fileInput" accept=".json,application/json" multiple hidden>
+  </div>
+</header>
+
+<div class="wrap">
+  <aside class="rail" id="rail"></aside>
+  <main id="figs"></main>
+</div>
+
+<footer class="foot">
+  <p class="privacy"><i></i> Nenhum dado sai deste dispositivo — leitura, cálculo e figuras acontecem no navegador.</p>
+  <p style="max-width:760px;margin:14px auto 0;text-align:left">
+    <b>Checklist de captura</b> — para habilitar as figuras que aparecerem como “sem dados”:
+    executar <b>BrainSense Survey</b> bilateral com estimulação desligada (F5, F6);
+    <b>BrainSense Streaming</b> ≥ 60 s em repouso, com rampa de amplitude (F6, F7);
+    habilitar <b>BrainSense Timeline</b> nos <b>dois</b> hemisférios (F8, F9, F11);
+    ativar o <b>registro de eventos pelo paciente</b> e aguardar ≥ 5 dias antes de baixar (F10, F12).
+    Baixar sempre o JSON, não o PDF.
+  </p>
+  <p style="margin-top:14px">Ferramenta de pesquisa e apoio à decisão. Não substitui o julgamento clínico nem o software regulado do fabricante.</p>
+</footer>
+
+<script>/*__CORE__*/</script>
+<script>/*__PLOT__*/</script>
+<script>/*__APP__*/</script>
+</body>
+</html>

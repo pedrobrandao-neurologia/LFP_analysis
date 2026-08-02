@@ -1,0 +1,49 @@
+name: testes
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  node:
+    name: Suíte JavaScript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+
+      - name: Gerar dataset sintético
+        run: node tools/gerar_exemplo.mjs examples
+
+      - name: Reconstruir index.html a partir dos fontes
+        working-directory: src
+        run: node build.mjs
+
+      - name: Verificar que o bundle está sincronizado com src/
+        run: git diff --exit-code -- index.html
+          || (echo "::error::index.html está dessincronizado. Rode 'cd src && node build.mjs' e faça commit." && exit 1)
+
+      - name: Rodar a suíte
+        run: node tests/run.mjs
+
+  r:
+    name: Sintaxe do script R
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r-lib/actions/setup-r@v2
+        with: { r-version: 'release' }
+      - name: Verificar que o script é parseável e carrega
+        run: |
+          Rscript -e 'invisible(parse("R/percept_lfp.R")); cat("parse OK\n")'
+          Rscript -e 'install.packages(c("jsonlite","ggplot2"), repos="https://cloud.r-project.org")'
+          Rscript -e 'source("R/percept_lfp.R"); cat("source OK —", length(ls()), "objetos\n")'
+      - name: Executar sobre o dataset sintético
+        run: |
+          Rscript -e 'source("R/percept_lfp.R")' -e 'p <- percept_read("examples/exemplo_sintetico.json"); print(p)' \
+                  -e 'tr <- percept_trend(p); stopifnot(nrow(tr) > 1000)' \
+                  -e 'r <- pipeline_circadiano(tr, "Right"); print(r$tabela)'
+        continue-on-error: true

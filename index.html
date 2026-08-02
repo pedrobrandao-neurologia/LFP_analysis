@@ -1,0 +1,2830 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Percept LFP Studio — análise de LFP subtalâmico</title>
+<meta name="description" content="Análise e visualização de potenciais de campo local do Medtronic Percept PC. Processamento 100% local no navegador.">
+<meta name="theme-color" content="#0E1A24">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="apple-touch-icon" href="./icon-192.png">
+<style>:root{
+  --ground:#E5EAEF; --panel:#FBFCFD; --panel-2:#F1F5F8;
+  --ink:#0E1A24; --ink-2:#4A6070; --ink-3:#7C8FA0;
+  --rule:#C7D3DC; --rule-2:#DFE7EC;
+  --left:#1B4A72; --right:#9C3050; --accent:#0C6E6B; --warn:#A8621B; --ok:#2C7A4B;
+  --delta:#3B3F73; --theta:#2F6E8E; --alpha:#2E8B7A; --lowbeta:#B8912A; --highbeta:#C4652B; --gamma:#8E3B4E;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono","JetBrains Mono","IBM Plex Mono",Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+  --rail:302px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--ground); color:var(--ink);
+  font:14px/1.5 var(--sans);
+  -webkit-font-smoothing:antialiased;
+}
+h1,h2,h3{margin:0}
+button,input,select{font:inherit;color:inherit}
+a{color:var(--accent)}
+
+/* ---------- espinha espectral (assinatura) ---------- */
+.spine{position:sticky;top:0;z-index:60;height:7px;display:flex;background:var(--ink)}
+.spine i{display:block;height:100%}
+.spine i:nth-child(1){flex:3;background:var(--delta)}
+.spine i:nth-child(2){flex:4;background:var(--theta)}
+.spine i:nth-child(3){flex:5;background:var(--alpha)}
+.spine i:nth-child(4){flex:7;background:var(--lowbeta)}
+.spine i:nth-child(5){flex:15;background:var(--highbeta)}
+.spine i:nth-child(6){flex:65;background:var(--gamma)}
+
+/* ---------- cabeçalho ---------- */
+header.top{
+  position:sticky;top:7px;z-index:55;background:rgba(251,252,253,.94);
+  backdrop-filter:blur(8px);border-bottom:1px solid var(--rule);
+  display:flex;align-items:center;gap:16px;padding:10px 18px;flex-wrap:wrap;
+}
+.brand{display:flex;flex-direction:column;gap:1px;margin-right:auto}
+.brand b{font:600 15px/1.1 var(--mono);letter-spacing:.02em}
+.brand span{font:10.5px/1.2 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3)}
+.tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.btn{
+  border:1px solid var(--rule);background:var(--panel);border-radius:3px;
+  padding:6px 11px;font:11.5px/1 var(--mono);letter-spacing:.03em;cursor:pointer;
+  transition:background .12s,border-color .12s,color .12s;
+}
+.btn:hover{background:var(--panel-2);border-color:var(--ink-3)}
+.btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.btn.primary{background:var(--ink);color:#F4F8FA;border-color:var(--ink)}
+.btn.primary:hover{background:var(--accent);border-color:var(--accent)}
+.btn[disabled]{opacity:.4;cursor:not-allowed}
+.field{display:flex;align-items:center;gap:6px;font:11px/1 var(--mono);color:var(--ink-2)}
+.field select,.field input{
+  border:1px solid var(--rule);background:var(--panel);border-radius:3px;padding:5px 7px;
+  font:11.5px/1 var(--mono);max-width:190px;
+}
+
+/* ---------- layout ---------- */
+.wrap{display:grid;grid-template-columns:var(--rail) minmax(0,1fr);gap:20px;padding:20px;align-items:start}
+@media(max-width:960px){.wrap{grid-template-columns:1fr;padding:12px;gap:12px}}
+
+aside.rail{position:sticky;top:64px;display:flex;flex-direction:column;gap:14px}
+@media(max-width:960px){aside.rail{position:static}}
+
+.card{background:var(--panel);border:1px solid var(--rule);border-radius:4px}
+.card>h3{
+  font:11px/1 var(--mono);letter-spacing:.15em;text-transform:uppercase;color:var(--ink-2);
+  padding:11px 13px;border-bottom:1px solid var(--rule-2);display:flex;align-items:center;gap:8px;
+}
+.card>h3 .n{color:var(--ink-3);font-weight:400}
+.card .body{padding:13px}
+
+/* ---------- zona de arquivos ---------- */
+.drop{
+  border:1.5px dashed var(--rule);border-radius:4px;padding:18px 12px;text-align:center;
+  background:var(--panel-2);cursor:pointer;transition:border-color .15s,background .15s;
+}
+.drop:hover,.drop.over{border-color:var(--accent);background:#E9F3F2}
+.drop b{display:block;font:12px/1.4 var(--mono);margin-bottom:3px}
+.drop span{font-size:11.5px;color:var(--ink-2)}
+.filelist{list-style:none;margin:11px 0 0;padding:0;display:flex;flex-direction:column;gap:6px}
+.filelist li{
+  display:flex;align-items:flex-start;gap:8px;padding:7px 8px;border:1px solid var(--rule-2);
+  border-radius:3px;background:var(--panel-2);font:11px/1.35 var(--mono);
+}
+.filelist li .meta{flex:1;min-width:0}
+.filelist li .meta b{display:block;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.filelist li .meta span{color:var(--ink-3)}
+.filelist li .x{border:0;background:none;cursor:pointer;color:var(--ink-3);padding:0 2px;font-size:14px;line-height:1}
+.filelist li .x:hover{color:var(--right)}
+
+/* ---------- matriz de disponibilidade (assinatura) ---------- */
+.matrix{width:100%;border-collapse:collapse;font:10.5px/1.3 var(--mono)}
+.matrix th{font-weight:400;color:var(--ink-3);text-align:left;padding:3px 4px;vertical-align:bottom}
+.matrix td{padding:2px 3px;text-align:center}
+.matrix td.lbl{text-align:left;color:var(--ink-2);white-space:nowrap;max-width:150px;overflow:hidden;text-overflow:ellipsis}
+.cell{display:inline-flex;align-items:center;justify-content:center;width:100%;min-width:26px;height:17px;
+  border-radius:2px;background:var(--panel-2);color:var(--ink-3);border:1px solid var(--rule-2);font-size:9.5px}
+.cell.on{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:600}
+.legendrow{display:flex;gap:12px;margin-top:9px;font:10px/1 var(--mono);color:var(--ink-3);flex-wrap:wrap}
+.legendrow i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+
+/* ---------- figuras ---------- */
+main{display:flex;flex-direction:column;gap:16px;min-width:0}
+.fig{background:var(--panel);border:1px solid var(--rule);border-radius:4px;overflow:hidden;scroll-margin-top:74px}
+.fig>header{
+  display:flex;align-items:center;gap:12px;padding:12px 15px;border-bottom:1px solid var(--rule-2);
+  cursor:pointer;user-select:none;
+}
+.fig>header .id{
+  font:600 11px/1 var(--mono);letter-spacing:.08em;color:var(--panel);background:var(--ink);
+  padding:5px 7px;border-radius:2px;min-width:34px;text-align:center;
+}
+.fig.na>header .id{background:var(--ink-3)}
+.fig>header .ttl{flex:1;min-width:0}
+.fig>header .ttl b{display:block;font:600 14px/1.25 var(--sans)}
+.fig>header .ttl span{font:11px/1.3 var(--mono);color:var(--ink-3)}
+.fig>header .state{font:10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;
+  padding:4px 7px;border-radius:2px;border:1px solid var(--rule);color:var(--ink-2);white-space:nowrap}
+.fig.ready>header .state{color:var(--ok);border-color:#B9DCC6;background:#EFF7F2}
+.fig.na>header .state{color:var(--ink-3)}
+.fig>header .chev{color:var(--ink-3);font:12px/1 var(--mono);transition:transform .18s}
+.fig[open]>header .chev{transform:rotate(90deg)}
+.fig .content{padding:14px 15px 16px;display:none;border-top:0}
+.fig[open] .content{display:block}
+.fig.na .content{opacity:.85}
+
+.ctrls{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;padding:9px 11px;margin-bottom:12px;
+  background:var(--panel-2);border:1px solid var(--rule-2);border-radius:3px}
+.plotgrid{display:grid;gap:14px}
+.plotgrid.two{grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
+.plotbox{background:#fff;border:1px solid var(--rule-2);border-radius:3px;padding:6px;overflow:hidden}
+.plotbox canvas{display:block;width:100%}
+.note{font:11.5px/1.55 var(--mono);color:var(--ink-2);margin-top:11px;padding-left:10px;border-left:2px solid var(--rule)}
+.note b{color:var(--ink)}
+.warnbox{font:11.5px/1.5 var(--mono);color:var(--warn);background:#FBF3EA;border:1px solid #E8D5BE;
+  border-radius:3px;padding:9px 11px;margin-top:11px}
+.empty{font:11.5px/1.6 var(--mono);color:var(--ink-3);padding:22px 14px;text-align:center;
+  border:1px dashed var(--rule);border-radius:3px;background:var(--panel-2)}
+
+/* ---------- tabelas de resultado ---------- */
+table.data{width:100%;border-collapse:collapse;font:11.5px/1.45 var(--mono);margin-top:11px}
+table.data th{text-align:left;font-weight:600;color:var(--ink-2);border-bottom:1px solid var(--rule);padding:5px 7px;
+  font-size:10px;letter-spacing:.08em;text-transform:uppercase}
+table.data td{padding:4px 7px;border-bottom:1px solid var(--rule-2)}
+table.data td.num{text-align:right;font-variant-numeric:tabular-nums}
+table.data tr:hover td{background:var(--panel-2)}
+.sig{color:var(--ok);font-weight:600}
+.ns{color:var(--ink-3)}
+.hemi-L{color:var(--left);font-weight:600}
+.hemi-R{color:var(--right);font-weight:600}
+.pill{display:inline-block;padding:1px 6px;border-radius:9px;font-size:10px;border:1px solid var(--rule)}
+
+.kv{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font:11.5px/1.5 var(--mono)}
+.kv dt{color:var(--ink-3)}
+.kv dd{margin:0;font-variant-numeric:tabular-nums}
+
+footer.foot{padding:24px 20px 40px;text-align:center;font:11px/1.7 var(--mono);color:var(--ink-3)}
+.privacy{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border:1px solid var(--rule);
+  border-radius:3px;background:var(--panel);font:10.5px/1 var(--mono);color:var(--ink-2)}
+.privacy i{width:7px;height:7px;border-radius:50%;background:var(--ok);display:inline-block}
+@media print{
+  .rail,header.top,.spine,.ctrls,.btn{display:none!important}
+  .fig .content{display:block!important}
+  body{background:#fff}
+}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+
+<div class="spine" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+
+<header class="top">
+  <div class="brand">
+    <b>PERCEPT LFP STUDIO</b>
+    <span>STN · potenciais de campo local · análise local</span>
+  </div>
+  <div class="tools">
+    <label class="field">fuso
+      <select id="tz">
+        <option value="auto">do arquivo</option>
+        <option value="-120">UTC−02 (BRT verão)</option>
+        <option value="-180">UTC−03 (BRT)</option>
+        <option value="-240">UTC−04</option>
+        <option value="-300">UTC−05</option>
+        <option value="0">UTC</option>
+        <option value="60">UTC+01</option>
+        <option value="120">UTC+02</option>
+      </select>
+    </label>
+    <button class="btn" id="btnExport">⤓ CSV para R</button>
+    <button class="btn" id="btnPrint">imprimir / PDF</button>
+    <button class="btn primary" onclick="document.getElementById('fileInput').click()">+ carregar JSON</button>
+    <input type="file" id="fileInput" accept=".json,application/json" multiple hidden>
+  </div>
+</header>
+
+<div class="wrap">
+  <aside class="rail" id="rail"></aside>
+  <main id="figs"></main>
+</div>
+
+<footer class="foot">
+  <p class="privacy"><i></i> Nenhum dado sai deste dispositivo — leitura, cálculo e figuras acontecem no navegador.</p>
+  <p style="max-width:760px;margin:14px auto 0;text-align:left">
+    <b>Checklist de captura</b> — para habilitar as figuras que aparecerem como “sem dados”:
+    executar <b>BrainSense Survey</b> bilateral com estimulação desligada (F5, F6);
+    <b>BrainSense Streaming</b> ≥ 60 s em repouso, com rampa de amplitude (F6, F7);
+    habilitar <b>BrainSense Timeline</b> nos <b>dois</b> hemisférios (F8, F9, F11);
+    ativar o <b>registro de eventos pelo paciente</b> e aguardar ≥ 5 dias antes de baixar (F10, F12).
+    Baixar sempre o JSON, não o PDF.
+  </p>
+  <p style="margin-top:14px">Ferramenta de pesquisa e apoio à decisão. Não substitui o julgamento clínico nem o software regulado do fabricante.</p>
+</footer>
+
+<script>/* ==========================================================================
+   PERCEPT LFP STUDIO — núcleo de parsing, processamento de sinal e estatística
+   Sem dependências externas. Funciona em browser e em Node.
+   ========================================================================== */
+(function (root) {
+'use strict';
+
+/* ---------------------------------------------------------------- helpers */
+const tail = s => (typeof s === 'string' && s.includes('.')) ? s.split('.').pop() : s;
+const num  = v => (typeof v === 'number' && isFinite(v)) ? v : NaN;
+const isArr = Array.isArray;
+
+function parseUtcOffsetMin(str) {           // "-02:00" -> -120
+  if (!str) return null;
+  const m = /^([+-])(\d{2}):(\d{2})$/.exec(String(str).trim());
+  if (!m) return null;
+  const sign = m[1] === '-' ? -1 : 1;
+  return sign * (parseInt(m[2], 10) * 60 + parseInt(m[3], 10));
+}
+const T = s => { const d = new Date(s); return isFinite(d.getTime()) ? d.getTime() : NaN; };
+
+/* Hora decimal local (0–24) a partir de epoch ms e offset em minutos */
+function localHour(ms, offMin) {
+  const d = new Date(ms + offMin * 60000);
+  return d.getUTCHours() + d.getUTCMinutes() / 60 + d.getUTCSeconds() / 3600;
+}
+function localDayKey(ms, offMin) {
+  return new Date(ms + offMin * 60000).toISOString().slice(0, 10);
+}
+
+/* ======================================================================== */
+/*  1. PARSER                                                                */
+/* ======================================================================== */
+
+const MODALITIES = [
+  ['sensingSetup',  'Signal Test (PSD do canal de sensing)'],
+  ['signalCheck',   'MostRecentInSessionSignalCheck'],
+  ['montage',       'BrainSense Survey — espectros (LFPMontage)'],
+  ['montageTD',     'BrainSense Survey — sinal bruto (LfpMontageTimeDomain)'],
+  ['bsTimeDomain',  'BrainSense Streaming — sinal bruto'],
+  ['bsLfp',         'BrainSense Streaming — potência + estimulação'],
+  ['trend',         'BrainSense Timeline (LFPTrendLogs)'],
+  ['snapshots',     'Snapshots por evento (LfpFrequencySnapshotEvents)'],
+  ['patientEvents', 'Eventos do paciente / EventSummary'],
+  ['impedance',     'Impedâncias'],
+  ['eventLogs',     'Log de eventos da sessão'],
+  ['annotations',   'Anotações / histórico de programação']
+];
+
+function parsePercept(json, fileName) {
+  const d = json || {};
+  const offMin = parseUtcOffsetMin(d.ProgrammerUtcOffset);
+  const piRaw = (d.PatientInformation && (d.PatientInformation.Final || d.PatientInformation.Initial)) || {};
+  const diRaw = (d.DeviceInformation && (d.DeviceInformation.Final || d.DeviceInformation.Initial)) || {};
+
+  const out = {
+    fileName: fileName || '(sem nome)',
+    meta: {
+      sessionStart: d.SessionDate || null,
+      sessionEnd: d.SessionEndDate || null,
+      tz: d.ProgrammerTimezone || null,
+      utcOffsetMin: offMin,
+      locale: d.ProgrammerLocale || null,
+      programmerVersion: d.ProgrammerVersion || null,
+      abnormalEnd: !!d.AbnormalEnd
+    },
+    patient: {
+      idHash: hashId(piRaw.PatientId, piRaw.PatientDateOfBirth),
+      sex: tail(piRaw.PatientGender),
+      dob: piRaw.PatientDateOfBirth || null,
+      diagnosis: tail(piRaw.Diagnosis),
+      notes: piRaw.ClinicianNotes || ''
+    },
+    device: {
+      model: diRaw.Neurostimulator || null,
+      modelNumber: diRaw.NeurostimulatorModel || null,
+      snHash: hashId(diRaw.NeurostimulatorSerialNumber, ''),
+      location: tail(diRaw.NeurostimulatorLocation),
+      implantDate: diRaw.ImplantDate || null,
+      firmware: diRaw.ProductVersion || null,
+      therapyHoursTotal: num(diRaw.AccumulatedTherapyOnTimeSinceImplant),
+      therapyHoursSinceFU: num(diRaw.AccumulatedTherapyOnTimeSinceFollowup),
+      batteryPct: d.BatteryInformation ? num(d.BatteryInformation.BatteryPercentage) : NaN,
+      batteryMonths: d.BatteryInformation ? num(d.BatteryInformation.EstimatedBatteryLifeMonths) : NaN
+    },
+    leads: [], groups: [], sensingSetup: [], signalCheck: [],
+    impedance: {}, montage: [], montageTD: [], bsTimeDomain: [], bsLfp: [],
+    trend: {}, snapshots: [], patientEvents: [], eventSummary: null,
+    eventLogs: [], annotations: [], groupUsage: []
+  };
+
+  /* --- eletrodos ------------------------------------------------------- */
+  const lc = d.LeadConfiguration && (d.LeadConfiguration.Final || d.LeadConfiguration.Initial);
+  if (isArr(lc)) out.leads = lc.map(l => ({
+    hemisphere: tail(l.Hemisphere), model: tail(l.Model),
+    target: tail(l.LeadLocation), port: tail(l.ElectrodeNumber)
+  }));
+
+  /* --- grupos e sensing ------------------------------------------------ */
+  const groupsFinal = (d.Groups && (d.Groups.Final || d.Groups.Initial)) || [];
+  (isArr(groupsFinal) ? groupsFinal : []).forEach(g => {
+    const ps = g.ProgramSettings || {};
+    const grp = {
+      id: tail(g.GroupId), active: !!g.ActiveGroup, name: g.GroupName || '',
+      programs: [], sensing: [],
+      settings: g.GroupSettings || {}
+    };
+    ['LeftHemisphere', 'RightHemisphere'].forEach(hk => {
+      const h = ps[hk]; if (!h || !isArr(h.Programs)) return;
+      h.Programs.forEach(p => grp.programs.push({
+        hemisphere: hk.replace('Hemisphere', ''),
+        amplitude: num(p.AmplitudeInMilliAmps),
+        pulseWidth: num(p.PulseWidthInMicroSecond),
+        rate: num(p.RateInHertz),
+        contacts: (p.ElectrodeState || []).filter(e => tail(e.ElectrodeStateResult) === 'Negative')
+          .map(e => tail(e.Electrode).replace(/^Sen[Ss]ight_/, '')),
+        anode: (p.ElectrodeState || []).filter(e => tail(e.ElectrodeStateResult) === 'Positive')
+          .map(e => tail(e.Electrode))
+      }));
+    });
+    (ps.SensingChannel || []).forEach(sc => {
+      const ss = sc.SensingSetup || {};
+      const cr = ss.ChannelSignalResult || null;
+      const rec = {
+        hemisphere: tail(sc.HemisphereLocation),
+        channel: tail(sc.Channel),
+        centerFreq: num(ss.FrequencyInHertz),
+        averagingMs: num(ss.AveragingDurationInMilliSeconds),
+        lowerThr: num(sc.LowerLfpThreshold), upperThr: num(sc.UpperLfpThreshold),
+        measuredLower: num(sc.MeasuredLowerLfp), measuredUpper: num(sc.MeasuredUpperLfp),
+        suspendMa: num(sc.SuspendAmplitudeInMilliAmps),
+        rate: num(sc.RateInHertz), pulseWidth: num(sc.PulseWidthInMicroSecond),
+        status: tail(sc.BrainSensingStatus),
+        amplitude: (sc.ElectrodeState || []).reduce((a, e) => a + (num(e.ElectrodeAmplitudeInMilliAmps) || 0), 0),
+        psd: null, groupId: grp.id
+      };
+      if (cr && isArr(cr.SignalFrequencies)) rec.psd = {
+        f: cr.SignalFrequencies.map(num), p: (cr.SignalPsdValues || []).map(num),
+        peakF: (cr.PeakFrequencies || [])[0], peakV: (cr.PeakValues || [])[0],
+        artifact: tail(cr.ArtifactStatus), channel: tail(cr.Channel)
+      };
+      grp.sensing.push(rec);
+      if (rec.psd) out.sensingSetup.push(rec);
+    });
+    out.groups.push(grp);
+  });
+  if (isArr(d.GroupUsagePercentage))
+    out.groupUsage = d.GroupUsagePercentage.filter(x => x && x.GroupId)
+      .map(x => ({ id: tail(x.GroupId), pct: num(x.UsagePercentage) }));
+
+  /* --- signal check ---------------------------------------------------- */
+  if (isArr(d.MostRecentInSessionSignalCheck))
+    out.signalCheck = d.MostRecentInSessionSignalCheck.filter(x => isArr(x.SignalFrequencies)).map(x => ({
+      channel: tail(x.Channel), artifact: tail(x.ArtifactStatus),
+      f: x.SignalFrequencies.map(num), p: (x.SignalPsdValues || []).map(num),
+      peakF: (x.PeakFrequencies || [])[0], peakV: (x.PeakValues || [])[0]
+    }));
+
+  /* --- impedância ------------------------------------------------------ */
+  const imp = isArr(d.Impedance) ? d.Impedance[0] : null;
+  if (imp && isArr(imp.Hemisphere)) {
+    out.impedanceStatus = tail(imp.ImpedanceStatus);
+    imp.Hemisphere.forEach(h => {
+      const key = tail(h.Hemisphere);
+      const si = h.SessionImpedance || {};
+      out.impedance[key] = {
+        mono: (si.Monopolar || []).map(e => ({
+          a: normElec(e.Electrode1), b: normElec(e.Electrode2), ohm: num(e.ResultValue)
+        })),
+        bipolar: (si.Bipolar || []).map(e => ({
+          a: normElec(e.Electrode1), b: normElec(e.Electrode2), ohm: num(e.ResultValue)
+        }))
+      };
+    });
+  }
+
+  /* --- survey: espectros ----------------------------------------------- */
+  if (isArr(d.LFPMontage)) out.montage = d.LFPMontage.map(m => ({
+    hemisphere: tail(m.Hemisphere),
+    electrodes: tail(m.SensingElectrodes),
+    label: prettyChannel(tail(m.SensingElectrodes)),
+    peakF: num(m.PeakFrequencyInHertz), peakMag: num(m.PeakMagnitudeInMicroVolt),
+    artifact: tail(m.ArtifactStatus),
+    f: (m.LFPFrequency || []).map(num), mag: (m.LFPMagnitude || []).map(num)
+  })).filter(m => m.f.length);
+
+  /* --- séries no domínio do tempo -------------------------------------- */
+  const td = (arr, dst) => (isArr(arr) ? arr : []).forEach(r => {
+    if (!isArr(r.TimeDomainData) || !r.TimeDomainData.length) return;
+    dst.push({
+      pass: r.Pass || '', channel: tail(r.Channel), label: prettyChannel(tail(r.Channel)),
+      hemisphere: /LEFT|_L$/i.test(String(r.Channel)) ? 'Left' : (/RIGHT|_R$/i.test(String(r.Channel)) ? 'Right' : '?'),
+      fs: num(r.SampleRateInHz) || 250, gain: num(r.Gain),
+      t0: r.FirstPacketDateTime || null,
+      data: Float64Array.from(r.TimeDomainData, num)
+    });
+  });
+  td(d.LfpMontageTimeDomain, out.montageTD);
+  td(d.BrainSenseTimeDomain, out.bsTimeDomain);
+  td(d.SenseChannelTests, out.senseChannelTests = []);
+  td(d.CalibrationTests, out.calibrationTests = []);
+
+  /* --- streaming de potência ------------------------------------------- */
+  if (isArr(d.BrainSenseLfp)) out.bsLfp = d.BrainSenseLfp.map(r => {
+    const rows = isArr(r.LfpData) ? r.LfpData : [];
+    const t0 = T(r.FirstPacketDateTime);
+    const tick0 = rows.length ? num(rows[0].TicksInMs) : 0;
+    const series = {};
+    ['Left', 'Right'].forEach(h => {
+      const has = rows.some(x => x[h] && isFinite(x[h].LFP) && (x[h].LFP !== 0 || x[h].mA !== 0));
+      if (!has) return;
+      series[h] = {
+        t: rows.map(x => (num(x.TicksInMs) - tick0) / 1000),
+        lfp: rows.map(x => num(x[h] && x[h].LFP)),
+        ma: rows.map(x => num(x[h] && x[h].mA))
+      };
+    });
+    const ts = r.TherapySnapshot || {};
+    return {
+      channel: tail(r.Channel), fs: num(r.SampleRateInHz) || 2, t0,
+      startISO: r.FirstPacketDateTime, series,
+      therapy: {
+        group: tail(ts.ActiveGroup), hpf: num(ts.HighPassFilterInHertz),
+        blanking: num(ts.SensingBlankingDurationInMicroseconds),
+        perHemi: ['Left', 'Right'].reduce((acc, h) => {
+          if (ts[h]) acc[h] = {
+            channel: tail(ts[h].SensingChannel), centerFreq: num(ts[h].FrequencyInHertz),
+            lowerThr: num(ts[h].LowerLfpThreshold), upperThr: num(ts[h].UpperLfpThreshold),
+            rate: num(ts[h].RateInHertz), pulseWidth: num(ts[h].PulseWidthInMicroSecond),
+            averagingMs: num(ts[h].AveragingDurationInMilliSeconds)
+          };
+          return acc;
+        }, {})
+      }
+    };
+  });
+
+  /* --- Timeline (LFPTrendLogs) ----------------------------------------- */
+  const dd = d.DiagnosticData || {};
+  if (dd.LFPTrendLogs && typeof dd.LFPTrendLogs === 'object') {
+    Object.keys(dd.LFPTrendLogs).forEach(hk => {
+      const hemi = tail(hk);
+      const byDay = dd.LFPTrendLogs[hk] || {};
+      const seen = new Set(); const rows = [];
+      Object.keys(byDay).forEach(day => {
+        (byDay[day] || []).forEach(r => {
+          const t = T(r.DateTime);
+          if (!isFinite(t) || seen.has(t)) return;
+          seen.add(t);
+          rows.push({ t, lfp: num(r.LFP), ma: num(r.AmplitudeInMilliAmps) });
+        });
+      });
+      rows.sort((a, b) => a.t - b.t);
+      if (rows.length) out.trend[hemi] = rows;
+    });
+  }
+
+  /* --- snapshots por evento -------------------------------------------- */
+  if (isArr(dd.LfpFrequencySnapshotEvents)) out.snapshots = dd.LfpFrequencySnapshotEvents.map(ev => {
+    const per = {};
+    const sub = ev.LfpFrequencySnapshotEvents || {};
+    Object.keys(sub).forEach(hk => {
+      const h = sub[hk];
+      if (h && isArr(h.FFTBinData)) per[tail(hk)] = {
+        f: (h.Frequency || []).map(num), p: h.FFTBinData.map(num),
+        groupId: tail(h.GroupId), senseId: tail(h.SenseID)
+      };
+    });
+    return { t: T(ev.DateTime), iso: ev.DateTime, eventId: ev.EventID, name: ev.EventName, hemi: per };
+  }).filter(s => Object.keys(s.hemi).length);
+
+  /* --- eventos e logs --------------------------------------------------- */
+  const pe = d.PatientEvents && (d.PatientEvents.Final || d.PatientEvents.Initial);
+  if (isArr(pe)) out.patientEvents = pe.map(x => ({ name: x.EventName, lfp: x['Additional Behavior'] === 'LFP' }));
+  if (d.EventSummary) out.eventSummary = {
+    start: d.EventSummary.SessionStartDate, end: d.EventSummary.SessionEndDate,
+    counts: (d.EventSummary.Eventos || d.EventSummary.Events || []).map(x => ({ name: x.EventName, n: num(x.EventCount) })),
+    lfpAmp: (d.EventSummary.LfpAndAmplitudeSummary || []).map(x => ({
+      group: tail(x.GroupId), hemisphere: tail(x.Hemisphere),
+      above: num(x.AboveThresholdPercent), between: num(x.BetweenThresholdPercent),
+      below: num(x.BelowThresholdPercent), avgMa: num(x.AverageAmplitude)
+    }))
+  };
+  if (isArr(dd.EventLogs)) out.eventLogs = dd.EventLogs.map(e => ({
+    t: T(e.DateTime), iso: e.DateTime,
+    kind: tail(e.SessionType) || tail(e.ParameterTrendId) || 'Evento',
+    detail: [e.TherapyStatus, e.NewGroupId, e.OldGroupId].filter(Boolean).map(tail).join(' ← ')
+  })).sort((a, b) => a.t - b.t);
+  if (isArr(d.Annotations)) out.annotations = d.Annotations.map(a => ({
+    t: T(a.Date), hemisphere: tail(a.Hemisphere), rate: num(a.RateInHertz),
+    programs: (a.Program || []).length
+  }));
+
+  /* --- inventário ------------------------------------------------------- */
+  out.availability = {};
+  MODALITIES.forEach(([k]) => {
+    const v = out[k];
+    out.availability[k] = isArr(v) ? v.length : (v && typeof v === 'object' ? Object.keys(v).length : 0);
+  });
+  return out;
+}
+
+function hashId(a, b) {                       // pseudonimização determinística leve
+  const s = String(a || '') + '|' + String(b || '');
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+  return 'sub-' + ('00000000' + h.toString(16)).slice(-8);
+}
+function normElec(e) {
+  const t = String(tail(e) || '').replace(/^Sen[Ss]ight_?/i, '');
+  return t === 'Case' ? 'Case' : t;
+}
+const CH_MAP = { ZERO: '0', ONE: '1', TWO: '2', THREE: '3' };
+function prettyChannel(c) {
+  if (!c) return '';
+  let s = String(c).replace(/_(LEFT|RIGHT)(_RING|_SEGMENT)?$/i, '').replace(/_(LEFT|RIGHT)$/i, '');
+  s = s.replace(/_AND_/g, '-').replace(/_/g, '');
+  s = s.replace(/ZERO/g, '0').replace(/ONE/g, '1').replace(/TWO/g, '2').replace(/THREE/g, '3');
+  s = s.replace(/([0-3])([ABC])/g, (m, a, b) => a + b.toLowerCase());
+  return s;
+}
+
+/* ======================================================================== */
+/*  2. DSP                                                                   */
+/* ======================================================================== */
+
+function nextPow2(n) { let p = 1; while (p < n) p <<= 1; return p; }
+
+/* FFT radix-2 in-place (Cooley–Tukey) */
+function fft(re, im, inverse) {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = (inverse ? 2 : -2) * Math.PI / len;
+    const wr = Math.cos(ang), wi = Math.sin(ang);
+    for (let i = 0; i < n; i += len) {
+      let cr = 1, ci = 0;
+      for (let k = 0; k < len / 2; k++) {
+        const ur = re[i + k], ui = im[i + k];
+        const vr = re[i + k + len / 2] * cr - im[i + k + len / 2] * ci;
+        const vi = re[i + k + len / 2] * ci + im[i + k + len / 2] * cr;
+        re[i + k] = ur + vr; im[i + k] = ui + vi;
+        re[i + k + len / 2] = ur - vr; im[i + k + len / 2] = ui - vi;
+        const ncr = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = ncr;
+      }
+    }
+  }
+  if (inverse) for (let i = 0; i < n; i++) { re[i] /= n; im[i] /= n; }
+}
+
+function hann(n) { const w = new Float64Array(n); for (let i = 0; i < n; i++) w[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (n - 1)); return w; }
+function detrendLinear(x) {
+  const n = x.length; let sx = 0, sy = 0, sxx = 0, sxy = 0;
+  for (let i = 0; i < n; i++) { sx += i; sy += x[i]; sxx += i * i; sxy += i * x[i]; }
+  const b = (n * sxy - sx * sy) / (n * sxx - sx * sx), a = (sy - b * sx) / n;
+  const o = new Float64Array(n); for (let i = 0; i < n; i++) o[i] = x[i] - (a + b * i);
+  return o;
+}
+
+/* PSD de Welch — retorna densidade em unidade²/Hz */
+function welchPSD(x, fs, opts) {
+  opts = opts || {};
+  const nper = opts.nperseg || Math.min(nextPow2(Math.floor(fs)), nextPow2(x.length));
+  const nfft = nextPow2(nper);
+  const overlap = opts.overlap == null ? 0.5 : opts.overlap;
+  const step = Math.max(1, Math.floor(nper * (1 - overlap)));
+  const w = hann(nper);
+  let U = 0; for (let i = 0; i < nper; i++) U += w[i] * w[i];
+  U *= fs;
+  const nBins = nfft / 2 + 1;
+  const acc = new Float64Array(nBins);
+  let segs = 0;
+  for (let s = 0; s + nper <= x.length; s += step) {
+    const seg = detrendLinear(x.subarray ? x.subarray(s, s + nper) : x.slice(s, s + nper));
+    const re = new Float64Array(nfft), im = new Float64Array(nfft);
+    for (let i = 0; i < nper; i++) re[i] = seg[i] * w[i];
+    fft(re, im, false);
+    for (let k = 0; k < nBins; k++) {
+      const mag = (re[k] * re[k] + im[k] * im[k]) / U;
+      acc[k] += (k === 0 || k === nBins - 1) ? mag : 2 * mag;
+    }
+    segs++;
+  }
+  if (!segs) return { f: [], p: [], segments: 0 };
+  const f = new Float64Array(nBins), p = new Float64Array(nBins);
+  for (let k = 0; k < nBins; k++) { f[k] = k * fs / nfft; p[k] = acc[k] / segs; }
+  return { f, p, segments: segs, nperseg: nper, df: fs / nfft };
+}
+
+/* Espectrograma (STFT) */
+function spectrogram(x, fs, opts) {
+  opts = opts || {};
+  const win = opts.window || nextPow2(fs);            // ~1 s
+  const hop = opts.hop || Math.floor(win / 4);
+  const fmax = opts.fmax || 100;
+  const w = hann(win);
+  let U = 0; for (let i = 0; i < win; i++) U += w[i] * w[i]; U *= fs;
+  const nBins = win / 2 + 1;
+  const kMax = Math.min(nBins - 1, Math.floor(fmax * win / fs));
+  const cols = [], times = [];
+  for (let s = 0; s + win <= x.length; s += hop) {
+    const seg = detrendLinear(x.subarray ? x.subarray(s, s + win) : x.slice(s, s + win));
+    const re = new Float64Array(win), im = new Float64Array(win);
+    for (let i = 0; i < win; i++) re[i] = seg[i] * w[i];
+    fft(re, im, false);
+    const col = new Float64Array(kMax + 1);
+    for (let k = 0; k <= kMax; k++) col[k] = 2 * (re[k] * re[k] + im[k] * im[k]) / U;
+    cols.push(col); times.push((s + win / 2) / fs);
+  }
+  const f = new Float64Array(kMax + 1);
+  for (let k = 0; k <= kMax; k++) f[k] = k * fs / win;
+  return { t: times, f, S: cols };
+}
+
+/* Filtro passa-banda de fase zero via FFT */
+function bandpassFFT(x, fs, lo, hi) {
+  const n = nextPow2(x.length);
+  const re = new Float64Array(n), im = new Float64Array(n);
+  for (let i = 0; i < x.length; i++) re[i] = x[i];
+  fft(re, im, false);
+  const df = fs / n;
+  for (let k = 0; k <= n / 2; k++) {
+    const f = k * df;
+    if (f < lo || f > hi) {
+      re[k] = im[k] = 0;
+      if (k > 0 && k < n / 2) { re[n - k] = im[n - k] = 0; }
+    }
+  }
+  fft(re, im, true);
+  return re.slice(0, x.length);
+}
+
+/* Envelope de Hilbert */
+function hilbertEnvelope(x) {
+  const n = nextPow2(x.length);
+  const re = new Float64Array(n), im = new Float64Array(n);
+  for (let i = 0; i < x.length; i++) re[i] = x[i];
+  fft(re, im, false);
+  for (let k = 1; k < n / 2; k++) { re[k] *= 2; im[k] *= 2; }
+  for (let k = n / 2 + 1; k < n; k++) { re[k] = 0; im[k] = 0; }
+  fft(re, im, true);
+  const env = new Float64Array(x.length);
+  for (let i = 0; i < x.length; i++) env[i] = Math.hypot(re[i], im[i]);
+  return env;
+}
+
+/* Detecção de bursts sobre o envelope */
+function detectBursts(env, fs, opts) {
+  opts = opts || {};
+  const pct = opts.percentile == null ? 75 : opts.percentile;
+  const minMs = opts.minDurationMs == null ? 100 : opts.minDurationMs;
+  const thr = (opts.threshold != null && isFinite(opts.threshold)) ? opts.threshold : quantile(Array.from(env), pct / 100);
+  const minN = Math.round(minMs * fs / 1000);
+  const bursts = []; let i = 0;
+  while (i < env.length) {
+    if (env[i] > thr) {
+      const s = i; let peak = env[i];
+      while (i < env.length && env[i] > thr) { if (env[i] > peak) peak = env[i]; i++; }
+      const n = i - s;
+      if (n >= minN) {
+        let sum = 0; for (let k = s; k < i; k++) sum += env[k];
+        bursts.push({ start: s / fs, end: i / fs, durationMs: n * 1000 / fs, peak, mean: sum / n });
+      }
+    } else i++;
+  }
+  const total = env.length / fs;
+  return {
+    threshold: thr, bursts,
+    n: bursts.length,
+    rate: bursts.length / total,
+    meanDurationMs: mean(bursts.map(b => b.durationMs)),
+    medianDurationMs: median(bursts.map(b => b.durationMs)),
+    meanAmplitude: mean(bursts.map(b => b.mean)),
+    probability: bursts.reduce((a, b) => a + (b.end - b.start), 0) / total,
+    durationHistogram: burstHistogram(bursts)
+  };
+}
+function burstHistogram(bursts) {
+  const edges = [200, 350, 500, 650, 800, Infinity];
+  const labels = ['<200', '200–350', '350–500', '500–650', '650–800', '>800'];
+  const counts = new Array(labels.length).fill(0);
+  bursts.forEach(b => {
+    for (let i = 0; i < edges.length; i++) if (b.durationMs < edges[i]) { counts[i]++; break; }
+  });
+  const tot = counts.reduce((a, b) => a + b, 0) || 1;
+  return { labels, counts, pct: counts.map(c => 100 * c / tot) };
+}
+
+/* Parametrização espectral (aproximação de specparam/FOOOF) */
+function fitAperiodic(f, p, opts) {
+  opts = opts || {};
+  const fmin = opts.fmin || 2, fmax = opts.fmax || 95;
+  const idx = [];
+  for (let i = 0; i < f.length; i++)
+    if (f[i] >= fmin && f[i] <= fmax && p[i] > 0 && isFinite(p[i])) idx.push(i);
+  if (idx.length < 8) return null;
+  let lx = idx.map(i => Math.log10(f[i])), ly = idx.map(i => Math.log10(p[i]));
+  let keep = idx.map(() => true);
+  let a = 0, b = 0;
+  for (let it = 0; it < 6; it++) {                    // ajuste robusto iterativo
+    const X = [], Y = [];
+    for (let i = 0; i < lx.length; i++) if (keep[i]) { X.push(lx[i]); Y.push(ly[i]); }
+    const r = linreg(X, Y); a = r.intercept; b = r.slope;
+    const res = lx.map((v, i) => ly[i] - (a + b * v));
+    const kept = res.filter((_, i) => keep[i]);
+    const sd = Math.sqrt(variance(kept)) || 1e-9;
+    let changed = false;
+    for (let i = 0; i < res.length; i++) {
+      const k = res[i] < 1.0 * sd;                    // remove picos (resíduo positivo)
+      if (k !== keep[i]) changed = true;
+      keep[i] = k;
+    }
+    if (!changed) break;
+  }
+  const model = idx.map((i, k) => Math.pow(10, a + b * lx[k]));
+  const resid = idx.map((i, k) => p[i] - model[k]);
+  const peaks = findPeaks(idx.map(i => f[i]), resid, opts.minPeakHeight || 0);
+  const ss = idx.map((i, k) => Math.pow(ly[k] - (a + b * lx[k]), 2)).reduce((x, y) => x + y, 0);
+  const st = variance(ly) * ly.length;
+  return {
+    offset: a, exponent: -b, r2: 1 - ss / (st || 1),
+    f: idx.map(i => f[i]), observed: idx.map(i => p[i]), aperiodic: model, periodic: resid, peaks
+  };
+}
+function findPeaks(f, y, minH) {
+  const out = [];
+  for (let i = 1; i < y.length - 1; i++) {
+    if (y[i] > y[i - 1] && y[i] >= y[i + 1] && y[i] > minH) {
+      let l = i; while (l > 0 && y[l] > y[i] / 2) l--;
+      let r = i; while (r < y.length - 1 && y[r] > y[i] / 2) r++;
+      out.push({ cf: f[i], power: y[i], bw: f[r] - f[l], band: bandOf(f[i]) });
+    }
+  }
+  return out.sort((a, b) => b.power - a.power).slice(0, 6);
+}
+
+/* Remoção de artefato cardíaco por subtração de template (QRS) */
+function ecgTemplateSubtract(x, fs) {
+  const bp = bandpassFFT(x, fs, 5, 30);
+  const env = hilbertEnvelope(bp);
+  const thr = quantile(Array.from(env), 0.98);
+  const refractory = Math.round(0.4 * fs);
+  const peaks = [];
+  for (let i = 1; i < env.length - 1; i++) {
+    if (env[i] > thr && env[i] >= env[i - 1] && env[i] > env[i + 1]) {
+      if (!peaks.length || i - peaks[peaks.length - 1] > refractory) peaks.push(i);
+    }
+  }
+  const half = Math.round(0.25 * fs);
+  const usable = peaks.filter(p => p - half >= 0 && p + half < x.length);
+  if (usable.length < 8) return { cleaned: Float64Array.from(x), nBeats: usable.length, bpm: NaN, applied: false };
+  const tpl = new Float64Array(2 * half + 1);
+  usable.forEach(p => { for (let k = -half; k <= half; k++) tpl[k + half] += x[p + k]; });
+  for (let k = 0; k < tpl.length; k++) tpl[k] /= usable.length;
+  const m = mean(Array.from(tpl)); for (let k = 0; k < tpl.length; k++) tpl[k] -= m;
+  const out = Float64Array.from(x);
+  usable.forEach(p => { for (let k = -half; k <= half; k++) out[p + k] -= tpl[k + half]; });
+  const rr = []; for (let i = 1; i < usable.length; i++) rr.push((usable[i] - usable[i - 1]) / fs);
+  return { cleaned: out, nBeats: usable.length, bpm: 60 / (median(rr) || NaN), template: tpl, peaks: usable, applied: true };
+}
+
+const BANDS = [
+  { key: 'delta', label: 'δ', lo: 1, hi: 4, color: '#3B3F73' },
+  { key: 'theta', label: 'θ', lo: 4, hi: 8, color: '#2F6E8E' },
+  { key: 'alpha', label: 'α', lo: 8, hi: 13, color: '#2E8B7A' },
+  { key: 'lowbeta', label: 'β↓', lo: 13, hi: 20, color: '#B8912A' },
+  { key: 'highbeta', label: 'β↑', lo: 20, hi: 35, color: '#C4652B' },
+  { key: 'gamma', label: 'γ', lo: 35, hi: 100, color: '#8E3B4E' }
+];
+function bandOf(f) { const b = BANDS.find(b => f >= b.lo && f < b.hi); return b ? b.key : '—'; }
+function bandPower(f, p, lo, hi) {
+  let s = 0, n = 0;
+  for (let i = 0; i < f.length; i++) if (f[i] >= lo && f[i] <= hi) { s += p[i]; n++; }
+  return n ? s * (f[1] - f[0]) : NaN;
+}
+function bandTable(f, p) {
+  const tot = bandPower(f, p, 1, 100);
+  return BANDS.map(b => {
+    const abs = bandPower(f, p, b.lo, b.hi);
+    let peakF = NaN, peakV = -Infinity;
+    for (let i = 0; i < f.length; i++) if (f[i] >= b.lo && f[i] <= b.hi && p[i] > peakV) { peakV = p[i]; peakF = f[i]; }
+    return { ...b, absolute: abs, relative: 100 * abs / tot, peakF, peakV };
+  });
+}
+
+/* ======================================================================== */
+/*  3. ESTATÍSTICA                                                           */
+/* ======================================================================== */
+
+const sum = a => a.reduce((x, y) => x + y, 0);
+const mean = a => a.length ? sum(a) / a.length : NaN;
+function variance(a) { if (a.length < 2) return NaN; const m = mean(a); return sum(a.map(v => (v - m) * (v - m))) / (a.length - 1); }
+const sd = a => Math.sqrt(variance(a));
+function median(a) { return quantile(a, 0.5); }
+function quantile(a, q) {
+  if (!a.length) return NaN;
+  const s = Array.from(a).filter(isFinite).sort((x, y) => x - y);
+  if (!s.length) return NaN;
+  const h = (s.length - 1) * q, lo = Math.floor(h), hi = Math.ceil(h);
+  return s[lo] + (h - lo) * (s[hi] - s[lo]);
+}
+function mad(a) { const m = median(a); return 1.4826 * median(a.map(v => Math.abs(v - m))); }
+function removeOutliersMAD(rows, key, k) {
+  k = k || 4;
+  const vals = rows.map(r => r[key]).filter(isFinite);
+  const m = median(vals), s = mad(vals) || 1e-9;
+  const kept = rows.filter(r => isFinite(r[key]) && Math.abs(r[key] - m) <= k * s);
+  return { kept, removed: rows.length - kept.length, median: m, mad: s, lo: m - k * s, hi: m + k * s };
+}
+function linreg(x, y) {
+  const n = x.length; if (n < 2) return { slope: NaN, intercept: NaN, r2: NaN };
+  const mx = mean(x), my = mean(y);
+  let sxy = 0, sxx = 0, syy = 0;
+  for (let i = 0; i < n; i++) { sxy += (x[i] - mx) * (y[i] - my); sxx += (x[i] - mx) ** 2; syy += (y[i] - my) ** 2; }
+  const b = sxy / sxx;
+  return { slope: b, intercept: my - b * mx, r2: (sxy * sxy) / (sxx * syy), n };
+}
+function pearson(x, y) { const r = linreg(x, y); return Math.sign(r.slope) * Math.sqrt(Math.max(0, r.r2)); }
+
+/* --- distribuições ----------------------------------------------------- */
+function logGamma(z) {
+  const g = [676.5203681218851, -1259.1392167224028, 771.32342877765313, -176.61502916214059,
+    12.507343278686905, -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7];
+  if (z < 0.5) return Math.log(Math.PI / Math.sin(Math.PI * z)) - logGamma(1 - z);
+  z -= 1; let x = 0.99999999999980993;
+  for (let i = 0; i < g.length; i++) x += g[i] / (z + i + 1);
+  const t = z + g.length - 0.5;
+  return 0.5 * Math.log(2 * Math.PI) + (z + 0.5) * Math.log(t) - t + Math.log(x);
+}
+function betacf(a, b, x) {
+  const MAXIT = 200, EPS = 3e-12, FPMIN = 1e-300;
+  const qab = a + b, qap = a + 1, qam = a - 1;
+  let c = 1, d = 1 - qab * x / qap;
+  if (Math.abs(d) < FPMIN) d = FPMIN;
+  d = 1 / d; let h = d;
+  for (let m = 1; m <= MAXIT; m++) {
+    const m2 = 2 * m;
+    let aa = m * (b - m) * x / ((qam + m2) * (a + m2));
+    d = 1 + aa * d; if (Math.abs(d) < FPMIN) d = FPMIN;
+    c = 1 + aa / c; if (Math.abs(c) < FPMIN) c = FPMIN;
+    d = 1 / d; h *= d * c;
+    aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
+    d = 1 + aa * d; if (Math.abs(d) < FPMIN) d = FPMIN;
+    c = 1 + aa / c; if (Math.abs(c) < FPMIN) c = FPMIN;
+    d = 1 / d; const del = d * c; h *= del;
+    if (Math.abs(del - 1) < EPS) break;
+  }
+  return h;
+}
+function ibeta(a, b, x) {
+  if (x <= 0) return 0; if (x >= 1) return 1;
+  const bt = Math.exp(logGamma(a + b) - logGamma(a) - logGamma(b) + a * Math.log(x) + b * Math.log(1 - x));
+  return x < (a + 1) / (a + b + 2) ? bt * betacf(a, b, x) / a : 1 - bt * betacf(b, a, 1 - x) / b;
+}
+function fPValue(F, d1, d2) {
+  if (!isFinite(F) || F <= 0) return 1;
+  return 1 - ibeta(d1 / 2, d2 / 2, d1 * F / (d1 * F + d2));
+}
+function tPValue(t, df) {
+  const x = df / (df + t * t);
+  return ibeta(df / 2, 0.5, x);
+}
+function normCDF(z) { return 0.5 * (1 + erf(z / Math.SQRT2)); }
+function erf(x) {
+  const s = Math.sign(x); x = Math.abs(x);
+  const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741, a4 = -1.453152027, a5 = 1.061405429, p = 0.3275911;
+  const t = 1 / (1 + p * x);
+  return s * (1 - ((((a5 * t + a4) * t + a3) * t + a2) * t + a1) * t * Math.exp(-x * x));
+}
+
+/* --- COSINOR ----------------------------------------------------------- */
+/* y ~ M + Σ [ β_k cos(2πt/τ_k) + γ_k sin(2πt/τ_k) ]                        */
+function cosinor(tHours, y, periods) {
+  periods = periods || [24];
+  const n = y.length;
+  const k = 1 + 2 * periods.length;
+  if (n <= k + 2) return null;
+  const X = [];
+  for (let i = 0; i < n; i++) {
+    const row = [1];
+    periods.forEach(tau => {
+      row.push(Math.cos(2 * Math.PI * tHours[i] / tau));
+      row.push(Math.sin(2 * Math.PI * tHours[i] / tau));
+    });
+    X.push(row);
+  }
+  const beta = olsSolve(X, y);
+  if (!beta) return null;
+  const fitted = X.map(r => r.reduce((a, v, j) => a + v * beta[j], 0));
+  const resid = y.map((v, i) => v - fitted[i]);
+  const sse = sum(resid.map(r => r * r));
+  const my = mean(y);
+  const sst = sum(y.map(v => (v - my) ** 2));
+  const r2 = 1 - sse / sst;
+  const df1 = k - 1, df2 = n - k;
+  const F = (sst - sse) / df1 / (sse / df2);
+  const comps = periods.map((tau, i) => {
+    const b = beta[1 + 2 * i], g = beta[2 + 2 * i];
+    let acro = Math.atan2(-g, b);                  // rad, convenção cosinor
+    if (acro > 0) acro -= 2 * Math.PI;
+    const acroH = (-acro / (2 * Math.PI)) * tau;
+    return { period: tau, amplitude: Math.hypot(b, g), acrophaseRad: acro, acrophaseHours: acroH % tau, beta: b, gamma: g };
+  });
+  // autocorrelação AR(1) dos resíduos e n efetivo
+  let numr = 0, den = 0;
+  for (let i = 1; i < n; i++) numr += resid[i] * resid[i - 1];
+  for (let i = 0; i < n; i++) den += resid[i] * resid[i];
+  const rho = den ? numr / den : 0;
+  const nEff = n * (1 - rho) / (1 + rho);
+  const Fadj = F * Math.max(0.02, nEff / n);
+  return {
+    n, mesor: beta[0], components: comps, r2, F, p: fPValue(F, df1, df2),
+    residualSD: Math.sqrt(sse / df2), rhoAR1: rho, nEffective: nEff,
+    pAdjustedAR1: fPValue(Fadj, df1, Math.max(2, Math.round(nEff) - k)),
+    fitted, resid,
+    predict: h => beta[0] + periods.reduce((a, tau, i) =>
+      a + beta[1 + 2 * i] * Math.cos(2 * Math.PI * h / tau) + beta[2 + 2 * i] * Math.sin(2 * Math.PI * h / tau), 0)
+  };
+}
+function olsSolve(X, y) {                        // normal equations + Gauss-Jordan
+  const k = X[0].length, n = X.length;
+  const A = Array.from({ length: k }, () => new Float64Array(k + 1));
+  for (let i = 0; i < k; i++) {
+    for (let j = 0; j < k; j++) { let s = 0; for (let r = 0; r < n; r++) s += X[r][i] * X[r][j]; A[i][j] = s; }
+    let s = 0; for (let r = 0; r < n; r++) s += X[r][i] * y[r]; A[i][k] = s;
+  }
+  for (let c = 0; c < k; c++) {
+    let piv = c; for (let r = c + 1; r < k; r++) if (Math.abs(A[r][c]) > Math.abs(A[piv][c])) piv = r;
+    if (Math.abs(A[piv][c]) < 1e-12) return null;
+    [A[c], A[piv]] = [A[piv], A[c]];
+    const d = A[c][c];
+    for (let j = c; j <= k; j++) A[c][j] /= d;
+    for (let r = 0; r < k; r++) if (r !== c) { const f = A[r][c]; for (let j = c; j <= k; j++) A[r][j] -= f * A[c][j]; }
+  }
+  return Array.from({ length: k }, (_, i) => A[i][k]);
+}
+
+/* Bootstrap por blocos (dia) para IC dos parâmetros do cosinor */
+function cosinorBootstrap(rows, periods, nBoot, offMin) {
+  nBoot = nBoot || 400;
+  const byDay = {};
+  rows.forEach(r => { const d = localDayKey(r.t, offMin); (byDay[d] = byDay[d] || []).push(r); });
+  const days = Object.keys(byDay);
+  if (days.length < 3) return null;
+  const mesor = [], amp = [], acro = [];
+  for (let b = 0; b < nBoot; b++) {
+    const samp = [];
+    for (let i = 0; i < days.length; i++) samp.push(...byDay[days[(Math.random() * days.length) | 0]]);
+    const c = cosinor(samp.map(r => localHour(r.t, offMin)), samp.map(r => r.lfp), periods);
+    if (!c) continue;
+    mesor.push(c.mesor); amp.push(c.components[0].amplitude); acro.push(c.components[0].acrophaseHours);
+  }
+  const ci = a => [quantile(a, 0.025), quantile(a, 0.975)];
+  return { nBoot: mesor.length, nDays: days.length, mesorCI: ci(mesor), amplitudeCI: ci(amp), acrophaseCI: circCI(acro) };
+}
+function circCI(hours) {
+  const ang = hours.map(h => 2 * Math.PI * h / 24);
+  const m = Math.atan2(mean(ang.map(Math.sin)), mean(ang.map(Math.cos)));
+  const dev = ang.map(a => { let d = a - m; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; return d; });
+  const lo = quantile(dev, 0.025), hi = quantile(dev, 0.975);
+  const w = x => ((x / (2 * Math.PI) * 24) % 24 + 24) % 24;
+  return [w(m + lo), w(m + hi)];
+}
+
+/* Teste de Rayleigh (uniformidade circular) */
+function rayleigh(hours, period) {
+  period = period || 24;
+  const n = hours.length; if (n < 3) return null;
+  const ang = hours.map(h => 2 * Math.PI * h / period);
+  const C = mean(ang.map(Math.cos)), S = mean(ang.map(Math.sin));
+  const R = Math.hypot(C, S);
+  const z = n * R * R;
+  const p = Math.exp(Math.sqrt(1 + 4 * n + 4 * (n * n - z * z)) - (1 + 2 * n));
+  let mu = Math.atan2(S, C); if (mu < 0) mu += 2 * Math.PI;
+  return { n, R, z, p: Math.min(1, p), meanHour: mu / (2 * Math.PI) * period };
+}
+
+/* Variância explicada pela hora do dia (ANOVA de 1 fator com bins) */
+function varianceByHour(rows, offMin, nBins) {
+  nBins = nBins || 24;
+  const groups = Array.from({ length: nBins }, () => []);
+  rows.forEach(r => groups[Math.min(nBins - 1, Math.floor(localHour(r.t, offMin) / 24 * nBins))].push(r.lfp));
+  const all = rows.map(r => r.lfp), gm = mean(all);
+  let ssb = 0, ssw = 0, k = 0;
+  groups.forEach(g => { if (!g.length) return; k++; const m = mean(g); ssb += g.length * (m - gm) ** 2; g.forEach(v => ssw += (v - m) ** 2); });
+  const n = all.length, df1 = k - 1, df2 = n - k;
+  const F = (ssb / df1) / (ssw / df2);
+  return { eta2: ssb / (ssb + ssw), F, df1, df2, p: fPValue(F, df1, df2), k, n };
+}
+
+/* Perfil diurno: mediana por bin dentro do dia, depois mediana entre dias */
+function diurnalProfile(rows, offMin, binMin, detrendDaily) {
+  binMin = binMin || 30;
+  const nBins = Math.round(24 * 60 / binMin);
+  const byDay = {};
+  rows.forEach(r => { const d = localDayKey(r.t, offMin); (byDay[d] = byDay[d] || []).push(r); });
+  const days = Object.keys(byDay).sort();
+  const matrix = [];                                       // dias × bins
+  days.forEach(day => {
+    const arr = new Array(nBins).fill(NaN);
+    const buckets = Array.from({ length: nBins }, () => []);
+    byDay[day].forEach(r => buckets[Math.min(nBins - 1, Math.floor(localHour(r.t, offMin) * 60 / binMin))].push(r.lfp));
+    const dayMed = median(byDay[day].map(r => r.lfp));
+    buckets.forEach((b, i) => { if (b.length) arr[i] = detrendDaily ? 100 * median(b) / dayMed : median(b); });
+    matrix.push({ day, values: arr, dayMedian: dayMed, n: byDay[day].length });
+  });
+  const profile = [], q1 = [], q3 = [];
+  for (let i = 0; i < nBins; i++) {
+    const col = matrix.map(m => m.values[i]).filter(isFinite);
+    profile.push(col.length ? median(col) : NaN);
+    q1.push(col.length ? quantile(col, 0.25) : NaN);
+    q3.push(col.length ? quantile(col, 0.75) : NaN);
+  }
+  return { binMin, nBins, days, matrix, profile, q1, q3, hours: Array.from({ length: nBins }, (_, i) => (i + 0.5) * binMin / 60) };
+}
+
+/* Média alinhada a evento */
+function eventAligned(rows, eventTimes, preMin, postMin, binMin, normalize) {
+  preMin = preMin || 60; postMin = postMin || 180; binMin = binMin || 10;
+  const nBins = Math.round((preMin + postMin) / binMin) + 1;
+  const offsets = Array.from({ length: nBins }, (_, i) => -preMin + i * binMin);
+  const trials = [];
+  eventTimes.forEach(et => {
+    const arr = new Array(nBins).fill(NaN);
+    rows.forEach(r => {
+      const dm = (r.t - et) / 60000;
+      if (dm < -preMin - binMin / 2 || dm > postMin + binMin / 2) return;
+      const i = Math.round((dm + preMin) / binMin);
+      if (i >= 0 && i < nBins) arr[i] = r.lfp;
+    });
+    if (arr.filter(isFinite).length >= nBins * 0.4) {
+      if (normalize) {
+        const base = arr.slice(0, Math.round(preMin / binMin)).filter(isFinite);
+        const bm = median(base);
+        if (isFinite(bm) && bm !== 0) for (let i = 0; i < nBins; i++) arr[i] = 100 * arr[i] / bm;
+      }
+      trials.push({ t: et, values: arr });
+    }
+  });
+  const m = [], lo = [], hi = [];
+  for (let i = 0; i < nBins; i++) {
+    const col = trials.map(t => t.values[i]).filter(isFinite);
+    m.push(col.length ? median(col) : NaN);
+    lo.push(col.length ? quantile(col, 0.25) : NaN);
+    hi.push(col.length ? quantile(col, 0.75) : NaN);
+  }
+  return { offsets, trials, median: m, q1: lo, q3: hi, nTrials: trials.length };
+}
+
+/* Teste de permutação para comparar duas curvas/amostras */
+function permutationTest(a, b, nPerm) {
+  nPerm = nPerm || 5000;
+  const obs = Math.abs(mean(a) - mean(b));
+  const pool = a.concat(b); let count = 0;
+  for (let i = 0; i < nPerm; i++) {
+    const s = pool.slice();
+    for (let j = s.length - 1; j > 0; j--) { const k = (Math.random() * (j + 1)) | 0;[s[j], s[k]] = [s[k], s[j]]; }
+    if (Math.abs(mean(s.slice(0, a.length)) - mean(s.slice(a.length))) >= obs) count++;
+  }
+  return { observed: obs, p: (count + 1) / (nPerm + 1), nPerm };
+}
+
+/* ECDF e proporções vs limiares de aDBS */
+function thresholdSummary(vals, lower, upper) {
+  const v = vals.filter(isFinite);
+  const below = v.filter(x => x < lower).length, above = v.filter(x => x > upper).length;
+  return {
+    n: v.length,
+    belowPct: 100 * below / v.length,
+    betweenPct: 100 * (v.length - below - above) / v.length,
+    abovePct: 100 * above / v.length,
+    median: median(v), q1: quantile(v, 0.25), q3: quantile(v, 0.75),
+    p10: quantile(v, 0.1), p90: quantile(v, 0.9)
+  };
+}
+function histogram(vals, nBins) {
+  const v = vals.filter(isFinite); if (!v.length) return null;
+  nBins = nBins || 40;
+  const lo = Math.min(...v), hi = Math.max(...v), w = (hi - lo) / nBins || 1;
+  const counts = new Array(nBins).fill(0);
+  v.forEach(x => counts[Math.min(nBins - 1, Math.floor((x - lo) / w))]++);
+  return { lo, hi, width: w, counts, centers: counts.map((_, i) => lo + (i + 0.5) * w), n: v.length };
+}
+function ecdf(vals) {
+  const v = vals.filter(isFinite).sort((a, b) => a - b);
+  return { x: v, y: v.map((_, i) => (i + 1) / v.length) };
+}
+
+/* ======================================================================== */
+const API = {
+  parsePercept, MODALITIES, BANDS, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId,
+  fft, nextPow2, welchPSD, spectrogram, bandpassFFT, hilbertEnvelope, detectBursts, fitAperiodic,
+  ecgTemplateSubtract, bandPower, bandTable, bandOf,
+  mean, median, sd, variance, quantile, mad, removeOutliersMAD, linreg, pearson,
+  cosinor, cosinorBootstrap, rayleigh, varianceByHour, diurnalProfile, eventAligned,
+  permutationTest, thresholdSummary, histogram, ecdf, fPValue, tPValue, normCDF
+};
+if (typeof module !== 'undefined' && module.exports) module.exports = API;
+root.PerceptCore = API;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+</script>
+<script>/* ==========================================================================
+   PERCEPT LFP STUDIO — camada gráfica (Canvas 2D, sem dependências)
+   ========================================================================== */
+(function (root) {
+'use strict';
+
+/* ------------------------------------------------------------ colormaps  */
+function ramp(stops) {
+  return t => {
+    t = Math.max(0, Math.min(1, t));
+    const n = stops.length - 1, i = Math.min(n - 1, Math.floor(t * n)), f = t * n - i;
+    const a = stops[i], b = stops[i + 1];
+    return `rgb(${Math.round(a[0] + (b[0] - a[0]) * f)},${Math.round(a[1] + (b[1] - a[1]) * f)},${Math.round(a[2] + (b[2] - a[2]) * f)})`;
+  };
+}
+const CMAPS = {
+  viridis: ramp([[68, 1, 84], [72, 40, 120], [62, 74, 137], [49, 104, 142], [38, 130, 142],
+    [31, 158, 137], [53, 183, 121], [109, 205, 89], [180, 222, 44], [253, 231, 37]]),
+  magma: ramp([[0, 0, 4], [28, 16, 68], [79, 18, 123], [129, 37, 129], [181, 54, 122],
+    [229, 80, 100], [251, 135, 97], [254, 194, 135], [252, 253, 191]]),
+  ice: ramp([[8, 24, 44], [17, 61, 92], [24, 104, 128], [46, 148, 148], [110, 188, 168],
+    [186, 219, 199], [240, 244, 240]]),
+  divergent: ramp([[33, 62, 110], [72, 116, 166], [146, 180, 210], [238, 238, 238],
+    [230, 172, 150], [190, 96, 80], [130, 30, 40]])
+};
+
+/* ------------------------------------------------------------ formatação */
+function fmt(v, d) {
+  if (!isFinite(v)) return '—';
+  const a = Math.abs(v);
+  if (a !== 0 && (a < 1e-3 || a >= 1e6)) return v.toExponential(d == null ? 1 : d);
+  return v.toFixed(d == null ? (a < 1 ? 2 : a < 100 ? 1 : 0) : d);
+}
+function niceTicks(lo, hi, target) {
+  target = target || 6;
+  if (!isFinite(lo) || !isFinite(hi) || lo === hi) return [lo];
+  const span = hi - lo, raw = span / target, mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const norm = raw / mag;
+  const step = (norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10) * mag;
+  const out = []; let t = Math.ceil(lo / step) * step;
+  while (t <= hi + step * 1e-6) { out.push(Math.abs(t) < step * 1e-9 ? 0 : t); t += step; }
+  return out;
+}
+function logTicks(lo, hi) {
+  const out = [];
+  for (let e = Math.floor(Math.log10(lo)); e <= Math.ceil(Math.log10(hi)); e++)
+    for (const m of [1, 2, 5]) { const v = m * Math.pow(10, e); if (v >= lo && v <= hi) out.push(v); }
+  return out;
+}
+
+/* ============================================================== CHART ==== */
+class Chart {
+  constructor(canvas, o) {
+    o = o || {};
+    this.c = canvas;
+    this.dpr = Math.min(root.devicePixelRatio || 1, 2);
+    const rect = canvas.getBoundingClientRect();
+    this.w = o.width || rect.width || 640;
+    this.h = o.height || rect.height || 300;
+    canvas.width = this.w * this.dpr; canvas.height = this.h * this.dpr;
+    canvas.style.width = this.w + 'px'; canvas.style.height = this.h + 'px';
+    this.ctx = canvas.getContext('2d');
+    this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    this.pad = Object.assign({ l: 58, r: 16, t: 22, b: 40 }, o.pad);
+    this.xlim = o.xlim || [0, 1]; this.ylim = o.ylim || [0, 1];
+    this.xlog = !!o.xlog; this.ylog = !!o.ylog;
+    this.xlabel = o.xlabel || ''; this.ylabel = o.ylabel || ''; this.title = o.title || '';
+    this.theme = Object.assign({
+      ink: '#0E1A24', muted: '#5C7284', rule: '#C4D0D9', grid: '#E1E8ED',
+      panel: '#FFFFFF', mono: '11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
+    }, o.theme);
+    this.ctx.fillStyle = this.theme.panel;
+    this.ctx.fillRect(0, 0, this.w, this.h);
+    this._legend = [];
+  }
+  get x0() { return this.pad.l; }
+  get x1() { return this.w - this.pad.r; }
+  get y0() { return this.h - this.pad.b; }
+  get y1() { return this.pad.t; }
+  X(v) {
+    if (this.xlog) {
+      const a = Math.log10(Math.max(this.xlim[0], 1e-12)), b = Math.log10(this.xlim[1]);
+      return this.x0 + (Math.log10(Math.max(v, 1e-12)) - a) / (b - a) * (this.x1 - this.x0);
+    }
+    return this.x0 + (v - this.xlim[0]) / (this.xlim[1] - this.xlim[0]) * (this.x1 - this.x0);
+  }
+  Y(v) {
+    if (this.ylog) {
+      const a = Math.log10(Math.max(this.ylim[0], 1e-12)), b = Math.log10(this.ylim[1]);
+      return this.y0 - (Math.log10(Math.max(v, 1e-12)) - a) / (b - a) * (this.y0 - this.y1);
+    }
+    return this.y0 - (v - this.ylim[0]) / (this.ylim[1] - this.ylim[0]) * (this.y0 - this.y1);
+  }
+  clip(on) {
+    const x = this.ctx;
+    if (on) { x.save(); x.beginPath(); x.rect(this.x0, this.y1, this.x1 - this.x0, this.y0 - this.y1); x.clip(); }
+    else x.restore();
+  }
+  axes(o) {
+    o = o || {};
+    const x = this.ctx, th = this.theme;
+    x.font = th.mono; x.lineWidth = 1;
+    const xt = o.xticks || (this.xlog ? logTicks(this.xlim[0], this.xlim[1]) : niceTicks(this.xlim[0], this.xlim[1], o.nx || 6));
+    const yt = o.yticks || (this.ylog ? logTicks(this.ylim[0], this.ylim[1]) : niceTicks(this.ylim[0], this.ylim[1], o.ny || 5));
+    x.strokeStyle = th.grid;
+    x.beginPath();
+    if (o.grid !== false) {
+      xt.forEach(t => { const px = Math.round(this.X(t)) + .5; x.moveTo(px, this.y1); x.lineTo(px, this.y0); });
+      yt.forEach(t => { const py = Math.round(this.Y(t)) + .5; x.moveTo(this.x0, py); x.lineTo(this.x1, py); });
+    }
+    x.stroke();
+    x.strokeStyle = th.rule; x.beginPath();
+    x.moveTo(this.x0, Math.round(this.y0) + .5); x.lineTo(this.x1, Math.round(this.y0) + .5);
+    x.moveTo(Math.round(this.x0) + .5, this.y0); x.lineTo(Math.round(this.x0) + .5, this.y1);
+    x.stroke();
+    x.fillStyle = th.muted; x.textAlign = 'center'; x.textBaseline = 'top';
+    xt.forEach(t => x.fillText(o.xfmt ? o.xfmt(t) : fmt(t), this.X(t), this.y0 + 6));
+    x.textAlign = 'right'; x.textBaseline = 'middle';
+    yt.forEach(t => x.fillText(o.yfmt ? o.yfmt(t) : fmt(t), this.x0 - 7, this.Y(t)));
+    x.fillStyle = th.ink;
+    if (this.xlabel) { x.textAlign = 'center'; x.textBaseline = 'bottom'; x.fillText(this.xlabel, (this.x0 + this.x1) / 2, this.h - 3); }
+    if (this.ylabel) {
+      x.save(); x.translate(11, (this.y0 + this.y1) / 2); x.rotate(-Math.PI / 2);
+      x.textAlign = 'center'; x.textBaseline = 'top'; x.fillText(this.ylabel, 0, 0); x.restore();
+    }
+    if (this.title) {
+      x.textAlign = 'left'; x.textBaseline = 'bottom';
+      x.font = '600 11.5px ui-monospace, SFMono-Regular, Menlo, monospace';
+      x.fillStyle = th.ink; x.fillText(this.title, this.x0, this.y1 - 7);
+    }
+    return this;
+  }
+  line(xs, ys, o) {
+    o = o || {}; const x = this.ctx; this.clip(true);
+    x.beginPath(); x.strokeStyle = o.color || '#000'; x.lineWidth = o.width || 1.4;
+    x.lineJoin = 'round'; x.lineCap = 'round';
+    if (o.dash) x.setLineDash(o.dash);
+    let started = false;
+    for (let i = 0; i < xs.length; i++) {
+      const vy = ys[i];
+      if (!isFinite(vy) || !isFinite(xs[i]) || (this.ylog && vy <= 0)) { started = false; continue; }
+      const px = this.X(xs[i]), py = this.Y(vy);
+      if (!started) { x.moveTo(px, py); started = true; } else x.lineTo(px, py);
+    }
+    x.stroke(); x.setLineDash([]); this.clip(false);
+    if (o.label) this._legend.push({ label: o.label, color: o.color, dash: o.dash });
+    return this;
+  }
+  area(xs, lo, hi, o) {
+    o = o || {}; const x = this.ctx; this.clip(true);
+    x.beginPath(); let started = false;
+    for (let i = 0; i < xs.length; i++) {
+      if (!isFinite(hi[i])) continue;
+      const px = this.X(xs[i]), py = this.Y(hi[i]);
+      if (!started) { x.moveTo(px, py); started = true; } else x.lineTo(px, py);
+    }
+    for (let i = xs.length - 1; i >= 0; i--) {
+      if (!isFinite(lo[i])) continue;
+      x.lineTo(this.X(xs[i]), this.Y(lo[i]));
+    }
+    x.closePath();
+    x.globalAlpha = o.alpha == null ? .18 : o.alpha;
+    x.fillStyle = o.color || '#888'; x.fill(); x.globalAlpha = 1;
+    this.clip(false);
+    if (o.label) this._legend.push({ label: o.label, color: o.color, swatch: 'area' });
+    return this;
+  }
+  bars(centers, values, o) {
+    o = o || {}; const x = this.ctx; this.clip(true);
+    const w = o.width || (this.X(centers[1]) - this.X(centers[0])) * .8 || 8;
+    const base = this.Y(o.base == null ? Math.max(this.ylim[0], 0) : o.base);
+    centers.forEach((c, i) => {
+      if (!isFinite(values[i])) return;
+      x.fillStyle = typeof o.color === 'function' ? o.color(values[i], i) : (o.color || '#666');
+      const px = this.X(c) - w / 2, py = this.Y(values[i]);
+      x.fillRect(px, Math.min(py, base), w, Math.abs(base - py) || 1);
+    });
+    this.clip(false);
+    if (o.label) this._legend.push({ label: o.label, color: typeof o.color === 'function' ? '#666' : o.color, swatch: 'area' });
+    return this;
+  }
+  scatter(xs, ys, o) {
+    o = o || {}; const x = this.ctx; this.clip(true);
+    const r = o.size || 2.6;
+    for (let i = 0; i < xs.length; i++) {
+      if (!isFinite(xs[i]) || !isFinite(ys[i])) continue;
+      x.beginPath();
+      x.fillStyle = typeof o.color === 'function' ? o.color(i) : (o.color || '#333');
+      x.globalAlpha = o.alpha == null ? .75 : o.alpha;
+      x.arc(this.X(xs[i]), this.Y(ys[i]), r, 0, 6.284); x.fill();
+    }
+    x.globalAlpha = 1; this.clip(false);
+    if (o.label) this._legend.push({ label: o.label, color: typeof o.color === 'function' ? '#333' : o.color });
+    return this;
+  }
+  /* matrix: array de linhas (cada linha = array de valores). rows→y, cols→x */
+  heat(matrix, o) {
+    o = o || {};
+    const rows = matrix.length, cols = matrix[0].length;
+    const cm = CMAPS[o.cmap || 'viridis'];
+    let zmin = o.zmin, zmax = o.zmax;
+    if (zmin == null || zmax == null) {
+      let mn = Infinity, mx = -Infinity;
+      for (const r of matrix) for (const v of r) if (isFinite(v)) { if (v < mn) mn = v; if (v > mx) mx = v; }
+      zmin = zmin == null ? mn : zmin; zmax = zmax == null ? mx : zmax;
+    }
+    const off = document.createElement('canvas');
+    off.width = cols; off.height = rows;
+    const octx = off.getContext('2d');
+    const img = octx.createImageData(cols, rows);
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+      const v = matrix[r][c], k = (r * cols + c) * 4;
+      if (!isFinite(v)) { img.data[k + 3] = 0; continue; }
+      const t = (v - zmin) / (zmax - zmin || 1);
+      const rgb = cm(t).match(/\d+/g);
+      img.data[k] = +rgb[0]; img.data[k + 1] = +rgb[1]; img.data[k + 2] = +rgb[2]; img.data[k + 3] = 255;
+    }
+    octx.putImageData(img, 0, 0);
+    const x = this.ctx; this.clip(true);
+    x.imageSmoothingEnabled = o.smooth !== false;
+    x.drawImage(off, this.x0, this.y1, this.x1 - this.x0, this.y0 - this.y1);
+    this.clip(false);
+    this._z = { zmin, zmax, cmap: o.cmap || 'viridis' };
+    return this;
+  }
+  colorbar(o) {
+    o = o || {};
+    const z = this._z || {}; const x = this.ctx;
+    const bw = 10, bx = this.x1 + 6, by0 = this.y1, by1 = this.y0;
+    const cm = CMAPS[z.cmap || 'viridis'];
+    for (let py = by0; py < by1; py++) {
+      x.fillStyle = cm(1 - (py - by0) / (by1 - by0));
+      x.fillRect(bx, py, bw, 1);
+    }
+    x.strokeStyle = this.theme.rule; x.strokeRect(bx + .5, by0 + .5, bw, by1 - by0);
+    x.fillStyle = this.theme.muted; x.font = this.theme.mono;
+    x.textAlign = 'left'; x.textBaseline = 'top'; x.fillText(fmt(z.zmax), bx + bw + 4, by0);
+    x.textBaseline = 'bottom'; x.fillText(fmt(z.zmin), bx + bw + 4, by1);
+    if (o.label) {
+      x.save(); x.translate(bx + bw + 34, (by0 + by1) / 2); x.rotate(-Math.PI / 2);
+      x.textAlign = 'center'; x.textBaseline = 'top'; x.fillText(o.label, 0, 0); x.restore();
+    }
+    return this;
+  }
+  vline(v, o) {
+    o = o || {}; const x = this.ctx; this.clip(true);
+    x.beginPath(); x.strokeStyle = o.color || '#999'; x.lineWidth = o.width || 1;
+    if (o.dash !== null) x.setLineDash(o.dash || [4, 3]);
+    const px = Math.round(this.X(v)) + .5; x.moveTo(px, this.y1); x.lineTo(px, this.y0); x.stroke();
+    x.setLineDash([]);
+    if (o.label) {
+      x.fillStyle = o.color || '#999'; x.font = this.theme.mono;
+      x.textAlign = o.align || 'left'; x.textBaseline = 'top';
+      x.fillText(o.label, px + (o.align === 'right' ? -4 : 4), this.y1 + (o.dy || 2));
+    }
+    this.clip(false); return this;
+  }
+  hline(v, o) {
+    o = o || {}; const x = this.ctx; this.clip(true);
+    x.beginPath(); x.strokeStyle = o.color || '#999'; x.lineWidth = o.width || 1;
+    x.setLineDash(o.dash || [4, 3]);
+    const py = Math.round(this.Y(v)) + .5; x.moveTo(this.x0, py); x.lineTo(this.x1, py); x.stroke();
+    x.setLineDash([]);
+    if (o.label) {
+      x.fillStyle = o.color || '#999'; x.font = this.theme.mono;
+      x.textAlign = 'right'; x.textBaseline = 'bottom'; x.fillText(o.label, this.x1 - 3, py - 2);
+    }
+    this.clip(false); return this;
+  }
+  span(a, b, o) {
+    o = o || {}; const x = this.ctx; this.clip(true);
+    x.globalAlpha = o.alpha == null ? .12 : o.alpha;
+    x.fillStyle = o.color || '#888';
+    x.fillRect(this.X(a), this.y1, this.X(b) - this.X(a), this.y0 - this.y1);
+    x.globalAlpha = 1;
+    if (o.label) {
+      x.fillStyle = o.color || '#888'; x.font = this.theme.mono;
+      x.textAlign = 'center'; x.textBaseline = 'top';
+      x.fillText(o.label, (this.X(a) + this.X(b)) / 2, this.y1 + 2);
+    }
+    this.clip(false); return this;
+  }
+  marker(vx, vy, o) {
+    o = o || {}; const x = this.ctx;
+    x.fillStyle = o.color || '#c00'; x.beginPath();
+    const px = this.X(vx), py = this.Y(vy), s = o.size || 5;
+    if (o.shape === 'tri') { x.moveTo(px, py - 2); x.lineTo(px - s, py - s * 2 - 2); x.lineTo(px + s, py - s * 2 - 2); }
+    else x.arc(px, py, s, 0, 6.284);
+    x.closePath(); x.fill();
+    if (o.label) {
+      x.font = '600 10.5px ui-monospace, SFMono-Regular, Menlo, monospace';
+      x.textAlign = o.align || 'left'; x.textBaseline = 'bottom';
+      x.fillText(o.label, px + (o.align === 'right' ? -8 : 8), py - 4);
+    }
+    return this;
+  }
+  text(px, py, s, o) {
+    o = o || {}; const x = this.ctx;
+    x.font = o.font || this.theme.mono; x.fillStyle = o.color || this.theme.muted;
+    x.textAlign = o.align || 'left'; x.textBaseline = o.baseline || 'top';
+    x.fillText(s, px, py); return this;
+  }
+  legend(o) {
+    o = o || {};
+    if (!this._legend.length) return this;
+    const x = this.ctx; x.font = this.theme.mono;
+    const items = this._legend;
+    const wid = Math.max(...items.map(i => x.measureText(i.label).width)) + 26;
+    const lh = 14, bx = o.x != null ? o.x : this.x1 - wid - 8, by = o.y != null ? o.y : this.y1 + 6;
+    x.globalAlpha = .92; x.fillStyle = this.theme.panel;
+    x.fillRect(bx - 5, by - 4, wid + 10, items.length * lh + 8);
+    x.globalAlpha = 1; x.strokeStyle = this.theme.grid;
+    x.strokeRect(bx - 5.5, by - 4.5, wid + 10, items.length * lh + 8);
+    items.forEach((it, i) => {
+      const yy = by + i * lh + lh / 2;
+      x.strokeStyle = it.color; x.fillStyle = it.color; x.lineWidth = 2;
+      if (it.swatch === 'area') { x.globalAlpha = .3; x.fillRect(bx, yy - 4, 16, 8); x.globalAlpha = 1; }
+      else {
+        x.beginPath(); if (it.dash) x.setLineDash(it.dash);
+        x.moveTo(bx, yy); x.lineTo(bx + 16, yy); x.stroke(); x.setLineDash([]);
+      }
+      x.fillStyle = this.theme.ink; x.textAlign = 'left'; x.textBaseline = 'middle';
+      x.fillText(it.label, bx + 21, yy);
+    });
+    return this;
+  }
+}
+
+/* ====================================================== GRÁFICO POLAR ==== */
+function polarBars(canvas, values, o) {
+  o = o || {};
+  const dpr = Math.min(root.devicePixelRatio || 1, 2);
+  const W = o.width || canvas.getBoundingClientRect().width || 320;
+  const H = o.height || W;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  const x = canvas.getContext('2d');
+  x.setTransform(dpr, 0, 0, dpr, 0, 0);
+  x.fillStyle = o.panel || '#fff'; x.fillRect(0, 0, W, H);
+  const cx = W / 2, cy = H / 2 + 4, R = Math.min(W, H) / 2 - 30;
+  const vals = values.filter(isFinite);
+  const vmin = o.rmin != null ? o.rmin : Math.min(...vals);
+  const vmax = o.rmax != null ? o.rmax : Math.max(...vals);
+  const r0 = R * .32;
+  const rad = v => r0 + (v - vmin) / (vmax - vmin || 1) * (R - r0);
+  /* grade horária */
+  x.strokeStyle = o.grid || '#E1E8ED'; x.fillStyle = o.muted || '#5C7284';
+  x.font = '10.5px ui-monospace, SFMono-Regular, Menlo, monospace';
+  x.textAlign = 'center'; x.textBaseline = 'middle';
+  for (let h = 0; h < 24; h += 3) {
+    const a = (h / 24) * 2 * Math.PI - Math.PI / 2;
+    x.beginPath(); x.moveTo(cx + Math.cos(a) * r0, cy + Math.sin(a) * r0);
+    x.lineTo(cx + Math.cos(a) * R, cy + Math.sin(a) * R); x.stroke();
+    x.fillText(String(h).padStart(2, '0') + 'h', cx + Math.cos(a) * (R + 15), cy + Math.sin(a) * (R + 15));
+  }
+  [r0, (r0 + R) / 2, R].forEach(r => { x.beginPath(); x.arc(cx, cy, r, 0, 6.284); x.stroke(); });
+  /* faixa noturna 22h–06h */
+  if (o.night !== false) {
+    x.globalAlpha = .10; x.fillStyle = o.nightColor || '#1B3A5C';
+    x.beginPath(); x.moveTo(cx, cy);
+    x.arc(cx, cy, R, (22 / 24) * 2 * Math.PI - Math.PI / 2, (30 / 24) * 2 * Math.PI - Math.PI / 2);
+    x.closePath(); x.fill(); x.globalAlpha = 1;
+  }
+  /* barras */
+  const n = values.length, aw = (2 * Math.PI / n) * .82;
+  values.forEach((v, i) => {
+    if (!isFinite(v)) return;
+    const a = (i / n) * 2 * Math.PI - Math.PI / 2;
+    x.beginPath();
+    x.fillStyle = typeof o.color === 'function' ? o.color(v, i) : (o.color || '#1B4A72');
+    x.arc(cx, cy, rad(v), a - aw / 2, a + aw / 2);
+    x.arc(cx, cy, r0, a + aw / 2, a - aw / 2, true);
+    x.closePath(); x.fill();
+  });
+  /* vetor de acrofase */
+  if (o.acrophaseHours != null && isFinite(o.acrophaseHours)) {
+    const a = (o.acrophaseHours / 24) * 2 * Math.PI - Math.PI / 2;
+    x.strokeStyle = o.acroColor || '#9C3050'; x.lineWidth = 2.4;
+    x.beginPath(); x.moveTo(cx, cy); x.lineTo(cx + Math.cos(a) * R * .95, cy + Math.sin(a) * R * .95); x.stroke();
+    x.beginPath(); x.arc(cx + Math.cos(a) * R * .95, cy + Math.sin(a) * R * .95, 3.5, 0, 6.284);
+    x.fillStyle = o.acroColor || '#9C3050'; x.fill();
+  }
+  x.fillStyle = o.ink || '#0E1A24';
+  x.font = '600 11.5px ui-monospace, SFMono-Regular, Menlo, monospace';
+  x.textAlign = 'center'; x.textBaseline = 'middle';
+  if (o.center) x.fillText(o.center, cx, cy);
+  if (o.title) { x.textAlign = 'left'; x.textBaseline = 'top'; x.fillText(o.title, 8, 6); }
+  return canvas;
+}
+
+/* ------------------------------------------------------------- exportar  */
+function downloadCanvas(canvas, name) {
+  const a = document.createElement('a');
+  a.download = name.endsWith('.png') ? name : name + '.png';
+  a.href = canvas.toDataURL('image/png');
+  a.click();
+}
+function downloadText(text, name, mime) {
+  const blob = new Blob([text], { type: mime || 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.download = name; a.href = URL.createObjectURL(blob); a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+function toCSV(rows, headers) {
+  const esc = v => (v == null || (typeof v === 'number' && !isFinite(v))) ? ''
+    : (/[",;\n]/.test(String(v)) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v));
+  const h = headers || Object.keys(rows[0] || {});
+  return [h.join(','), ...rows.map(r => h.map(k => esc(r[k])).join(','))].join('\n');
+}
+
+const API = { Chart, polarBars, CMAPS, fmt, niceTicks, logTicks, downloadCanvas, downloadText, toCSV };
+if (typeof module !== 'undefined' && module.exports) module.exports = API;
+root.PerceptPlot = API;
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+</script>
+<script>/* ==========================================================================
+   PERCEPT LFP STUDIO — aplicação
+   ========================================================================== */
+(function () {
+'use strict';
+const C = window.PerceptCore, P = window.PerceptPlot;
+const $ = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
+const el = (tag, attrs, kids) => {
+  const n = document.createElement(tag);
+  if (attrs) for (const k in attrs) {
+    if (k === 'class') n.className = attrs[k];
+    else if (k === 'html') n.innerHTML = attrs[k];
+    else if (k === 'text') n.textContent = attrs[k];
+    else if (k.startsWith('on')) n.addEventListener(k.slice(2), attrs[k]);
+    else if (attrs[k] != null) n.setAttribute(k, attrs[k]);
+  }
+  (kids || []).forEach(k => n.appendChild(typeof k === 'string' ? document.createTextNode(k) : k));
+  return n;
+};
+const f = P.fmt;
+const COL = {
+  Left: '#1B4A72', Right: '#9C3050', ink: '#0E1A24', muted: '#5C7284',
+  rule: '#C7D3DC', grid: '#E1E8ED', accent: '#0C6E6B', warn: '#A8621B', ok: '#2C7A4B'
+};
+const hcol = h => COL[h] || COL.accent;
+const hname = h => h === 'Left' ? 'esquerdo' : h === 'Right' ? 'direito' : h;
+
+/* ======================================================== estado global == */
+const S = {
+  files: [],            // [{name, parsed}]
+  tzOverride: null,     // minutos
+  subject: null,        // idHash do registro ativo
+  opts: {},             // opções por figura
+};
+
+/* Agrupa arquivos por registro. Arquivos de pessoas diferentes NUNCA são
+   agregados: misturar séries de pacientes distintos invalidaria toda análise. */
+function subjects() {
+  const map = new Map();
+  S.files.forEach(fl => {
+    const k = fl.parsed.patient.idHash + '|' + (fl.parsed.device.snHash || '');
+    if (!map.has(k)) map.set(k, { key: k, idHash: fl.parsed.patient.idHash, files: [], implant: fl.parsed.device.implantDate });
+    map.get(k).files.push(fl);
+  });
+  return Array.from(map.values());
+}
+function activeSubject() {
+  const subs = subjects();
+  if (!subs.length) return null;
+  return subs.find(s => s.key === S.subject) || subs[0];
+}
+function activeFiles() { const s = activeSubject(); return s ? s.files : []; }
+
+function offMin() {
+  if (S.tzOverride != null) return S.tzOverride;
+  for (const fl of activeFiles()) if (fl.parsed.meta.utcOffsetMin != null) return fl.parsed.meta.utcOffsetMin;
+  return -180;
+}
+
+/* Datasets agregados (somente dentro do registro ativo) -------------------- */
+function ds() {
+  const all = activeFiles().map(x => x.parsed);
+  const merge = key => {
+    const out = {};
+    all.forEach(p => Object.keys(p[key] || {}).forEach(h => {
+      out[h] = (out[h] || []).concat(p[key][h]);
+    }));
+    Object.keys(out).forEach(h => {
+      const seen = new Set(); const rows = [];
+      out[h].sort((a, b) => a.t - b.t).forEach(r => { if (!seen.has(r.t)) { seen.add(r.t); rows.push(r); } });
+      out[h] = rows;
+    });
+    return out;
+  };
+  const cat = key => all.flatMap(p => (p[key] || []).map(r => Object.assign({ _file: p.fileName }, r)));
+  return {
+    all,
+    trend: merge('trend'),
+    montage: cat('montage'), montageTD: cat('montageTD'),
+    bsTimeDomain: cat('bsTimeDomain'), bsLfp: cat('bsLfp'),
+    snapshots: cat('snapshots'), signalCheck: cat('signalCheck'), sensingSetup: cat('sensingSetup'),
+    eventLogs: cat('eventLogs'),
+    impedance: (all.find(p => Object.keys(p.impedance || {}).length) || {}).impedance || {},
+    thresholds: (() => {
+      const t = {};
+      all.forEach(p => (p.sensingSetup || []).forEach(s => {
+        if (isFinite(s.lowerThr)) t[s.hemisphere] = { lower: s.lowerThr, upper: s.upperThr, centerFreq: s.centerFreq };
+      }));
+      all.forEach(p => (p.bsLfp || []).forEach(b => Object.keys(b.therapy.perHemi || {}).forEach(h => {
+        const x = b.therapy.perHemi[h];
+        if (isFinite(x.lowerThr) && !t[h]) t[h] = { lower: x.lowerThr, upper: x.upperThr, centerFreq: x.centerFreq };
+      })));
+      return t;
+    })(),
+    patientEvents: all.flatMap(p => p.patientEvents || []),
+    eventSummary: all.map(p => p.eventSummary).filter(Boolean)
+  };
+}
+
+/* ============================================================ controles == */
+function ctrlSelect(label, options, value, onChange) {
+  const s = el('select', { onchange: e => onChange(e.target.value) });
+  options.forEach(o => {
+    const v = typeof o === 'string' ? o : o.value, t = typeof o === 'string' ? o : o.label;
+    const op = el('option', { value: v, text: t });
+    if (String(v) === String(value)) op.selected = true;
+    s.appendChild(op);
+  });
+  return el('label', { class: 'field' }, [label, s]);
+}
+function ctrlNumber(label, value, min, max, step, onChange) {
+  const i = el('input', { type: 'number', value, min, max, step, onchange: e => onChange(parseFloat(e.target.value)) });
+  return el('label', { class: 'field' }, [label, i]);
+}
+function ctrlCheck(label, value, onChange) {
+  const i = el('input', { type: 'checkbox', onchange: e => onChange(e.target.checked) });
+  i.checked = !!value;
+  return el('label', { class: 'field' }, [i, label]);
+}
+function opt(figId, key, def) {
+  S.opts[figId] = S.opts[figId] || {};
+  if (S.opts[figId][key] === undefined) S.opts[figId][key] = def;
+  return S.opts[figId][key];
+}
+function setOpt(figId, key, v) { S.opts[figId] = S.opts[figId] || {}; S.opts[figId][key] = v; renderFigure(figId); }
+
+function plotBox(parent, h) {
+  const box = el('div', { class: 'plotbox' });
+  const cv = el('canvas');
+  box.appendChild(cv); parent.appendChild(box);
+  const w = parent.clientWidth || 640;
+  cv.style.width = '100%'; cv.style.height = (h || 260) + 'px';
+  return { canvas: cv, width: Math.max(280, (box.clientWidth || w) - 12), height: h || 260 };
+}
+function exportRow(items) {
+  const d = el('div', { class: 'ctrls' });
+  items.forEach(i => d.appendChild(el('button', { class: 'btn', onclick: i.fn, text: i.label })));
+  return d;
+}
+function table(headers, rows) {
+  const t = el('table', { class: 'data' });
+  t.appendChild(el('thead', {}, [el('tr', {}, headers.map(h => el('th', { text: h })))]));
+  const tb = el('tbody');
+  rows.forEach(r => tb.appendChild(el('tr', {}, r.map(c =>
+    typeof c === 'object' && c !== null && c.html !== undefined
+      ? el('td', { class: c.cls || '', html: c.html })
+      : el('td', { class: (typeof c === 'number' ? 'num' : ''), text: c == null ? '—' : (typeof c === 'number' ? f(c) : String(c)) })))));
+  t.appendChild(tb); return t;
+}
+const pTag = p => p == null || !isFinite(p) ? '—'
+  : (p < 0.001 ? '<0,001' : p.toFixed(3)).replace('.', ',');
+const pHtml = p => `<span class="${p < 0.05 ? 'sig' : 'ns'}">${pTag(p)}</span>`;
+
+/* ======================================================== FIGURAS ======== */
+const FIGURES = [
+  /* ------------------------------------------------------------------ F1 */
+  {
+    id: 'F1', title: 'Espectro de potência anotado',
+    sub: 'Signal Test · Survey · Snapshot — escala linear e log-log',
+    has: d => d.sensingSetup.length || d.signalCheck.length || d.montage.length,
+    render(node, d) {
+      const src = [];
+      d.sensingSetup.forEach((s, i) => s.psd && src.push({ value: 'ss' + i, label: `SignalTest ${s.channel} (${s.hemisphere})`, f: s.psd.f, p: s.psd.p, hemi: s.hemisphere, center: s.centerFreq, artifact: s.psd.artifact }));
+      d.signalCheck.forEach((s, i) => src.push({ value: 'sc' + i, label: `SignalCheck ${C.prettyChannel(s.channel)}`, f: s.f, p: s.p, hemi: /LEFT/i.test(s.channel) ? 'Left' : 'Right', artifact: s.artifact }));
+      d.montage.forEach((m, i) => src.push({ value: 'mo' + i, label: `Survey ${m.hemisphere[0]} · ${m.label}`, f: m.f, p: m.mag, hemi: m.hemisphere, artifact: m.artifact }));
+      if (!src.length) return node.appendChild(el('div', { class: 'empty', text: 'Nenhum espectro disponível.' }));
+      const cur = src.find(s => s.value === opt('F1', 'src', src[0].value)) || src[0];
+      const showBands = opt('F1', 'bands', true);
+
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('canal', src, cur.value, v => setOpt('F1', 'src', v)),
+        ctrlCheck('faixas de frequência', showBands, v => setOpt('F1', 'bands', v))
+      ]));
+      const grid = el('div', { class: 'plotgrid two' }); node.appendChild(grid);
+
+      const fmax = 60;
+      const idx = cur.f.map((_, i) => i).filter(i => cur.f[i] <= fmax);
+      const xs = idx.map(i => cur.f[i]), ys = idx.map(i => cur.p[i]);
+      let peakI = 0; ys.forEach((v, i) => { if (xs[i] >= 4 && v > ys[peakI]) peakI = i; });
+
+      /* (a) linear */
+      const b1 = plotBox(grid, 268);
+      const ch1 = new P.Chart(b1.canvas, {
+        width: b1.width, height: b1.height, xlim: [0, fmax], ylim: [0, Math.max(...ys) * 1.22],
+        xlabel: 'frequência (Hz)', ylabel: 'magnitude (µVp/√Hz)', title: '(a) escala linear',
+        pad: { l: 58, r: 14, t: 24, b: 40 }
+      });
+      ch1.axes();
+      if (showBands) C.BANDS.forEach(b => { if (b.lo < fmax) ch1.span(b.lo, Math.min(b.hi, fmax), { color: b.color, alpha: .09, label: b.label }); });
+      if (cur.center) ch1.span(cur.center - 2.5, cur.center + 2.5, { color: COL.warn, alpha: .16 });
+      ch1.line(xs, ys, { color: COL.ink, width: 1.6 });
+      ch1.marker(xs[peakI], ys[peakI], { color: COL.right, shape: 'tri', size: 4.5, label: `${xs[peakI].toFixed(1)} Hz · ${f(ys[peakI], 2)}`, align: xs[peakI] > fmax * .6 ? 'right' : 'left' });
+
+      /* (b) log-log */
+      const pos = idx.filter(i => cur.f[i] >= 1 && cur.p[i] > 0);
+      const lx = pos.map(i => cur.f[i]), ly = pos.map(i => cur.p[i]);
+      const b2 = plotBox(grid, 268);
+      const ch2 = new P.Chart(b2.canvas, {
+        width: b2.width, height: b2.height, xlog: true, ylog: true,
+        xlim: [1, Math.max(...cur.f)], ylim: [Math.max(1e-4, Math.min(...ly) * .7), Math.max(...ly) * 1.5],
+        xlabel: 'frequência (Hz)', ylabel: 'magnitude (log)', title: '(b) escala log-log',
+        pad: { l: 62, r: 14, t: 24, b: 40 }
+      });
+      ch2.axes({ xfmt: v => v >= 1 ? String(v) : v.toFixed(1) });
+      ch2.line(lx, ly, { color: COL.ink, width: 1.6 });
+
+      /* tabela de bandas */
+      const bt = C.bandTable(cur.f, cur.p);
+      node.appendChild(table(['banda', 'faixa', 'potência abs.', 'relativa %', 'pico (Hz)', 'magnitude'],
+        bt.map(b => [{ html: `<span style="color:${b.color};font-weight:600">${b.label} ${b.key}</span>` },
+        `${b.lo}–${b.hi}`, b.absolute, b.relative, b.peakF, b.peakV])));
+
+      node.appendChild(exportRow([
+        { label: '⤓ PNG (a)', fn: () => P.downloadCanvas(b1.canvas, 'F1a_psd_linear') },
+        { label: '⤓ PNG (b)', fn: () => P.downloadCanvas(b2.canvas, 'F1b_psd_loglog') },
+        { label: '⤓ CSV espectro', fn: () => P.downloadText(P.toCSV(cur.f.map((v, i) => ({ frequencia_Hz: v, magnitude: cur.p[i] }))), 'F1_espectro.csv', 'text/csv') }
+      ]));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Método.</b> Espectro nativo do dispositivo (FFT de 256 pontos sobre 250 Hz de amostragem, Δf ≈ 0,977 Hz). ` +
+          `Estado do artefato reportado pelo Percept: <b>${cur.artifact || '—'}</b>. ` +
+          (cur.center ? `Faixa laranja = janela de sensing crônico (${f(cur.center, 1)} ± 2,5 Hz). ` : '') +
+          `A escala log-log é a forma canônica na literatura porque lineariza o componente aperiódico 1/f.`
+      }));
+    }
+  },
+
+  /* ------------------------------------------------------------------ F2 */
+  {
+    id: 'F2', title: 'Decomposição periódico / aperiódico',
+    sub: 'parametrização espectral no espírito do specparam (FOOOF)',
+    has: d => d.sensingSetup.length || d.montage.length || d.bsTimeDomain.length,
+    render(node, d) {
+      const src = [];
+      d.bsTimeDomain.forEach((t, i) => src.push({ value: 'td' + i, label: `Streaming bruto ${t.label} (Welch)`, td: t }));
+      d.montageTD.forEach((t, i) => src.push({ value: 'mtd' + i, label: `Survey bruto ${t.hemisphere[0]}·${t.label} (Welch)`, td: t }));
+      d.sensingSetup.forEach((s, i) => s.psd && src.push({ value: 'ss' + i, label: `SignalTest ${s.channel}`, f: s.psd.f, p: s.psd.p }));
+      d.montage.forEach((m, i) => src.push({ value: 'mo' + i, label: `Survey ${m.hemisphere[0]}·${m.label}`, f: m.f, p: m.mag }));
+      if (!src.length) return node.appendChild(el('div', { class: 'empty', text: 'Nenhum espectro disponível.' }));
+      const cur = src.find(s => s.value === opt('F2', 'src', src[0].value)) || src[0];
+      const fmin = opt('F2', 'fmin', 2), fmax = opt('F2', 'fmax', 95);
+
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('fonte', src, cur.value, v => setOpt('F2', 'src', v)),
+        ctrlNumber('f min', fmin, 1, 20, 0.5, v => setOpt('F2', 'fmin', v)),
+        ctrlNumber('f max', fmax, 30, 100, 5, v => setOpt('F2', 'fmax', v))
+      ]));
+      let ff, pp;
+      if (cur.td) { const w = C.welchPSD(cur.td.data, cur.td.fs, { nperseg: 512, overlap: .5 }); ff = Array.from(w.f); pp = Array.from(w.p); }
+      else { ff = cur.f; pp = cur.p; }
+      const ap = C.fitAperiodic(ff, pp, { fmin, fmax });
+      if (!ap) return node.appendChild(el('div', { class: 'empty', text: 'Dados insuficientes para o ajuste.' }));
+
+      const grid = el('div', { class: 'plotgrid two' }); node.appendChild(grid);
+      const b1 = plotBox(grid, 272);
+      const ch = new P.Chart(b1.canvas, {
+        width: b1.width, height: b1.height, xlog: true, ylog: true,
+        xlim: [fmin, fmax], ylim: [Math.max(1e-5, Math.min(...ap.aperiodic) * .5), Math.max(...ap.observed) * 1.6],
+        xlabel: 'frequência (Hz)', ylabel: 'potência (log)', title: '(a) modelo espectral', pad: { l: 62, r: 14, t: 24, b: 40 }
+      });
+      ch.axes({ xfmt: v => String(v) });
+      ch.area(ap.f, ap.aperiodic, ap.observed.map((v, i) => Math.max(v, ap.aperiodic[i])), { color: COL.accent, alpha: .22, label: 'periódico' });
+      ch.line(ap.f, ap.observed, { color: COL.ink, width: 1.6, label: 'observado' });
+      ch.line(ap.f, ap.aperiodic, { color: COL.muted, width: 1.5, dash: [5, 3], label: `aperiódico (χ=${f(ap.exponent, 2)})` });
+      ch.legend({ x: ch.x0 + 8, y: ch.y1 + 6 });
+
+      const b2 = plotBox(grid, 272);
+      const ch2 = new P.Chart(b2.canvas, {
+        width: b2.width, height: b2.height, xlim: [fmin, Math.min(fmax, 60)],
+        ylim: [Math.min(0, Math.min(...ap.periodic)), Math.max(...ap.periodic) * 1.25],
+        xlabel: 'frequência (Hz)', ylabel: 'potência periódica', title: '(b) componente periódico (resíduo)', pad: { l: 58, r: 14, t: 24, b: 40 }
+      });
+      ch2.axes();
+      C.BANDS.forEach(b => ch2.span(b.lo, Math.min(b.hi, fmax), { color: b.color, alpha: .08, label: b.label }));
+      ch2.hline(0, { color: COL.rule, dash: [2, 2] });
+      ch2.line(ap.f, ap.periodic, { color: COL.accent, width: 1.7 });
+      ap.peaks.slice(0, 3).forEach(pk => ch2.marker(pk.cf, pk.power, { color: COL.right, size: 3.4, label: `${f(pk.cf, 1)}` }));
+
+      node.appendChild(table(['parâmetro', 'valor', 'interpretação'], [
+        ['expoente aperiódico χ', f(ap.exponent, 3), 'inclinação 1/f; associado a balanço E/I'],
+        ['offset', f(ap.offset, 3), 'potência de banda larga (log)'],
+        ['R² do ajuste', f(ap.r2, 3), 'qualidade do modelo aperiódico'],
+        ['picos detectados', ap.peaks.length, ap.peaks.map(p => `${f(p.cf, 1)}Hz(${p.band})`).join(' · ') || '—']
+      ]));
+      node.appendChild(exportRow([
+        { label: '⤓ PNG (a)', fn: () => P.downloadCanvas(b1.canvas, 'F2a_specparam') },
+        { label: '⤓ PNG (b)', fn: () => P.downloadCanvas(b2.canvas, 'F2b_periodico') },
+        { label: '⤓ CSV modelo', fn: () => P.downloadText(P.toCSV(ap.f.map((v, i) => ({ f_Hz: v, observado: ap.observed[i], aperiodico: ap.aperiodic[i], periodico: ap.periodic[i] }))), 'F2_specparam.csv', 'text/csv') }
+      ]));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Método.</b> Regressão robusta iterativa em log-log com exclusão progressiva de resíduos positivos (picos), ` +
+          `seguida de detecção de picos no resíduo com largura a meia-altura. É uma aproximação do algoritmo specparam/FOOOF (Donoghue et al., 2020) ` +
+          `implementada sem dependências; para publicação, confirme os parâmetros com a implementação oficial em Python.`
+      }));
+    }
+  },
+
+  /* ------------------------------------------------------------------ F3 */
+  {
+    id: 'F3', title: 'Integridade de eletrodos',
+    sub: 'impedâncias monopolares e matriz bipolar, bilateral',
+    has: d => Object.keys(d.impedance).length,
+    render(node, d) {
+      const hemis = Object.keys(d.impedance);
+      const labels = ['0', '1a', '1b', '1c', '2a', '2b', '2c', '3'];
+      const grid = el('div', { class: 'plotgrid two' }); node.appendChild(grid);
+
+      const b1 = plotBox(grid, 250);
+      const allv = hemis.flatMap(h => d.impedance[h].mono.map(m => m.ohm));
+      const ch = new P.Chart(b1.canvas, {
+        width: b1.width, height: b1.height, xlim: [-0.6, labels.length - 0.4], ylim: [0, Math.max(...allv) * 1.18],
+        xlabel: 'contato', ylabel: 'impedância monopolar (Ω)', title: '(a) contato vs. case', pad: { l: 62, r: 14, t: 24, b: 40 }
+      });
+      ch.axes({ xticks: labels.map((_, i) => i), xfmt: v => labels[v] || '' });
+      ch.span(-0.6, labels.length - 0.4, { color: COL.ok, alpha: 0 });
+      ch.hline(2000, { color: COL.ok, dash: [3, 3], label: 'referência 2 kΩ' });
+      hemis.forEach((h, hi) => {
+        const vals = labels.map(L => { const m = d.impedance[h].mono.find(x => x.b === L || x.a === L); return m ? m.ohm : NaN; });
+        const w = (ch.X(1) - ch.X(0)) * .38;
+        ch.bars(labels.map((_, i) => i + (hi - (hemis.length - 1) / 2) * w * 1.05), vals,
+          { color: hcol(h), width: w, label: `STN ${hname(h)}` });
+      });
+      ch.legend({ x: ch.x0 + 8, y: ch.y1 + 6 });
+
+      const hSel = opt('F3', 'hemi', hemis[0]);
+      node.appendChild(el('div', { class: 'ctrls' }, [ctrlSelect('matriz bipolar', hemis.map(h => ({ value: h, label: 'STN ' + hname(h) })), hSel, v => setOpt('F3', 'hemi', v))]));
+      const b2 = plotBox(grid, 250);
+      const M = labels.map(() => labels.map(() => NaN));
+      d.impedance[hSel].bipolar.forEach(e => {
+        const i = labels.indexOf(e.a), j = labels.indexOf(e.b);
+        if (i >= 0 && j >= 0) { M[i][j] = e.ohm; M[j][i] = e.ohm; }
+      });
+      const ch2 = new P.Chart(b2.canvas, {
+        width: b2.width, height: b2.height, xlim: [0, labels.length], ylim: [0, labels.length],
+        xlabel: 'contato', ylabel: 'contato', title: `(b) bipolar — STN ${hname(hSel)} (Ω)`, pad: { l: 46, r: 62, t: 24, b: 40 }
+      });
+      ch2.heat(M.slice().reverse(), { cmap: 'ice', smooth: false });
+      ch2.axes({ grid: false, xticks: labels.map((_, i) => i + .5), yticks: labels.map((_, i) => i + .5), xfmt: v => labels[Math.floor(v)] || '', yfmt: v => labels[labels.length - 1 - Math.floor(v)] || '' });
+      ch2.colorbar({ label: 'Ω' });
+
+      const st = (S.files[0] || {}).parsed;
+      const flag = allv.some(v => v > 4000 || v < 500);
+      if (flag) node.appendChild(el('div', {
+        class: 'warnbox', html: `Há contatos fora da faixa habitual (500–2000 Ω). Status reportado pelo dispositivo: <b>${(st && st.impedanceStatus) || '—'}</b>. ` +
+          `Valores altos em contatos segmentados são esperados (área de superfície menor); o que importa é a <b>estabilidade seriada</b> e a ausência de valores extremos (curto &lt;50 Ω, circuito aberto &gt;10 kΩ).`
+      }));
+      node.appendChild(exportRow([
+        { label: '⤓ PNG (a)', fn: () => P.downloadCanvas(b1.canvas, 'F3a_impedancia_mono') },
+        { label: '⤓ PNG (b)', fn: () => P.downloadCanvas(b2.canvas, 'F3b_impedancia_bipolar') },
+        { label: '⤓ CSV', fn: () => P.downloadText(P.toCSV(hemis.flatMap(h => [].concat(
+          d.impedance[h].mono.map(m => ({ hemisferio: h, tipo: 'monopolar', a: m.a, b: m.b, ohm: m.ohm })),
+          d.impedance[h].bipolar.map(m => ({ hemisferio: h, tipo: 'bipolar', a: m.a, b: m.b, ohm: m.ohm }))))), 'F3_impedancias.csv', 'text/csv')
+        }
+      ]));
+    }
+  },
+
+  /* ------------------------------------------------------------------ F4 */
+  {
+    id: 'F4', title: 'Linha do tempo da sessão e parâmetros',
+    sub: 'EventLogs, grupos ativos e configuração de estimulação',
+    has: d => d.eventLogs.length || d.all.some(p => p.groups.length),
+    render(node, d) {
+      const logs = d.eventLogs.filter(e => isFinite(e.t)).sort((a, b) => a.t - b.t);
+      if (logs.length > 1) {
+        const box = plotBox(node, 150);
+        const t0 = logs[0].t, t1 = logs[logs.length - 1].t;
+        const ch = new P.Chart(box.canvas, {
+          width: box.width, height: box.height, xlim: [t0 - (t1 - t0) * .03, t1 + (t1 - t0) * .03], ylim: [0, 1],
+          xlabel: 'data/hora local', title: 'eventos registrados no dispositivo', pad: { l: 20, r: 20, t: 24, b: 42 }
+        });
+        ch.axes({
+          ny: 2, yticks: [], nx: 5,
+          xfmt: v => new Date(v + offMin() * 60000).toISOString().slice(5, 16).replace('T', ' ')
+        });
+        const kinds = Array.from(new Set(logs.map(l => l.kind)));
+        logs.forEach(l => {
+          const y = 0.15 + 0.7 * (kinds.indexOf(l.kind) / Math.max(1, kinds.length - 1));
+          ch.marker(l.t, y, { color: /TherapyStatus/i.test(l.kind) ? COL.right : COL.accent, size: 3.6 });
+        });
+        kinds.forEach((k, i) => ch.text(ch.x0 + 4, ch.Y(0.15 + 0.7 * (i / Math.max(1, kinds.length - 1))) - 12, k, { color: COL.muted }));
+        node.appendChild(exportRow([{ label: '⤓ PNG', fn: () => P.downloadCanvas(box.canvas, 'F4_timeline_sessao') }]));
+      }
+      const rows = [];
+      d.all.forEach(p => p.groups.forEach(g => g.programs.forEach(pr => rows.push([
+        p.fileName.slice(-19, -5), g.id + (g.active ? ' ●' : ''),
+        { html: `<span class="hemi-${pr.hemisphere[0]}">${hname(pr.hemisphere)}</span>` },
+        pr.contacts.join('+') || '—', pr.amplitude, pr.pulseWidth, pr.rate
+      ]))));
+      if (rows.length) node.appendChild(table(['arquivo', 'grupo', 'hemisfério', 'contatos', 'mA', 'µs', 'Hz'], rows));
+      const sens = [];
+      d.all.forEach(p => (p.sensingSetup || []).forEach(s => sens.push([
+        { html: `<span class="hemi-${s.hemisphere[0]}">${hname(s.hemisphere)}</span>` }, C.prettyChannel(s.channel),
+        s.centerFreq, s.averagingMs, s.lowerThr, s.upperThr,
+        { html: (s.measuredLower === 0 && s.measuredUpper === 0) ? '<span class="ns">não calibrado</span>' : `${f(s.measuredLower)} / ${f(s.measuredUpper)}` }
+      ])));
+      if (sens.length) {
+        node.appendChild(el('h4', { class: 'note', html: '<b>Configuração de sensing</b>' }));
+        node.appendChild(table(['hemisfério', 'canal', 'f alvo (Hz)', 'média (ms)', 'limiar inf.', 'limiar sup.', 'LFP medido inf./sup.'], sens));
+      }
+      const logRows = logs.slice(-25).map(l => [new Date(l.t + offMin() * 60000).toISOString().slice(0, 16).replace('T', ' '), l.kind, l.detail || '—']);
+      if (logRows.length) node.appendChild(table(['data/hora local', 'evento', 'detalhe'], logRows));
+    }
+  },
+
+  /* ------------------------------------------------------------------ F5 */
+  {
+    id: 'F5', title: 'Mapa da montagem — canal × frequência',
+    sub: 'BrainSense Survey: escolha do contato de sensing',
+    has: d => d.montage.length,
+    render(node, d) {
+      const hemis = Array.from(new Set(d.montage.map(m => m.hemisphere)));
+      const norm = opt('F5', 'norm', false);
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlCheck('normalizar cada canal pelo próprio máximo', norm, v => setOpt('F5', 'norm', v))
+      ]));
+      const grid = el('div', { class: 'plotgrid two' }); node.appendChild(grid);
+      const boxes = [];
+      hemis.forEach(h => {
+        const rows = d.montage.filter(m => m.hemisphere === h);
+        if (!rows.length) return;
+        const fmax = 60;
+        const fi = rows[0].f.map((_, i) => i).filter(i => rows[0].f[i] <= fmax);
+        const M = rows.map(r => { const v = fi.map(i => r.mag[i]); const mx = Math.max(...v) || 1; return norm ? v.map(x => x / mx) : v; });
+        const box = plotBox(grid, 34 + rows.length * 15); boxes.push(box);
+        const ch = new P.Chart(box.canvas, {
+          width: box.width, height: box.height, xlim: [0, fmax], ylim: [0, rows.length],
+          xlabel: 'frequência (Hz)', title: `STN ${hname(h)} — ${rows.length} canais`, pad: { l: 62, r: 60, t: 24, b: 40 }
+        });
+        ch.heat(M.slice().reverse(), { cmap: 'magma', smooth: true });
+        ch.axes({ grid: false, yticks: rows.map((_, i) => i + .5), yfmt: v => (rows[rows.length - 1 - Math.floor(v)] || {}).label || '' });
+        ch.colorbar({ label: norm ? 'norm.' : 'µVp' });
+        C.BANDS.filter(b => b.key.includes('beta')).forEach(b => {
+          ch.vline(b.lo, { color: '#fff', dash: [3, 3] }); ch.vline(Math.min(b.hi, fmax), { color: '#fff', dash: [3, 3] });
+        });
+      });
+      const rank = d.montage.slice().sort((a, b) => b.peakMag - a.peakMag).slice(0, 12).map(m => [
+        { html: `<span class="hemi-${m.hemisphere[0]}">${hname(m.hemisphere)}</span>` }, m.label, m.peakF, m.peakMag,
+        { html: C.bandOf(m.peakF) }, { html: m.artifact === 'ARTIFACT_NOT_PRESENT' ? '<span class="ns">sem artefato</span>' : `<span style="color:var(--warn)">${m.artifact}</span>` }
+      ]);
+      node.appendChild(table(['hemisfério', 'canal', 'pico (Hz)', 'magnitude (µVp)', 'banda', 'artefato'], rank));
+      node.appendChild(exportRow([
+        ...boxes.map((b, i) => ({ label: `⤓ PNG ${hemis[i][0]}`, fn: () => P.downloadCanvas(b.canvas, `F5_survey_${hemis[i]}`) })),
+        { label: '⤓ CSV picos', fn: () => P.downloadText(P.toCSV(d.montage.map(m => ({ hemisferio: m.hemisphere, canal: m.label, pico_Hz: m.peakF, magnitude_uVp: m.peakMag, artefato: m.artifact }))), 'F5_survey_picos.csv', 'text/csv') }
+      ]));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Leitura.</b> Cada linha é um par bipolar; o brilho é a magnitude espectral. As linhas tracejadas brancas delimitam a banda beta. ` +
+          `O canal com maior pico beta é o candidato natural ao sensing crônico. Compare com o contato de estimulação: registrar em contatos que flanqueiam o de estimulação (0–2, 1–3) minimiza o artefato de estimulação.`
+      }));
+    }
+  },
+
+  /* ------------------------------------------------------------------ F6 */
+  {
+    id: 'F6', title: 'Domínio do tempo — traçado, espectrograma e bursts',
+    sub: 'BrainSense Streaming / Survey a 250 Hz',
+    has: d => d.bsTimeDomain.length || d.montageTD.length,
+    render(node, d) {
+      const src = [].concat(
+        d.bsTimeDomain.map((t, i) => ({ value: 'bs' + i, label: `Streaming ${t.label} (${(t.data.length / t.fs).toFixed(0)} s)`, td: t })),
+        d.montageTD.map((t, i) => ({ value: 'mt' + i, label: `Survey ${t.hemisphere[0]}·${t.label} (${(t.data.length / t.fs).toFixed(0)} s)`, td: t })));
+      if (!src.length) return node.appendChild(el('div', { class: 'empty', text: 'Nenhum sinal bruto disponível.' }));
+      const cur = src.find(s => s.value === opt('F6', 'src', src[0].value)) || src[0];
+      const td = cur.td;
+      const doEcg = opt('F6', 'ecg', false);
+      const blo = opt('F6', 'blo', 13), bhi = opt('F6', 'bhi', 20);
+      const pct = opt('F6', 'pct', 75), minMs = opt('F6', 'minms', 100);
+      const winS = opt('F6', 'win', Math.min(20, Math.round(td.data.length / td.fs)));
+
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('sinal', src, cur.value, v => setOpt('F6', 'src', v)),
+        ctrlCheck('remover artefato cardíaco', doEcg, v => setOpt('F6', 'ecg', v)),
+        ctrlNumber('banda inf.', blo, 1, 90, 1, v => setOpt('F6', 'blo', v)),
+        ctrlNumber('banda sup.', bhi, 2, 100, 1, v => setOpt('F6', 'bhi', v)),
+        ctrlNumber('percentil', pct, 50, 95, 5, v => setOpt('F6', 'pct', v)),
+        ctrlNumber('dur. mín (ms)', minMs, 20, 400, 10, v => setOpt('F6', 'minms', v)),
+        ctrlNumber('janela vista (s)', winS, 2, 120, 2, v => setOpt('F6', 'win', v))
+      ]));
+
+      let x = td.data, ecg = null;
+      if (doEcg) { ecg = C.ecgTemplateSubtract(td.data, td.fs); x = ecg.cleaned; }
+
+      /* (a) traçado */
+      const nView = Math.min(x.length, Math.round(winS * td.fs));
+      const tv = Array.from({ length: nView }, (_, i) => i / td.fs);
+      const b1 = plotBox(node, 190);
+      const yv = Array.from(x.slice(0, nView));
+      const amp = Math.max(...yv.map(Math.abs)) * 1.15;
+      const ch1 = new P.Chart(b1.canvas, {
+        width: b1.width, height: b1.height, xlim: [0, nView / td.fs], ylim: [-amp, amp],
+        xlabel: 'tempo (s)', ylabel: 'µV', title: `(a) ${td.label} · ${td.fs} Hz${doEcg ? ' · ECG removido' : ''}`, pad: { l: 58, r: 14, t: 24, b: 38 }
+      });
+      ch1.axes();
+      if (doEcg) ch1.line(tv, Array.from(td.data.slice(0, nView)), { color: '#C9D3DC', width: 1, label: 'bruto' });
+      ch1.line(tv, yv, { color: COL.ink, width: 1, label: doEcg ? 'limpo' : 'sinal' });
+      if (doEcg) ch1.legend({ x: ch1.x0 + 8, y: ch1.y1 + 6 });
+
+      /* (b) espectrograma */
+      const sg = C.spectrogram(x, td.fs, { window: 256, hop: 64, fmax: 60 });
+      const logS = sg.S.map(c => Array.from(c, v => 10 * Math.log10(Math.max(v, 1e-12))));
+      const flat = logS.flat().filter(isFinite).sort((a, b) => a - b);
+      const zmin = flat[Math.floor(flat.length * .05)], zmax = flat[Math.floor(flat.length * .995)];
+      const Mt = sg.f.map((_, fi) => logS.map(col => col[fi]));
+      const b2 = plotBox(node, 230);
+      const ch2 = new P.Chart(b2.canvas, {
+        width: b2.width, height: b2.height, xlim: [sg.t[0], sg.t[sg.t.length - 1]], ylim: [0, 60],
+        xlabel: 'tempo (s)', ylabel: 'frequência (Hz)', title: '(b) espectrograma (dB)', pad: { l: 58, r: 62, t: 24, b: 38 }
+      });
+      ch2.heat(Mt.slice().reverse(), { cmap: 'viridis', zmin, zmax, smooth: true });
+      ch2.axes({ grid: false });
+      ch2.colorbar({ label: 'dB' });
+
+      /* (c) envelope + bursts */
+      const bp = C.bandpassFFT(x, td.fs, blo, bhi);
+      const env = C.hilbertEnvelope(bp);
+      const bu = C.detectBursts(env, td.fs, { percentile: pct, minDurationMs: minMs });
+      const b3 = plotBox(node, 190);
+      const ch3 = new P.Chart(b3.canvas, {
+        width: b3.width, height: b3.height, xlim: [0, nView / td.fs], ylim: [-Math.max(...Array.from(env.slice(0, nView))) * 1.1, Math.max(...Array.from(env.slice(0, nView))) * 1.25],
+        xlabel: 'tempo (s)', ylabel: 'µV', title: `(c) ${blo}–${bhi} Hz · envelope de Hilbert · bursts > p${pct}`, pad: { l: 58, r: 14, t: 24, b: 38 }
+      });
+      ch3.axes();
+      bu.bursts.filter(b => b.start < nView / td.fs).forEach(b => ch3.span(b.start, Math.min(b.end, nView / td.fs), { color: COL.warn, alpha: .22 }));
+      ch3.line(tv, Array.from(bp.slice(0, nView)), { color: '#9FB3C0', width: .9 });
+      ch3.line(tv, Array.from(env.slice(0, nView)), { color: COL.ink, width: 1.5 });
+      ch3.hline(bu.threshold, { color: COL.right, dash: [4, 3], label: `p${pct} = ${f(bu.threshold, 2)}` });
+
+      /* (d) histograma de duração + (e) curva limiar-dependente */
+      const grid = el('div', { class: 'plotgrid two' }); node.appendChild(grid);
+      const b4 = plotBox(grid, 210);
+      const hh = bu.durationHistogram;
+      const ch4 = new P.Chart(b4.canvas, {
+        width: b4.width, height: b4.height, xlim: [-.6, hh.labels.length - .4], ylim: [0, Math.max(...hh.pct) * 1.2],
+        xlabel: 'duração do burst (ms)', ylabel: '% dos bursts', title: '(d) perfil de duração', pad: { l: 52, r: 14, t: 24, b: 42 }
+      });
+      ch4.axes({ xticks: hh.labels.map((_, i) => i), xfmt: v => hh.labels[v] || '' });
+      ch4.bars(hh.labels.map((_, i) => i), hh.pct, { color: COL.accent, width: (ch4.X(1) - ch4.X(0)) * .62 });
+
+      const pcts = [55, 60, 65, 70, 75, 80, 85, 90];
+      const sortedEnv = Array.from(env).sort((a, b) => a - b);
+      const qEnv = q => sortedEnv[Math.min(sortedEnv.length - 1, Math.round(q * (sortedEnv.length - 1)))];
+      const curve = pcts.map(p => C.detectBursts(env, td.fs, { percentile: p, minDurationMs: minMs, threshold: qEnv(p / 100) }).meanDurationMs);
+      const b5 = plotBox(grid, 210);
+      const ch5 = new P.Chart(b5.canvas, {
+        width: b5.width, height: b5.height, xlim: [50, 95], ylim: [0, Math.max(...curve) * 1.2],
+        xlabel: 'percentil do limiar', ylabel: 'duração média (ms)', title: '(e) sensibilidade ao limiar', pad: { l: 58, r: 14, t: 24, b: 42 }
+      });
+      ch5.axes();
+      ch5.line(pcts, curve, { color: COL.ink, width: 1.8 });
+      ch5.scatter(pcts, curve, { color: COL.right, size: 3.4 });
+      ch5.vline(pct, { color: COL.warn, label: 'atual' });
+
+      const psd = C.welchPSD(x, td.fs, { nperseg: 512, overlap: .5 });
+      node.appendChild(table(['métrica', 'valor'], [
+        ['duração do registro', `${(td.data.length / td.fs).toFixed(1)} s (${td.data.length} amostras)`],
+        ['bursts detectados', `${bu.n} (${f(bu.rate, 2)}/s)`],
+        ['duração mediana / média', `${f(bu.medianDurationMs, 0)} / ${f(bu.meanDurationMs, 0)} ms`],
+        ['probabilidade de burst', `${f(100 * bu.probability, 1)} % do tempo`],
+        ['potência beta 13–30 Hz', f(C.bandPower(psd.f, psd.p, 13, 30), 3)],
+        ...(ecg ? [['artefato cardíaco', `${ecg.nBeats} batimentos · ${f(ecg.bpm, 0)} bpm · template subtraído`]] : [])
+      ]));
+      node.appendChild(exportRow([
+        { label: '⤓ PNG traçado', fn: () => P.downloadCanvas(b1.canvas, 'F6a_tracado') },
+        { label: '⤓ PNG espectrograma', fn: () => P.downloadCanvas(b2.canvas, 'F6b_espectrograma') },
+        { label: '⤓ PNG bursts', fn: () => P.downloadCanvas(b3.canvas, 'F6c_bursts') },
+        { label: '⤓ CSV bursts', fn: () => P.downloadText(P.toCSV(bu.bursts.map(b => ({ inicio_s: b.start, fim_s: b.end, duracao_ms: b.durationMs, amplitude_media: b.mean, pico: b.peak }))), 'F6_bursts.csv', 'text/csv') },
+        { label: '⤓ CSV sinal', fn: () => P.downloadText(P.toCSV(Array.from(x).map((v, i) => ({ t_s: i / td.fs, uV: v }))), 'F6_sinal.csv', 'text/csv') }
+      ]));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Método.</b> Filtro passa-banda de fase zero por FFT, envelope pela transformada de Hilbert, limiar no percentil ${pct} da distribuição do envelope ` +
+          `e exclusão de bursts &lt; ${minMs} ms. O painel (e) mostra por que o percentil deve ser <b>pré-registrado</b>: a duração média varia sistematicamente com ele. ` +
+          `A remoção de artefato cardíaco usa subtração de template do QRS.`
+      }));
+    }
+  },
+
+  /* ------------------------------------------------------------------ F7 */
+  {
+    id: 'F7', title: 'Streaming com estimulação — potência × amplitude',
+    sub: 'BrainSenseLfp: série a 2 Hz e curva dose-resposta',
+    has: d => d.bsLfp.length,
+    render(node, d) {
+      const opts = [];
+      d.bsLfp.forEach((b, i) => Object.keys(b.series).forEach(h => opts.push({ value: i + '|' + h, label: `${C.prettyChannel(b.channel)} · ${hname(h)}`, b, h })));
+      if (!opts.length) return node.appendChild(el('div', { class: 'empty', text: 'Sem streaming de potência.' }));
+      const cur = opts.find(o => o.value === opt('F7', 'src', opts[0].value)) || opts[0];
+      node.appendChild(el('div', { class: 'ctrls' }, [ctrlSelect('canal', opts, cur.value, v => setOpt('F7', 'src', v))]));
+      const s = cur.b.series[cur.h], th = cur.b.therapy.perHemi[cur.h] || {};
+
+      const b1 = plotBox(node, 250);
+      const maxL = Math.max(...s.lfp), maxA = Math.max(...s.ma, 0.1);
+      const ch = new P.Chart(b1.canvas, {
+        width: b1.width, height: b1.height, xlim: [0, s.t[s.t.length - 1]], ylim: [0, maxL * 1.15],
+        xlabel: 'tempo (s)', ylabel: 'potência LFP (u.a.)',
+        title: `(a) potência na banda ${f(th.centerFreq, 1)} Hz e amplitude de estimulação`, pad: { l: 62, r: 52, t: 24, b: 40 }
+      });
+      ch.axes();
+      const scaled = s.ma.map(v => v / maxA * maxL * .95);
+      ch.area(s.t, s.ma.map(() => 0), scaled, { color: COL.accent, alpha: .16, label: 'estimulação (mA)' });
+      ch.line(s.t, s.lfp, { color: hcol(cur.h), width: 1.3, label: 'potência LFP' });
+      if (isFinite(th.lowerThr) && th.lowerThr > 0) { ch.hline(th.lowerThr, { color: COL.muted, label: 'limiar inf.' }); ch.hline(th.upperThr, { color: COL.muted, label: 'limiar sup.' }); }
+      ch.legend({ x: ch.x0 + 8, y: ch.y1 + 6 });
+      /* eixo direito de mA */
+      ch.text(ch.x1 + 8, ch.y1, `mA`, { color: COL.accent });
+      [0, .25, .5, .75, 1].forEach(fr => ch.text(ch.x1 + 8, ch.Y(fr * maxL * .95) - 5, f(fr * maxA, 1), { color: COL.accent }));
+
+      /* dose-resposta */
+      const levels = {};
+      s.ma.forEach((m, i) => { const k = m.toFixed(2); (levels[k] = levels[k] || []).push(s.lfp[i]); });
+      const keys = Object.keys(levels).map(parseFloat).sort((a, b) => a - b).filter(k => levels[k.toFixed(2)].length >= 4);
+      if (keys.length >= 3) {
+        const grid = el('div', { class: 'plotgrid two' }); node.appendChild(grid);
+        const meds = keys.map(k => C.median(levels[k.toFixed(2)]));
+        const q1 = keys.map(k => C.quantile(levels[k.toFixed(2)], .25));
+        const q3 = keys.map(k => C.quantile(levels[k.toFixed(2)], .75));
+        const b2 = plotBox(grid, 240);
+        const ch2 = new P.Chart(b2.canvas, {
+          width: b2.width, height: b2.height, xlim: [Math.min(...keys) - .05, Math.max(...keys) + .05], ylim: [0, Math.max(...q3) * 1.15],
+          xlabel: 'amplitude de estimulação (mA)', ylabel: 'potência LFP (mediana)', title: '(b) dose-resposta', pad: { l: 62, r: 14, t: 24, b: 42 }
+        });
+        ch2.axes();
+        ch2.area(keys, q1, q3, { color: hcol(cur.h), alpha: .18, label: 'IQR' });
+        ch2.line(keys, meds, { color: hcol(cur.h), width: 2 });
+        ch2.scatter(keys, meds, { color: COL.ink, size: 3.4 });
+        const lr = C.linreg(keys, meds);
+        ch2.line([keys[0], keys[keys.length - 1]], [lr.intercept + lr.slope * keys[0], lr.intercept + lr.slope * keys[keys.length - 1]],
+          { color: COL.warn, width: 1.4, dash: [5, 3], label: `β=${f(lr.slope, 1)}/mA · R²=${f(lr.r2, 2)}` });
+        ch2.legend({ x: ch2.x0 + 8, y: ch2.y1 + 6 });
+
+        /* boxplot por nível */
+        const b3 = plotBox(grid, 240);
+        const ch3 = new P.Chart(b3.canvas, {
+          width: b3.width, height: b3.height, xlim: [-.6, keys.length - .4], ylim: [0, Math.max(...keys.map(k => C.quantile(levels[k.toFixed(2)], .95))) * 1.1],
+          xlabel: 'amplitude (mA)', ylabel: 'potência LFP', title: '(c) distribuição por nível', pad: { l: 62, r: 14, t: 24, b: 42 }
+        });
+        ch3.axes({ xticks: keys.map((_, i) => i), xfmt: v => keys[v] != null ? f(keys[v], 1) : '' });
+        keys.forEach((k, i) => {
+          const v = levels[k.toFixed(2)];
+          const lo = C.quantile(v, .05), hi = C.quantile(v, .95);
+          ch3.line([i, i], [lo, hi], { color: COL.muted, width: 1 });
+          const x0 = ch3.X(i) - 8, y1 = ch3.Y(C.quantile(v, .75)), y2 = ch3.Y(C.quantile(v, .25));
+          ch3.ctx.fillStyle = hcol(cur.h); ch3.ctx.globalAlpha = .5;
+          ch3.ctx.fillRect(x0, y1, 16, y2 - y1); ch3.ctx.globalAlpha = 1;
+          ch3.ctx.strokeStyle = COL.ink; ch3.ctx.beginPath();
+          ch3.ctx.moveTo(x0, ch3.Y(C.median(v)) + .5); ch3.ctx.lineTo(x0 + 16, ch3.Y(C.median(v)) + .5); ch3.ctx.stroke();
+        });
+        const first = levels[keys[0].toFixed(2)], last = levels[keys[keys.length - 1].toFixed(2)];
+        const pt = C.permutationTest(first, last, 3000);
+        node.appendChild(table(['comparação', 'n', 'mediana', 'teste'], [
+          [`${f(keys[0], 1)} mA`, first.length, C.median(first), ''],
+          [`${f(keys[keys.length - 1], 1)} mA`, last.length, C.median(last), ''],
+          ['permutação (5.000)', '', '', { html: `Δ=${f(pt.observed, 1)} · p ${pHtml(pt.p)}` }]
+        ]));
+        node.appendChild(exportRow([
+          { label: '⤓ PNG série', fn: () => P.downloadCanvas(b1.canvas, 'F7a_streaming') },
+          { label: '⤓ PNG dose-resposta', fn: () => P.downloadCanvas(b2.canvas, 'F7b_dose_resposta') },
+          { label: '⤓ CSV', fn: () => P.downloadText(P.toCSV(s.t.map((t, i) => ({ t_s: t, lfp: s.lfp[i], mA: s.ma[i] }))), 'F7_streaming.csv', 'text/csv') }
+        ]));
+      } else {
+        node.appendChild(el('div', { class: 'warnbox', html: 'A amplitude de estimulação não variou o suficiente neste registro para uma curva dose-resposta. Para obtê-la, execute uma rampa de titulação durante o streaming.' }));
+        node.appendChild(exportRow([{ label: '⤓ PNG série', fn: () => P.downloadCanvas(b1.canvas, 'F7a_streaming') }]));
+      }
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Leitura.</b> A potência é calculada pelo próprio dispositivo em janela de ${f(th.averagingMs, 0)} ms centrada em ${f(th.centerFreq, 1)} Hz e amostrada a 2 Hz. ` +
+          `A supressão beta dose-dependente é o achado esperado com estimulação eficaz. Cuidado: amplitudes altas também introduzem artefato residual, então uma <i>queda</i> aparente pode ser saturação — inspecione o sinal bruto (F6) em paralelo.`
+      }));
+    }
+  },
+
+  /* ------------------------------------------------------------------ F8 */
+  {
+    id: 'F8', title: 'Timeline crônico — série temporal multi-dia',
+    sub: 'LFPTrendLogs: potência a cada 10 min',
+    has: d => Object.keys(d.trend).length,
+    render(node, d) {
+      const hemis = Object.keys(d.trend);
+      const k = opt('F8', 'mad', 4), showMa = opt('F8', 'ma', true), smooth = opt('F8', 'smooth', 6);
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlNumber('outliers: k×MAD', k, 2, 10, .5, v => setOpt('F8', 'mad', v)),
+        ctrlNumber('suavização (pontos)', smooth, 1, 72, 1, v => setOpt('F8', 'smooth', v)),
+        ctrlCheck('mostrar amplitude de estimulação', showMa, v => setOpt('F8', 'ma', v))
+      ]));
+      const cleaned = {}; let tmin = Infinity, tmax = -Infinity, vmax = 0;
+      hemis.forEach(h => {
+        const c = C.removeOutliersMAD(d.trend[h], 'lfp', k);
+        cleaned[h] = c;
+        c.kept.forEach(r => { if (r.t < tmin) tmin = r.t; if (r.t > tmax) tmax = r.t; if (r.lfp > vmax) vmax = r.lfp; });
+      });
+      const box = plotBox(node, 290);
+      const ch = new P.Chart(box.canvas, {
+        width: box.width, height: box.height, xlim: [tmin, tmax], ylim: [0, vmax * 1.12],
+        xlabel: 'data local', ylabel: 'potência LFP (u.a.)', title: 'potência crônica por hemisfério', pad: { l: 62, r: 52, t: 24, b: 42 }
+      });
+      ch.axes({ nx: 7, xfmt: v => new Date(v + offMin() * 60000).toISOString().slice(5, 10).split('-').reverse().join('/') });
+      /* faixas noturnas */
+      const dayMs = 864e5;
+      for (let t = tmin - dayMs; t < tmax + dayMs; t += dayMs) {
+        const base = Math.floor((t + offMin() * 60000) / dayMs) * dayMs - offMin() * 60000;
+        ch.span(base + 22 * 36e5, base + 30 * 36e5, { color: '#1B3A5C', alpha: .05 });
+      }
+      hemis.forEach(h => {
+        const rows = cleaned[h].kept;
+        const xs = rows.map(r => r.t), ys = rows.map(r => r.lfp);
+        ch.scatter(xs, ys, { color: hcol(h), size: 1.1, alpha: .28 });
+        if (smooth > 1) {
+          const sm = movingMedian(ys, smooth);
+          ch.line(xs, sm, { color: hcol(h), width: 1.6, label: `STN ${hname(h)}` });
+        } else ch.line(xs, ys, { color: hcol(h), width: .8, label: `STN ${hname(h)}` });
+      });
+      if (showMa) {
+        const maMax = Math.max(...hemis.flatMap(h => cleaned[h].kept.map(r => r.ma)), .1);
+        hemis.forEach(h => ch.line(cleaned[h].kept.map(r => r.t), cleaned[h].kept.map(r => r.ma / maMax * vmax * .28),
+          { color: COL.accent, width: 1, dash: [3, 2] }));
+        ch.text(ch.x1 + 6, ch.Y(vmax * .28) - 6, `${f(maMax, 1)} mA`, { color: COL.accent });
+        ch.text(ch.x1 + 6, ch.Y(0) - 6, '0 mA', { color: COL.accent });
+      }
+      ch.legend({ x: ch.x0 + 8, y: ch.y1 + 6 });
+
+      node.appendChild(table(['hemisfério', 'n pontos', 'removidos', 'período', 'mediana', 'IQR', 'MAD'],
+        hemis.map(h => {
+          const c = cleaned[h], v = c.kept.map(r => r.lfp);
+          const t0 = new Date(c.kept[0].t + offMin() * 60000), t1 = new Date(c.kept[c.kept.length - 1].t + offMin() * 60000);
+          const days = Math.round((t1 - t0) / dayMs);
+          return [{ html: `<span class="hemi-${h[0]}">${hname(h)}</span>` }, c.kept.length,
+          `${c.removed} (${f(100 * c.removed / d.trend[h].length, 1)}%)`,
+          `${t0.toISOString().slice(0, 10)} → ${t1.toISOString().slice(0, 10)} (${days} d)`,
+          C.median(v), `${f(C.quantile(v, .25))}–${f(C.quantile(v, .75))}`, c.mad];
+        })));
+      node.appendChild(exportRow([
+        { label: '⤓ PNG', fn: () => P.downloadCanvas(box.canvas, 'F8_timeline_cronico') },
+        {
+          label: '⤓ CSV completo', fn: () => P.downloadText(P.toCSV(hemis.flatMap(h => d.trend[h].map(r => ({
+            hemisferio: h, utc: new Date(r.t).toISOString(),
+            local: new Date(r.t + offMin() * 60000).toISOString().slice(0, 19),
+            hora_decimal: C.localHour(r.t, offMin()).toFixed(4), lfp: r.lfp, mA: r.ma,
+            outlier: Math.abs(r.lfp - cleaned[h].median) > k * cleaned[h].mad ? 1 : 0
+          })))), 'F8_timeline.csv', 'text/csv')
+        }
+      ]));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Método.</b> Exclusão de outliers por mediana ± ${k}×MAD (robusto, preferível a média ± DP em distribuição assimétrica). ` +
+          `Faixas sombreadas = 22h–06h locais. A linha grossa é mediana móvel de ${smooth} pontos (${smooth * 10} min). ` +
+          `<b>Atenção:</b> artefatos de movimento podem gerar padrão pseudo-diurno — confirme em F9 comparando com uma banda-controle.`
+      }));
+    }
+  },
+
+  /* ------------------------------------------------------------------ F9 */
+  {
+    id: 'F9', title: 'Ritmo circadiano — heatmap, perfil polar e cosinor',
+    sub: 'dia × hora com detrending diário; MESOR, amplitude, acrofase',
+    has: d => Object.keys(d.trend).length,
+    render(node, d) {
+      const hemis = Object.keys(d.trend);
+      const h = opt('F9', 'hemi', hemis[0]);
+      const detr = opt('F9', 'detrend', true);
+      const binMin = opt('F9', 'bin', 30);
+      const harm = opt('F9', 'harm', '24+12');
+      const nBoot = opt('F9', 'boot', 200);
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: 'STN ' + hname(x) })), h, v => setOpt('F9', 'hemi', v)),
+        ctrlCheck('detrending diário (% da mediana do dia)', detr, v => setOpt('F9', 'detrend', v)),
+        ctrlSelect('bin', [{ value: 15, label: '15 min' }, { value: 30, label: '30 min' }, { value: 60, label: '60 min' }], binMin, v => setOpt('F9', 'bin', +v)),
+        ctrlSelect('harmônicos', ['24', '24+12'], harm, v => setOpt('F9', 'harm', v)),
+        ctrlNumber('bootstrap', nBoot, 50, 2000, 50, v => setOpt('F9', 'boot', v))
+      ]));
+      const clean = C.removeOutliersMAD(d.trend[h], 'lfp', 4).kept;
+      const dp = C.diurnalProfile(clean, offMin(), binMin, detr);
+      if (dp.days.length < 2) return node.appendChild(el('div', { class: 'empty', text: 'São necessários ao menos 2 dias de registro.' }));
+
+      /* heatmap dia × hora */
+      const box = plotBox(node, Math.max(180, 46 + dp.days.length * 4.4));
+      const M = dp.matrix.map(m => m.values);
+      const flat = M.flat().filter(isFinite).sort((a, b) => a - b);
+      const ch = new P.Chart(box.canvas, {
+        width: box.width, height: box.height, xlim: [0, 24], ylim: [0, dp.days.length],
+        xlabel: 'hora local', ylabel: 'dia', title: `(a) dia × hora — STN ${hname(h)}${detr ? ' (normalizado pela mediana diária)' : ''}`,
+        pad: { l: 76, r: 62, t: 24, b: 40 }
+      });
+      ch.heat(M, { cmap: detr ? 'divergent' : 'viridis', zmin: flat[Math.floor(flat.length * .02)], zmax: flat[Math.floor(flat.length * .98)], smooth: false });
+      const step = Math.max(1, Math.ceil(dp.days.length / 12));
+      ch.axes({
+        grid: false, xticks: [0, 3, 6, 9, 12, 15, 18, 21, 24], xfmt: v => String(v).padStart(2, '0') + 'h',
+        yticks: dp.days.map((_, i) => i + .5).filter((_, i) => i % step === 0),
+        yfmt: v => (dp.days[Math.floor(v)] || '').slice(5).split('-').reverse().join('/')
+      });
+      ch.colorbar({ label: detr ? '% mediana do dia' : 'u.a.' });
+
+      /* perfil + polar */
+      const grid = el('div', { class: 'plotgrid two' }); node.appendChild(grid);
+      const hrs = clean.map(r => C.localHour(r.t, offMin()));
+      const yv = clean.map(r => r.lfp);
+      const periods = harm === '24' ? [24] : [24, 12];
+      const cos = C.cosinor(hrs, yv, periods);
+      const vh = C.varianceByHour(clean, offMin());
+
+      const b2 = plotBox(grid, 250);
+      const valid = dp.profile.filter(isFinite);
+      const ch2 = new P.Chart(b2.canvas, {
+        width: b2.width, height: b2.height, xlim: [0, 24],
+        ylim: [Math.min(...dp.q1.filter(isFinite)) * .96, Math.max(...dp.q3.filter(isFinite)) * 1.04],
+        xlabel: 'hora local', ylabel: detr ? '% da mediana do dia' : 'potência LFP',
+        title: '(b) perfil diurno (mediana entre dias, IQR)', pad: { l: 62, r: 14, t: 24, b: 42 }
+      });
+      ch2.axes({ xticks: [0, 4, 8, 12, 16, 20, 24], xfmt: v => String(v).padStart(2, '0') + 'h' });
+      ch2.span(0, 6, { color: '#1B3A5C', alpha: .06 }); ch2.span(22, 24, { color: '#1B3A5C', alpha: .06 });
+      ch2.area(dp.hours, dp.q1, dp.q3, { color: hcol(h), alpha: .2, label: 'IQR entre dias' });
+      ch2.line(dp.hours, dp.profile, { color: hcol(h), width: 2, label: 'mediana' });
+      if (cos && !detr) {
+        const fh = Array.from({ length: 145 }, (_, i) => i / 6);
+        ch2.line(fh, fh.map(cos.predict), { color: COL.warn, width: 1.6, dash: [5, 3], label: 'cosinor' });
+      }
+      ch2.legend({ x: ch2.x0 + 8, y: ch2.y1 + 6 });
+
+      const b3 = plotBox(grid, 300);
+      P.polarBars(b3.canvas, dp.profile, {
+        width: b3.width, height: 292, rmin: Math.min(...valid) * .97, rmax: Math.max(...valid) * 1.02,
+        color: (v) => { const t = (v - Math.min(...valid)) / (Math.max(...valid) - Math.min(...valid) || 1); return P.CMAPS.magma(.15 + t * .7); },
+        acrophaseHours: cos ? ((cos.components[0].acrophaseHours % 24) + 24) % 24 : null,
+        acroColor: COL.right, center: '', title: '(c) ciclo de 24 h', ink: COL.ink, muted: COL.muted, grid: COL.grid
+      });
+
+      /* estatística */
+      if (cos) {
+        const peaks = dp.matrix.map(m => { const v = m.values; let bi = -1, bv = -Infinity; v.forEach((x, i) => { if (isFinite(x) && x > bv) { bv = x; bi = i; } }); return bi >= 0 ? dp.hours[bi] : NaN; }).filter(isFinite);
+        const ray = C.rayleigh(peaks);
+        const boot = C.cosinorBootstrap(clean, [24], nBoot, offMin());
+        const rows = [
+          ['MESOR', f(cos.mesor, 2), boot ? `[${f(boot.mesorCI[0], 2)} – ${f(boot.mesorCI[1], 2)}]` : '—', 'média ajustada ao ritmo'],
+          ['amplitude 24 h', f(cos.components[0].amplitude, 2), boot ? `[${f(boot.amplitudeCI[0], 2)} – ${f(boot.amplitudeCI[1], 2)}]` : '—', 'metade da variação no ciclo'],
+          ['acrofase 24 h', `${f(((cos.components[0].acrophaseHours % 24) + 24) % 24, 2)} h`, boot ? `[${f(boot.acrophaseCI[0], 1)} – ${f(boot.acrophaseCI[1], 1)}] h` : '—', 'horário do pico'],
+        ];
+        if (periods.length > 1) rows.push(['amplitude 12 h', f(cos.components[1].amplitude, 2), '—', 'componente bimodal']);
+        rows.push(
+          ['R² do cosinor', f(cos.r2, 3), '—', 'variância explicada pelo modelo'],
+          ['F / p', `${f(cos.F, 1)}`, { html: pHtml(cos.p) }, 'teste global do ritmo'],
+          ['ρ AR(1) dos resíduos', f(cos.rhoAR1, 3), '—', 'autocorrelação serial'],
+          ['n efetivo (corrigido)', f(cos.nEffective, 0), { html: pHtml(cos.pAdjustedAR1) }, 'p corrigido para autocorrelação'],
+          ['η² hora do dia (ANOVA)', `${f(100 * vh.eta2, 1)} %`, { html: pHtml(vh.p) }, 'variância explicada pela hora'],
+          ['Rayleigh (acrofases diárias)', `R=${f(ray.R, 3)}`, { html: pHtml(ray.p) }, `${dp.days.length} dias; hora média ${f(ray.meanHour, 2)} h`]
+        );
+        node.appendChild(table(['parâmetro', 'estimativa', 'IC 95% / p', 'interpretação'], rows));
+        if (cos.rhoAR1 > 0.5) node.appendChild(el('div', {
+          class: 'warnbox', html: `A autocorrelação dos resíduos é alta (ρ = ${f(cos.rhoAR1, 2)}), esperada em amostragem a cada 10 min. ` +
+            `O p bruto do cosinor é anticonservador; use o <b>p corrigido para n efetivo</b> e, na análise definitiva, um modelo misto com estrutura AR(1) (ver script R fornecido).`
+        }));
+      }
+      node.appendChild(exportRow([
+        { label: '⤓ PNG heatmap', fn: () => P.downloadCanvas(box.canvas, 'F9a_heatmap_dia_hora') },
+        { label: '⤓ PNG perfil', fn: () => P.downloadCanvas(b2.canvas, 'F9b_perfil_diurno') },
+        { label: '⤓ PNG polar', fn: () => P.downloadCanvas(b3.canvas, 'F9c_polar') },
+        { label: '⤓ CSV perfil', fn: () => P.downloadText(P.toCSV(dp.hours.map((x, i) => ({ hora: x, mediana: dp.profile[i], q1: dp.q1[i], q3: dp.q3[i] }))), 'F9_perfil.csv', 'text/csv') },
+        { label: '⤓ CSV matriz', fn: () => P.downloadText(P.toCSV(dp.matrix.flatMap(m => m.values.map((v, i) => ({ dia: m.day, hora: dp.hours[i], valor: v })))), 'F9_matriz.csv', 'text/csv') }
+      ]));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Método.</b> Normalização de cada dia pela própria mediana antes do heatmap (obrigatória: deriva entre dias mascara o ritmo). ` +
+          `Perfil = mediana por bin de ${binMin} min dentro de cada dia, depois mediana entre dias. Cosinor por mínimos quadrados com harmônicos de ${periods.join(' e ')} h; ` +
+          `IC por bootstrap de blocos com reamostragem <b>de dias inteiros</b> (preserva a autocorrelação intradiária).`
+      }));
+    }
+  },
+
+  /* ----------------------------------------------------------------- F10 */
+  {
+    id: 'F10', title: 'Resposta alinhada a evento',
+    sub: 'janela −60 / +180 min em torno de eventos marcados pelo paciente',
+    has: d => d.snapshots.length && Object.keys(d.trend).length,
+    render(node, d) {
+      const names = Array.from(new Set(d.snapshots.map(s => s.name)));
+      if (!names.length) return node.appendChild(el('div', { class: 'empty', text: 'Sem eventos marcados pelo paciente.' }));
+      const hemis = Object.keys(d.trend);
+      const evName = opt('F10', 'ev', names.find(n => /medica/i.test(n)) || names[0]);
+      const h = opt('F10', 'hemi', hemis[0]);
+      const pre = opt('F10', 'pre', 60), post = opt('F10', 'post', 180);
+      const normalize = opt('F10', 'norm', true);
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('evento', names, evName, v => setOpt('F10', 'ev', v)),
+        ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: 'STN ' + hname(x) })), h, v => setOpt('F10', 'hemi', v)),
+        ctrlNumber('pré (min)', pre, 10, 180, 10, v => setOpt('F10', 'pre', v)),
+        ctrlNumber('pós (min)', post, 30, 480, 30, v => setOpt('F10', 'post', v)),
+        ctrlCheck('normalizar pela linha de base', normalize, v => setOpt('F10', 'norm', v))
+      ]));
+      const times = d.snapshots.filter(s => s.name === evName).map(s => s.t);
+      const clean = C.removeOutliersMAD(d.trend[h], 'lfp', 4).kept;
+      const al = C.eventAligned(clean, times, pre, post, 10, normalize);
+      if (!al.nTrials) return node.appendChild(el('div', { class: 'empty', text: 'Nenhuma janela com cobertura suficiente de dados.' }));
+
+      const box = plotBox(node, 280);
+      const allv = al.trials.flatMap(t => t.values).filter(isFinite);
+      const ch = new P.Chart(box.canvas, {
+        width: box.width, height: box.height, xlim: [-pre, post],
+        ylim: [C.quantile(allv, .01) * .95, C.quantile(allv, .99) * 1.05],
+        xlabel: 'minutos em relação ao evento', ylabel: normalize ? '% da linha de base' : 'potência LFP',
+        title: `"${evName}" — ${al.nTrials} ocorrências · STN ${hname(h)}`, pad: { l: 66, r: 14, t: 24, b: 42 }
+      });
+      ch.axes();
+      ch.span(-pre, 0, { color: COL.muted, alpha: .07, label: 'linha de base' });
+      al.trials.forEach(t => ch.line(al.offsets, t.values, { color: hcol(h), width: .7 }));
+      ch.area(al.offsets, al.q1, al.q3, { color: hcol(h), alpha: .22, label: 'IQR' });
+      ch.line(al.offsets, al.median, { color: COL.ink, width: 2.4, label: 'mediana' });
+      ch.vline(0, { color: COL.right, width: 1.6, dash: null, label: evName });
+      if (normalize) ch.hline(100, { color: COL.muted, dash: [2, 2] });
+      ch.legend({ x: ch.x1 - 110, y: ch.y1 + 6 });
+
+      const base = al.trials.flatMap(t => t.values.slice(0, Math.round(pre / 10)).filter(isFinite));
+      const wins = [[0, 60], [60, 120], [120, post]];
+      const rows = wins.map(([a, b]) => {
+        const i0 = Math.round((a + pre) / 10), i1 = Math.round((b + pre) / 10);
+        const v = al.trials.flatMap(t => t.values.slice(i0, i1).filter(isFinite));
+        if (!v.length) return null;
+        const pt = C.permutationTest(base, v, 3000);
+        return [`${a}–${b} min`, v.length, C.median(v), f(C.median(v) - C.median(base), 1), { html: pHtml(pt.p) }];
+      }).filter(Boolean);
+      node.appendChild(table(['janela', 'n', 'mediana', 'Δ vs. base', 'p (permutação)'],
+        [['−' + pre + '–0 min (base)', base.length, C.median(base), '—', { html: '—' }]].concat(rows)));
+      node.appendChild(exportRow([
+        { label: '⤓ PNG', fn: () => P.downloadCanvas(box.canvas, 'F10_alinhado_evento') },
+        { label: '⤓ CSV', fn: () => P.downloadText(P.toCSV(al.trials.flatMap((t, i) => t.values.map((v, j) => ({ ensaio: i + 1, evento_utc: new Date(t.t).toISOString(), offset_min: al.offsets[j], valor: v })))), 'F10_alinhado.csv', 'text/csv') }
+      ]));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Método.</b> Janela de −${pre} a +${post} min, bins de 10 min (resolução nativa do Timeline). ` +
+          `Cada ensaio normalizado pela mediana da própria linha de base, o que controla deriva entre dias. ` +
+          `Comparações por permutação de rótulos (3.000 reamostragens) contra a linha de base agregada. ` +
+          `Para inferência definitiva com múltiplos pacientes, use modelo misto com ensaio aninhado em paciente.`
+      }));
+    }
+  },
+
+  /* ----------------------------------------------------------------- F11 */
+  {
+    id: 'F11', title: 'Distribuição da potência e limiares de aDBS',
+    sub: 'histograma, ECDF e proporção de tempo em cada faixa',
+    has: d => Object.keys(d.trend).length,
+    render(node, d) {
+      const hemis = Object.keys(d.trend);
+      const h = opt('F11', 'hemi', hemis[0]);
+      const th = d.thresholds[h] || {};
+      const lower = opt('F11', 'lo', isFinite(th.lower) ? th.lower : NaN);
+      const upper = opt('F11', 'hi', isFinite(th.upper) ? th.upper : NaN);
+      const clean = C.removeOutliersMAD(d.trend[h], 'lfp', 4).kept;
+      const vals = clean.map(r => r.lfp);
+      const auto = { lo: C.quantile(vals, .25), hi: C.quantile(vals, .75) };
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: 'STN ' + hname(x) })), h, v => setOpt('F11', 'hemi', v)),
+        ctrlNumber('limiar inferior', isFinite(lower) ? lower : Math.round(auto.lo), 0, 1e6, 1, v => setOpt('F11', 'lo', v)),
+        ctrlNumber('limiar superior', isFinite(upper) ? upper : Math.round(auto.hi), 0, 1e6, 1, v => setOpt('F11', 'hi', v)),
+        el('button', { class: 'btn', text: 'usar Q1/Q3 dos dados', onclick: () => { S.opts.F11.lo = auto.lo; S.opts.F11.hi = auto.hi; renderFigure('F11'); } })
+      ]));
+      const lo = isFinite(lower) ? lower : auto.lo, hi = isFinite(upper) ? upper : auto.hi;
+      const hist = C.histogram(vals, 44), cdf = C.ecdf(vals);
+      const sm = C.thresholdSummary(vals, lo, hi);
+      const grid = el('div', { class: 'plotgrid two' }); node.appendChild(grid);
+
+      const b1 = plotBox(grid, 250);
+      const ch = new P.Chart(b1.canvas, {
+        width: b1.width, height: b1.height, xlim: [hist.lo, hist.hi], ylim: [0, Math.max(...hist.counts) * 1.15],
+        xlabel: 'potência LFP (u.a.)', ylabel: 'n de amostras de 10 min', title: '(a) distribuição', pad: { l: 62, r: 14, t: 24, b: 42 }
+      });
+      ch.axes();
+      ch.bars(hist.centers, hist.counts, {
+        width: (ch.X(hist.centers[1]) - ch.X(hist.centers[0])) * .92,
+        color: (v, i) => hist.centers[i] < lo ? '#93A7B5' : hist.centers[i] > hi ? COL.warn : hcol(h)
+      });
+      ch.vline(lo, { color: COL.ink, width: 1.5, label: 'inf.' });
+      ch.vline(hi, { color: COL.ink, width: 1.5, label: 'sup.', align: 'left' });
+
+      const b2 = plotBox(grid, 250);
+      const ch2 = new P.Chart(b2.canvas, {
+        width: b2.width, height: b2.height, xlim: [hist.lo, hist.hi], ylim: [0, 1],
+        xlabel: 'potência LFP (u.a.)', ylabel: 'proporção acumulada', title: '(b) ECDF e faixas de estimulação', pad: { l: 62, r: 14, t: 24, b: 42 }
+      });
+      ch2.axes({ yfmt: v => (v * 100).toFixed(0) + '%' });
+      ch2.span(hist.lo, lo, { color: '#93A7B5', alpha: .13, label: 'mín.' });
+      ch2.span(hi, hist.hi, { color: COL.warn, alpha: .13, label: 'máx.' });
+      ch2.line(cdf.x, cdf.y, { color: COL.ink, width: 2 });
+      ch2.vline(lo, { color: COL.ink }); ch2.vline(hi, { color: COL.ink });
+
+      node.appendChild(table(['faixa', '% do tempo', 'implicação para aDBS'], [
+        ['abaixo do limiar inferior', f(sm.belowPct, 1) + ' %', 'estimulação na amplitude mínima'],
+        ['entre os limiares', f(sm.betweenPct, 1) + ' %', 'rampa proporcional entre mín. e máx.'],
+        ['acima do limiar superior', f(sm.abovePct, 1) + ' %', 'estimulação na amplitude máxima'],
+        ['mediana [IQR]', `${f(sm.median)} [${f(sm.q1)}–${f(sm.q3)}]`, 'centro da distribuição'],
+        ['p10 / p90', `${f(sm.p10)} / ${f(sm.p90)}`, 'candidatos empíricos a limiar']
+      ]));
+      const es = d.eventSummary.flatMap(e => e.lfpAmp).filter(x => x.hemisphere === h);
+      if (es.length) node.appendChild(table(['grupo', 'abaixo %', 'entre %', 'acima %', 'mA médio'],
+        es.map(x => [x.group, x.below, x.between, x.above, x.avgMa])));
+      const bad = sm.abovePct > 80 || sm.belowPct > 80;
+      if (bad) node.appendChild(el('div', {
+        class: 'warnbox', html: `Com os limiares atuais o sinal fica ${f(Math.max(sm.abovePct, sm.belowPct), 0)} % do tempo em uma única faixa — ` +
+          `na prática equivale a estimulação contínua, sem modulação adaptativa. Considere recentrar os limiares em torno de Q1/Q3 da distribuição real.`
+      }));
+      node.appendChild(exportRow([
+        { label: '⤓ PNG histograma', fn: () => P.downloadCanvas(b1.canvas, 'F11a_distribuicao') },
+        { label: '⤓ PNG ECDF', fn: () => P.downloadCanvas(b2.canvas, 'F11b_ecdf') }
+      ]));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Uso clínico.</b> Esta é a figura de decisão para programar aDBS de duplo limiar. ` +
+          `Limiares definidos em consulta única tendem a não representar a variação domiciliar; a recomendação atual é ≥ 5 dias de registro real, ` +
+          `descartando dias artefatados, antes de fixar os limiares.`
+      }));
+    }
+  },
+
+  /* ----------------------------------------------------------------- F12 */
+  {
+    id: 'F12', title: 'Espectros por tipo de evento',
+    sub: 'LfpFrequencySnapshotEvents — PSD disparada pelo paciente',
+    has: d => d.snapshots.length,
+    render(node, d) {
+      const names = Array.from(new Set(d.snapshots.map(s => s.name)));
+      const hemis = Array.from(new Set(d.snapshots.flatMap(s => Object.keys(s.hemi))));
+      const h = opt('F12', 'hemi', hemis[0]);
+      const showAll = opt('F12', 'all', false);
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: 'STN ' + hname(x) })), h, v => setOpt('F12', 'hemi', v)),
+        ctrlCheck('mostrar espectros individuais', showAll, v => setOpt('F12', 'all', v))
+      ]));
+      const palette = ['#1B4A72', '#9C3050', '#0C6E6B', '#A8621B', '#5B3E86', '#2C7A4B'];
+      const groups = names.map((n, i) => {
+        const items = d.snapshots.filter(s => s.name === n && s.hemi[h]);
+        if (!items.length) return null;
+        const f0 = items[0].hemi[h].f;
+        const med = f0.map((_, k) => C.median(items.map(s => s.hemi[h].p[k])));
+        return { name: n, color: palette[i % palette.length], f: f0, med, items };
+      }).filter(Boolean);
+      if (!groups.length) return node.appendChild(el('div', { class: 'empty', text: 'Sem snapshots para este hemisfério.' }));
+
+      const box = plotBox(node, 300);
+      const fmax = 45;
+      const ymax = Math.max(...groups.flatMap(g => g.med.filter((_, k) => g.f[k] <= fmax))) * 1.2;
+      const ch = new P.Chart(box.canvas, {
+        width: box.width, height: box.height, xlim: [0, fmax], ylim: [0, ymax],
+        xlabel: 'frequência (Hz)', ylabel: 'magnitude (µVp)', title: `espectro mediano por evento — STN ${hname(h)}`, pad: { l: 62, r: 14, t: 24, b: 42 }
+      });
+      ch.axes();
+      C.BANDS.forEach(b => { if (b.lo < fmax) ch.span(b.lo, Math.min(b.hi, fmax), { color: b.color, alpha: .07, label: b.label }); });
+      groups.forEach(g => {
+        if (showAll) g.items.forEach(s => ch.line(g.f, s.hemi[h].p, { color: g.color, width: .6 }));
+        ch.line(g.f, g.med, { color: g.color, width: 2.2, label: `${g.name} (n=${g.items.length})` });
+      });
+      ch.legend({ x: ch.x1 - 168, y: ch.y1 + 6 });
+
+      const rows = groups.map(g => {
+        const bt = C.bandTable(g.f, g.med);
+        const lb = bt.find(b => b.key === 'lowbeta'), hb = bt.find(b => b.key === 'highbeta');
+        let pf = NaN, pv = -Infinity;
+        g.f.forEach((x, k) => { if (x >= 8 && x <= 35 && g.med[k] > pv) { pv = g.med[k]; pf = x; } });
+        return [{ html: `<span style="color:${g.color};font-weight:600">${g.name}</span>` }, g.items.length,
+          pf, pv, lb.relative, hb.relative];
+      });
+      node.appendChild(table(['evento', 'n', 'pico 8–35 Hz', 'magnitude', 'β↓ rel. %', 'β↑ rel. %'], rows));
+
+      /* comparação entre dois eventos */
+      if (groups.length >= 2) {
+        const a = groups[0], b2 = groups[1];
+        const inBeta = a.f.map((x, k) => k).filter(k => a.f[k] >= 13 && a.f[k] <= 30);
+        const va = a.items.flatMap(s => inBeta.map(k => s.hemi[h].p[k]));
+        const vb = b2.items.flatMap(s => inBeta.map(k => s.hemi[h].p[k]));
+        const pt = C.permutationTest(va, vb, 3000);
+        node.appendChild(el('div', {
+          class: 'note', html: `<b>Comparação exploratória (β 13–30 Hz):</b> ${a.name} vs. ${b2.name} — ` +
+            `Δ = ${f(pt.observed, 3)}, p = ${pTag(pt.p)} (permutação, 3.000). ` +
+            `Trate como exploratório: os bins espectrais dentro de um mesmo snapshot não são independentes.`
+        }));
+      }
+      node.appendChild(exportRow([
+        { label: '⤓ PNG', fn: () => P.downloadCanvas(box.canvas, 'F12_espectros_evento') },
+        { label: '⤓ CSV', fn: () => P.downloadText(P.toCSV(d.snapshots.flatMap(s => Object.keys(s.hemi).flatMap(hh => s.hemi[hh].f.map((x, k) => ({ utc: new Date(s.t).toISOString(), evento: s.name, hemisferio: hh, f_Hz: x, magnitude: s.hemi[hh].p[k] }))))), 'F12_snapshots.csv', 'text/csv') }
+      ]));
+    }
+  }
+];
+
+function movingMedian(arr, w) {
+  const out = new Array(arr.length).fill(NaN);
+  const half = Math.floor(w / 2);
+  for (let i = 0; i < arr.length; i++) {
+    const a = Math.max(0, i - half), b = Math.min(arr.length, i + half + 1);
+    out[i] = C.median(arr.slice(a, b));
+  }
+  return out;
+}
+
+/* ============================================================== UI ======= */
+function renderRail() {
+  const rail = $('#rail'); rail.innerHTML = '';
+  /* arquivos */
+  const cf = el('div', { class: 'card' }, [el('h3', {}, ['Arquivos', el('span', { class: 'n', text: `(${S.files.length})` })])]);
+  const body = el('div', { class: 'body' });
+  const drop = el('div', {
+    class: 'drop', tabindex: '0', role: 'button',
+    onclick: () => $('#fileInput').click(),
+    onkeydown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('#fileInput').click(); } }
+  }, [el('b', { text: 'Soltar arquivos JSON aqui' }), el('span', { text: 'ou clicar para escolher · vários de uma vez' })]);
+  ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
+  ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
+  drop.addEventListener('drop', e => handleFiles(e.dataTransfer.files));
+  body.appendChild(drop);
+  if (S.files.length) {
+    const ul = el('ul', { class: 'filelist' });
+    S.files.forEach((fl, i) => {
+      const p = fl.parsed;
+      const n = Object.values(p.availability).filter(v => v > 0).length;
+      ul.appendChild(el('li', {}, [
+        el('div', { class: 'meta' }, [
+          el('b', { text: fl.name.replace(/^Report_Json_Session_Report_/, '').replace(/\.json$/, '') }),
+          el('span', { text: `${p.patient.idHash} · ${n} modalidades` })
+        ]),
+        el('button', { class: 'x', title: 'remover', text: '×', onclick: () => { S.files.splice(i, 1); renderAll(); } })
+      ]));
+    });
+    body.appendChild(ul);
+  }
+  cf.appendChild(body); rail.appendChild(cf);
+
+  /* seletor de registro — trava contra mistura de pacientes */
+  const subs = subjects(); const act = activeSubject();
+  if (subs.length > 1) {
+    const cr = el('div', { class: 'card' }, [el('h3', {}, ['Registro em análise', el('span', { class: 'n', text: `(${subs.length} distintos)` })])]);
+    const br = el('div', { class: 'body' });
+    br.appendChild(ctrlSelect('', subs.map(s => ({
+      value: s.key, label: `${s.idHash} — ${s.files.length} arq. · implante ${String(s.implant || '').slice(0, 10) || '—'}`
+    })), act.key, v => { S.subject = v; S.opts = {}; renderAll(); }));
+    br.appendChild(el('div', {
+      class: 'warnbox', html: 'Os arquivos carregados pertencem a <b>pessoas diferentes</b>. ' +
+        'Apenas o registro selecionado é analisado — séries de registros distintos nunca são agregadas.'
+    }));
+    cr.appendChild(br); rail.appendChild(cr);
+  }
+
+  /* matriz de disponibilidade */
+  if (S.files.length) {
+    const cm = el('div', { class: 'card' }, [el('h3', {}, ['Matriz de dados'])]);
+    const b = el('div', { class: 'body' });
+    const t = el('table', { class: 'matrix' });
+    const shown = activeFiles();
+    const head = el('tr', {}, [el('th', { text: 'modalidade' })].concat(
+      shown.map((fl, i) => el('th', { text: 'A' + (i + 1), title: fl.name }))));
+    t.appendChild(el('thead', {}, [head]));
+    const tb = el('tbody');
+    C.MODALITIES.forEach(([k, label]) => {
+      const tr = el('tr', {}, [el('td', { class: 'lbl', text: label, title: label })]);
+      shown.forEach(fl => {
+        const n = fl.parsed.availability[k] || 0;
+        tr.appendChild(el('td', {}, [el('span', { class: 'cell' + (n ? ' on' : ''), text: n ? String(n) : '·' })]));
+      });
+      tb.appendChild(tr);
+    });
+    t.appendChild(tb); b.appendChild(t);
+    b.appendChild(el('div', { class: 'legendrow' }, [
+      el('span', { html: '<i style="background:var(--accent)"></i>presente (n)' }),
+      el('span', { html: '<i style="background:var(--panel-2);border:1px solid var(--rule-2)"></i>ausente' })
+    ]));
+    cm.appendChild(b); rail.appendChild(cm);
+
+    /* resumo do caso */
+    const p0 = (activeFiles()[0] || S.files[0]).parsed;
+    const cs = el('div', { class: 'card' }, [el('h3', {}, ['Registro'])]);
+    const bs = el('div', { class: 'body' });
+    const kv = el('dl', { class: 'kv' });
+    const add = (k, v) => { kv.appendChild(el('dt', { text: k })); kv.appendChild(el('dd', { text: v })); };
+    add('identificador', p0.patient.idHash);
+    add('diagnóstico', p0.patient.diagnosis || '—');
+    add('dispositivo', `${p0.device.model || '—'} · fw ${p0.device.firmware || '—'}`);
+    add('implante', String(p0.device.implantDate || '').slice(0, 10) || '—');
+    add('alvos', p0.leads.map(l => `${l.hemisphere[0]}:${l.target}`).join(' ') || '—');
+    add('bateria', isFinite(p0.device.batteryPct) ? p0.device.batteryPct + ' %' : '—');
+    add('fuso aplicado', `UTC${offMin() >= 0 ? '+' : '−'}${String(Math.floor(Math.abs(offMin()) / 60)).padStart(2, '0')}:${String(Math.abs(offMin()) % 60).padStart(2, '0')}`);
+    bs.appendChild(kv); cs.appendChild(bs); rail.appendChild(cs);
+  }
+}
+
+function renderFigures() {
+  const main = $('#figs'); main.innerHTML = '';
+  if (!S.files.length) {
+    main.appendChild(el('div', { class: 'card' }, [el('div', {
+      class: 'body', html:
+        `<p style="margin:0 0 12px;font:13px/1.7 var(--sans)">Carregue um ou mais <b>Session Reports</b> exportados do programador Percept (arquivos <code>Report_Json_Session_Report_*.json</code>).</p>
+       <p style="margin:0 0 12px;font:13px/1.7 var(--sans);color:var(--ink-2)">Cada arquivo contém modalidades diferentes conforme o que foi executado na consulta. Carregue vários da mesma pessoa ao mesmo tempo — as séries do Timeline são concatenadas e desduplicadas automaticamente, e cada figura usa a fonte adequada.</p>
+       <p style="margin:0;font:11.5px/1.6 var(--mono);color:var(--ink-3)">Os dados nunca saem deste dispositivo: todo o processamento acontece no próprio navegador.</p>`
+    })]));
+    return;
+  }
+  const d = ds();
+  FIGURES.forEach(fig => {
+    const ok = !!fig.has(d);
+    const det = el('details', { class: 'fig ' + (ok ? 'ready' : 'na'), id: 'fig-' + fig.id });
+    if (ok && ['F1', 'F8', 'F9'].includes(fig.id)) det.open = true;
+    det.appendChild(el('summary', {}, [el('header', {}, [
+      el('span', { class: 'chev', text: '▸' }),
+      el('span', { class: 'id', text: fig.id }),
+      el('span', { class: 'ttl' }, [el('b', { text: fig.title }), el('span', { text: fig.sub })]),
+      el('span', { class: 'state', text: ok ? 'dados presentes' : 'sem dados' })
+    ])]));
+    det.appendChild(el('div', { class: 'content', id: 'content-' + fig.id }));
+    det.addEventListener('toggle', () => { if (det.open) renderFigure(fig.id); });
+    main.appendChild(det);
+    if (det.open) renderFigure(fig.id);
+  });
+}
+
+function renderFigure(id) {
+  const fig = FIGURES.find(x => x.id === id);
+  const node = document.getElementById('content-' + id);
+  if (!fig || !node) return;
+  node.innerHTML = '';
+  const d = ds();
+  if (!fig.has(d)) {
+    node.appendChild(el('div', {
+      class: 'empty', html: `Esta figura precisa de dados que não estão nos arquivos carregados.<br>` +
+        `Consulte a matriz de dados à esquerda e o checklist de captura no rodapé.`
+    }));
+    return;
+  }
+  try { fig.render(node, d); }
+  catch (e) {
+    node.appendChild(el('div', { class: 'warnbox', html: `<b>Falha ao gerar a figura.</b> ${String(e && e.message || e)}` }));
+    console.error(id, e);
+  }
+}
+
+function renderAll() { renderRail(); renderFigures(); }
+
+/* ---------------------------------------------------------- carregamento */
+function handleFiles(fileList) {
+  const files = Array.from(fileList).filter(f => /\.json$/i.test(f.name));
+  if (!files.length) return;
+  let pending = files.length;
+  files.forEach(file => {
+    const r = new FileReader();
+    r.onload = () => {
+      try {
+        const json = JSON.parse(r.result);
+        const parsed = C.parsePercept(json, file.name);
+        const dup = S.files.findIndex(x => x.name === file.name);
+        if (dup >= 0) S.files.splice(dup, 1);
+        S.files.push({ name: file.name, parsed });
+      } catch (e) {
+        alert(`Não foi possível ler "${file.name}". O arquivo precisa ser um Session Report JSON válido do Percept.\n\n${e.message}`);
+      }
+      if (--pending === 0) { S.files.sort((a, b) => a.name.localeCompare(b.name)); renderAll(); }
+    };
+    r.onerror = () => { if (--pending === 0) renderAll(); };
+    r.readAsText(file);
+  });
+}
+
+function exportSession() {
+  const d = ds();
+  const rows = [];
+  Object.keys(d.trend).forEach(h => d.trend[h].forEach(r => rows.push({
+    hemisferio: h, utc: new Date(r.t).toISOString(),
+    local: new Date(r.t + offMin() * 60000).toISOString().slice(0, 19),
+    hora_local_decimal: +C.localHour(r.t, offMin()).toFixed(4),
+    dia_local: C.localDayKey(r.t, offMin()), lfp: r.lfp, mA: r.ma
+  })));
+  if (!rows.length) return alert('Não há dados de Timeline nos arquivos carregados para exportar.');
+  P.downloadText(P.toCSV(rows), 'percept_timeline_para_R.csv', 'text/csv');
+}
+
+function init() {
+  $('#fileInput').addEventListener('change', e => { handleFiles(e.target.files); e.target.value = ''; });
+  $('#btnExport').addEventListener('click', exportSession);
+  $('#btnPrint').addEventListener('click', () => { $$('.fig').forEach(f => f.open = true); setTimeout(() => window.print(), 400); });
+  $('#tz').addEventListener('change', e => {
+    S.tzOverride = e.target.value === 'auto' ? null : parseInt(e.target.value, 10);
+    renderAll();
+  });
+  ['dragover', 'drop'].forEach(ev => document.addEventListener(ev, e => e.preventDefault()));
+  document.addEventListener('drop', e => { if (e.dataTransfer && e.dataTransfer.files.length) handleFiles(e.dataTransfer.files); });
+  let rt; window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => { if (S.files.length) $$('.fig[open]').forEach(f => renderFigure(f.id.replace('fig-', ''))); }, 260); });
+  renderAll();
+  if ('serviceWorker' in navigator && location.protocol.startsWith('http'))
+    navigator.serviceWorker.register('./sw.js').catch(() => { });
+}
+document.addEventListener('DOMContentLoaded', init);
+/* hook de depuração (usado pela suíte de testes; inerte em produção) */
+window.__PLS__ = { FIGURES, ds, S, renderFigure, handleFiles, offMin };
+})();
+</script>
+</body>
+</html>

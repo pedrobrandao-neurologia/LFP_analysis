@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+title: "LFP_analysis — Percept LFP Studio"
+message: "Se utilizar este software em pesquisa, por favor cite-o."
+type: software
+authors:
+  - family-names: "Brandão"
+    given-names: "Pedro Renato de Paula"
+    orcid: "https://orcid.org/0000-0002-1191-2078"
+    affiliation: "Hospital Universitário de Brasília (HUB-UnB); NA Neurologistas Associados"
+abstract: >-
+  Ferramentas para leitura, visualização e análise estatística de potenciais de
+  campo local (LFP) registrados pelo neuroestimulador Medtronic Percept PC/RC em
+  pacientes com doença de Parkinson. Inclui um aplicativo web progressivo (PWA)
+  que processa os arquivos inteiramente no navegador e um pacote de funções em R
+  para análise circadiana (cosinor de efeitos mistos com estrutura AR(1)),
+  detecção de bursts beta e parametrização espectral.
+keywords:
+  - deep brain stimulation
+  - subthalamic nucleus
+  - local field potentials
+  - Parkinson's disease
+  - adaptive DBS
+  - circadian rhythm
+  - cosinor
+license: MIT
+repository-code: "https://github.com/USUARIO/LFP_analysis"

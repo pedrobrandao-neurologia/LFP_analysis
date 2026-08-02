@@ -1,0 +1,46 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# DADOS DE PACIENTE — NUNCA VERSIONAR
+#
+# Os Session Reports do Percept contêm nome completo, data de nascimento,
+# identificador de prontuário e número de série do neuroestimulador.
+#
+# Estratégia: NEGAR TODO JSON POR PADRÃO e liberar apenas o que é do repositório.
+# Isso protege inclusive arquivos renomeados (ex.: "caso_03.json").
+# ─────────────────────────────────────────────────────────────────────────────
+*.json
+!examples/exemplo_sintetico.json
+!package.json
+!package-lock.json
+!.github/**/*.json
+
+# Pastas típicas de dados clínicos
+dados/
+data/
+pacientes/
+raw/
+casos/
+
+# Relatórios e planilhas derivadas
+*.pdf
+*.csv
+*.xlsx
+resultados/
+saida/
+output/
+
+# Exceção: documento de revisão que faz parte do repositório (não é dado de paciente)
+!docs/Revisao_LFP_Parkinson.pdf
+
+# R
+.Rhistory
+.RData
+.Rproj.user/
+*.Rproj
+
+# Node / sistema
+node_modules/
+npm-debug.log*
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

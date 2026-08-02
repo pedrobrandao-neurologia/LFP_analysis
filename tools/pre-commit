@@ -1,0 +1,26 @@
+#!/bin/sh
+# Bloqueia commits que contenham DADOS identificadores do Percept — não apenas
+# menções aos nomes dos campos em documentação ou código.
+#
+# Instalar:  cp tools/pre-commit .git/hooks/ && chmod +x .git/hooks/pre-commit
+
+# exige a forma JSON com valor preenchido: "Campo": "algum valor"
+PADRAO='"(PatientFirstName|PatientLastName|PatientDateOfBirth|NeurostimulatorSerialNumber)"[[:space:]]*:[[:space:]]*"[^"]'
+PERMITIDOS='^(examples/exemplo_sintetico\.json|tools/pre-commit)$'
+
+ACHOU=""
+for f in $(git diff --cached --name-only --diff-filter=ACM); do
+  echo "$f" | grep -qE "$PERMITIDOS" && continue
+  if git show ":$f" 2>/dev/null | grep -qE "$PADRAO"; then
+    ACHOU="$ACHOU  $f\n"
+  fi
+done
+
+if [ -n "$ACHOU" ]; then
+  printf "\n\033[31mCOMMIT BLOQUEADO — dados identificadores do Percept detectados em:\033[0m\n"
+  printf "$ACHOU"
+  printf "\nRemova do stage:  git restore --staged ARQUIVO\n"
+  printf "Prosseguir assim mesmo (não recomendado):  git commit --no-verify\n\n"
+  exit 1
+fi
+exit 0
