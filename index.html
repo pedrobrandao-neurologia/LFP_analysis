@@ -3438,7 +3438,16 @@ function init() {
   let rt; window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => { if (S.files.length) $$('.fig[open]').forEach(f => renderFigure(f.id.replace('fig-', ''))); }, 260); });
   renderAll();
   if ('serviceWorker' in navigator && location.protocol.startsWith('http'))
-    navigator.serviceWorker.register('./sw.js').catch(() => { });
+    navigator.serviceWorker.register('./sw.js').then(reg => {
+      /* quando uma nova versão do app for publicada, recarrega uma vez para aplicá-la */
+      reg.addEventListener('updatefound', () => {
+        const nw = reg.installing;
+        if (!nw) return;
+        nw.addEventListener('statechange', () => {
+          if (nw.state === 'installed' && navigator.serviceWorker.controller) location.reload();
+        });
+      });
+    }).catch(() => { });
 }
 document.addEventListener('DOMContentLoaded', init);
 /* hook de depuração (usado pela suíte de testes; inerte em produção) */
