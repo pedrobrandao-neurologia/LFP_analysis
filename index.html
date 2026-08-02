@@ -3194,11 +3194,469 @@ function extractMetrics(parsedList, offMin, opts) {
 
 /* ======================================================================== */
 
+/* ---------- core/provenance/index.js ---------- */
+/* provenance/index.js — manifesto de proveniência auditável e verificável.
+
+   POR QUE ISTO EXISTE. A revisão registra explicitamente que NÃO EXISTE padrão
+   de reporte para estudos de LFP com dispositivos de sensing: parâmetros de
+   Welch, critérios de exclusão de artefato, método de normalização e tratamento
+   de outliers variam entre grupos e frequentemente não são reportados. Um
+   manifesto auditável + checklist gerado automaticamente é ao mesmo tempo
+   funcionalidade e contribuição original publicável.
+
+   O manifesto responde, para cada número que sai do software: qual método o
+   produziu, com QUAIS PARÂMETROS EFETIVOS (não os default — os usados), sobre
+   quantas amostras, descartando quantas e por quê.
+
+   `verifyManifest` fecha o ciclo: com os mesmos arquivos e o mesmo manifesto, o
+   software refaz a análise e confirma que os resultados batem. É o que torna a
+   reprodutibilidade VERIFICÁVEL em vez de declarada.                          */
+
+/* SHA-256 sem dependência: crypto.subtle é nativo no navegador e no Node. */
+async function sha256Hex(dado) {
+  const bytes = typeof dado === 'string' ? new TextEncoder().encode(dado) : dado;
+  const sub = (globalThis.crypto && globalThis.crypto.subtle) || null;
+  if (!sub) return fallbackHash(bytes);          // ambiente sem WebCrypto
+  const buf = await sub.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+/* Alternativa determinística quando não há WebCrypto (FNV-1a de 128 bits em
+   quatro faixas). NÃO é SHA-256 — o manifesto declara qual foi usada. */
+function fallbackHash(bytes) {
+  const h = [2166136261, 16777619, 2246822519, 3266489917];
+  for (let i = 0; i < bytes.length; i++)
+    for (let k = 0; k < 4; k++) { h[k] ^= bytes[i] + k; h[k] = Math.imul(h[k], 16777619) >>> 0; }
+  return h.map(x => (x >>> 0).toString(16).padStart(8, '0')).join('');
+}
+
+const APP_VERSION = '0.5.0';
+
+/* createProvenance({appVersion, bundleHash, profileId, timezone, ...}) */
+function createProvenance(cab) {
+  cab = cab || {};
+  const inicio = cab.now || null;                /* injetado: o núcleo não lê relógio */
+  const estado = {
+    header: {
+      tool: 'Percept LFP Studio',
+      appVersion: cab.appVersion || APP_VERSION,
+      bundleHash: cab.bundleHash || null,
+      generatedAt: inicio,
+      profileId: cab.profileId || null,
+      profileLabel: cab.profileLabel || null,
+      timezoneOffsetMin: cab.timezoneOffsetMin,
+      timezoneBreaks: cab.timezoneBreaks || [],
+      hashAlgorithm: (globalThis.crypto && globalThis.crypto.subtle) ? 'SHA-256' : 'FNV-1a-128 (sem WebCrypto)'
+    },
+    files: [], steps: [], figures: {}, metrics: {}, exclusions: []
+  };
+
+  const api = {
+    /* Registra um passo de método com os PARÂMETROS EFETIVOS. */
+    record(step, params, meta) {
+      const reg = {
+        id: estado.steps.length + 1,
+        step,
+        params: params || {},
+        nIn: meta && meta.nIn, nOut: meta && meta.nOut,
+        nDropped: meta && meta.nDropped,
+        dropReason: meta && meta.dropReason,
+        figure: meta && meta.figure,
+        note: meta && meta.note
+      };
+      estado.steps.push(reg);
+      if (reg.figure) (estado.figures[reg.figure] = estado.figures[reg.figure] || []).push(reg.id);
+      return reg.id;
+    },
+    /* Arquivo de entrada, já pseudonimizado — nunca identificador direto. */
+    file(info) {
+      estado.files.push({
+        name: info.name, sha256: info.sha256 || null,
+        subjectId: info.subjectId || null,
+        firmware: info.firmware || null, programmerVersion: info.programmerVersion || null,
+        deviceModel: info.deviceModel || null, implantDate: info.implantDate || null,
+        deviceStates: info.deviceStates || [],
+        modalities: info.modalities || {}
+      });
+    },
+    /* Métrica exportada → passo que a produziu. */
+    metric(nome, stepId, params) {
+      estado.metrics[nome] = { stepId, params: params || {} };
+    },
+    /* Cada dado excluído, o critério e a decisão do usuário quando houve. */
+    exclusion(o) {
+      estado.exclusions.push({
+        what: o.what, criterion: o.criterion, decidedBy: o.decidedBy || 'automático',
+        n: o.n, reason: o.reason || null
+      });
+    },
+    manifest() {
+      return JSON.parse(JSON.stringify(estado));
+    },
+    /* Hash do manifesto inteiro, citável em manuscrito como identificador de
+       versão de análise. Exclui `generatedAt` para ser estável entre execuções
+       idênticas — o que muda o hash é o MÉTODO, não o relógio. */
+    async hash() {
+      const m = api.manifest();
+      const semData = JSON.parse(JSON.stringify(m));
+      delete semData.header.generatedAt;
+      return sha256Hex(canonical(semData));
+    },
+    get steps() { return estado.steps; },
+    get header() { return estado.header; }
+  };
+  return api;
+}
+
+/* Serialização canônica: chaves ordenadas, para que o hash não dependa da
+   ordem de inserção das propriedades. */
+function canonical(v) {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v);
+  if (Array.isArray(v)) return '[' + v.map(canonical).join(',') + ']';
+  return '{' + Object.keys(v).sort().map(k => JSON.stringify(k) + ':' + canonical(v[k])).join(',') + '}';
+}
+
+/* verifyManifest(manifesto, recomputado)
+   Compara o manifesto guardado com o de uma reexecução: mesmos passos, mesmos
+   parâmetros efetivos, mesmos n. Retorna as divergências, se houver.        */
+function verifyManifest(guardado, recomputado) {
+  const divergencias = [];
+  const a = guardado || {}, b = recomputado || {};
+  const passosA = a.steps || [], passosB = b.steps || [];
+
+  if ((a.header || {}).appVersion !== (b.header || {}).appVersion)
+    divergencias.push({ campo: 'appVersion', guardado: (a.header || {}).appVersion, atual: (b.header || {}).appVersion });
+  if ((a.header || {}).profileId !== (b.header || {}).profileId)
+    divergencias.push({ campo: 'profileId', guardado: (a.header || {}).profileId, atual: (b.header || {}).profileId });
+
+  /* arquivos: o hash do conteúdo precisa bater */
+  (a.files || []).forEach((fa, i) => {
+    const fb = (b.files || [])[i];
+    if (!fb) { divergencias.push({ campo: `files[${i}]`, guardado: fa.name, atual: '(ausente)' }); return; }
+    if (fa.sha256 && fb.sha256 && fa.sha256 !== fb.sha256)
+      divergencias.push({ campo: `files[${i}].sha256`, guardado: fa.sha256.slice(0, 12), atual: fb.sha256.slice(0, 12) });
+  });
+
+  if (passosA.length !== passosB.length)
+    divergencias.push({ campo: 'nSteps', guardado: passosA.length, atual: passosB.length });
+
+  passosA.forEach((pa, i) => {
+    const pb = passosB[i];
+    if (!pb) return;
+    if (pa.step !== pb.step)
+      divergencias.push({ campo: `steps[${i}].step`, guardado: pa.step, atual: pb.step });
+    else if (canonical(pa.params) !== canonical(pb.params))
+      divergencias.push({ campo: `steps[${i}].params (${pa.step})`, guardado: canonical(pa.params), atual: canonical(pb.params) });
+    else if (isFinite(pa.nOut) && isFinite(pb.nOut) && pa.nOut !== pb.nOut)
+      divergencias.push({ campo: `steps[${i}].nOut (${pa.step})`, guardado: pa.nOut, atual: pb.nOut });
+  });
+
+  return {
+    ok: divergencias.length === 0,
+    nDivergences: divergencias.length,
+    divergences: divergencias.slice(0, 50),
+    verdict: divergencias.length === 0
+      ? 'análise reproduzida: método, parâmetros e contagens idênticos'
+      : `${divergencias.length} divergência(s) — a análise NÃO é reprodução exata do manifesto`
+  };
+}
+
+/* ---------- core/export/zip.js ---------- */
+/* export/zip.js — escritor ZIP mínimo, sem dependência.
+
+   Método `store` (sem compressão): é válido, é simples e mantém o invariante de
+   zero dependência. Usado para gerar o DOCX do checklist (um .docx é um ZIP com
+   XML dentro) e, adiante, para o pacote único de exportação.                 */
+
+const TABELA_CRC = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+
+function crc32(bytes) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) c = TABELA_CRC[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+const paraBytes = d => typeof d === 'string' ? new TextEncoder().encode(d) : d;
+
+/* makeZip([{name, data}]) → Uint8Array */
+function makeZip(arquivos) {
+  const locais = [], centrais = [];
+  let offset = 0;
+
+  const u16 = v => [v & 0xFF, (v >>> 8) & 0xFF];
+  const u32 = v => [v & 0xFF, (v >>> 8) & 0xFF, (v >>> 16) & 0xFF, (v >>> 24) & 0xFF];
+
+  arquivos.forEach(f => {
+    const nome = paraBytes(f.name), dados = paraBytes(f.data);
+    const crc = crc32(dados);
+    const cabecalho = [].concat(
+      u32(0x04034b50), u16(20), u16(0), u16(0), u16(0), u16(0),
+      u32(crc), u32(dados.length), u32(dados.length),
+      u16(nome.length), u16(0));
+    const bloco = new Uint8Array(cabecalho.length + nome.length + dados.length);
+    bloco.set(cabecalho, 0); bloco.set(nome, cabecalho.length);
+    bloco.set(dados, cabecalho.length + nome.length);
+    locais.push(bloco);
+
+    const central = [].concat(
+      u32(0x02014b50), u16(20), u16(20), u16(0), u16(0), u16(0), u16(0),
+      u32(crc), u32(dados.length), u32(dados.length),
+      u16(nome.length), u16(0), u16(0), u16(0), u16(0), u32(0), u32(offset));
+    const blocoC = new Uint8Array(central.length + nome.length);
+    blocoC.set(central, 0); blocoC.set(nome, central.length);
+    centrais.push(blocoC);
+    offset += bloco.length;
+  });
+
+  const tamCentral = centrais.reduce((a, b) => a + b.length, 0);
+  const fim = new Uint8Array([].concat(
+    u32(0x06054b50), u16(0), u16(0), u16(arquivos.length), u16(arquivos.length),
+    u32(tamCentral), u32(offset), u16(0)));
+
+  const total = locais.reduce((a, b) => a + b.length, 0) + tamCentral + fim.length;
+  const saida = new Uint8Array(total);
+  let o = 0;
+  locais.forEach(b => { saida.set(b, o); o += b.length; });
+  centrais.forEach(b => { saida.set(b, o); o += b.length; });
+  saida.set(fim, o);
+  return saida;
+}
+
+/* Escapa texto para XML. */
+const xmlEscape = s => String(s == null ? '' : s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+
+/* makeDocx(blocos) → Uint8Array
+   blocos: [{ tipo: 'h1'|'h2'|'p'|'li', texto }]
+   DOCX mínimo (Office Open XML) escrito à mão — sem dependência.            */
+function makeDocx(blocos) {
+  const par = b => {
+    const estilo = b.tipo === 'h1' ? '<w:pPr><w:pStyle w:val="Heading1"/></w:pPr>'
+      : b.tipo === 'h2' ? '<w:pPr><w:pStyle w:val="Heading2"/></w:pPr>'
+      : b.tipo === 'li' ? '<w:pPr><w:ind w:left="360"/></w:pPr>' : '';
+    const negrito = (b.tipo === 'h1' || b.tipo === 'h2') ? '<w:rPr><w:b/></w:rPr>' : '';
+    const texto = b.tipo === 'li' ? '• ' + b.texto : b.texto;
+    return `<w:p>${estilo}<w:r>${negrito}<w:t xml:space="preserve">${xmlEscape(texto)}</w:t></w:r></w:p>`;
+  };
+  const documento = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>${blocos.map(par).join('')}</w:body></w:document>`;
+  const tipos = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>`;
+  const rels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`;
+  return makeZip([
+    { name: '[Content_Types].xml', data: tipos },
+    { name: '_rels/.rels', data: rels },
+    { name: 'word/document.xml', data: documento }
+  ]);
+}
+
+/* ---------- core/report/checklist.js ---------- */
+/* report/checklist.js — PERCEPT-REPORT: itens mínimos de reporte.
+
+   POR QUE ISTO EXISTE. A revisão identifica, como lacuna nº 1 do campo, que
+   NÃO EXISTE checklist tipo STROBE/PRISMA para estudos de LFP com dispositivos
+   de sensing — e que parâmetros de Welch, critérios de exclusão de artefato,
+   método de normalização e tratamento de outliers variam entre grupos e
+   frequentemente não são reportados.
+
+   Este módulo propõe esse checklist e o PREENCHE AUTOMATICAMENTE a partir do
+   manifesto de proveniência: cada item recebe o valor efetivamente usado, ou é
+   marcado como "não aplicável" ou "não determinado — informe manualmente".
+   O que o software não conseguir extrair, ele diz que não conseguiu, em vez de
+   deixar em branco.
+
+   Ver docs/PERCEPT-REPORT.md para a proposta completa e a fundamentação de
+   cada item.                                                                 */
+
+const NAO_DET = 'não determinado — informe manualmente';
+const NAO_APL = 'não aplicável';
+
+/* Itens agrupados. `from` diz de onde o valor sai do manifesto/métricas. */
+const CHECKLIST_ITEMS = [
+  ['Dispositivo e aquisição', [
+    ['device_model', 'Modelo do neuroestimulador (PC vs RC)'],
+    ['firmware', 'Versão de firmware'],
+    ['programmer_version', 'Versão do programador'],
+    ['target', 'Alvo e modelo de eletrodo'],
+    ['sensing_channel', 'Par bipolar de registro'],
+    ['fs_nominal', 'Frequência de amostragem nominal (Hz)'],
+    ['fs_effective', 'Frequência de amostragem efetiva medida (Hz)'],
+    ['hardware_filters', 'Filtros de hardware (passa-alta / passa-baixa)'],
+    ['blanking', 'Janela de blanking do sensing (µs)'],
+    ['device_state', 'Estado do dispositivo em cada registro (OFF / ON-0 mA / ON-terapêutico)'],
+    ['stim_params', 'Parâmetros de estimulação (amplitude, frequência, largura de pulso, contatos)'],
+    ['sensing_center', 'Frequência-alvo do sensing e largura da janela (Hz)']
+  ]],
+  ['Integridade do dado', [
+    ['packet_loss', 'Taxa de perda de pacotes e como foi tratada'],
+    ['n_valid', 'n de amostras válidas e excluídas'],
+    ['drift', 'Deriva temporal estimada (ms)'],
+    ['timezone', 'Fuso horário e transições tratadas']
+  ]],
+  ['Artefatos', [
+    ['artifact_types', 'Tipos de artefato avaliados'],
+    ['rpeak_method', 'Método de detecção de picos R'],
+    ['ecg_method', 'Método de remoção de ECG e seus parâmetros'],
+    ['ecg_validation', 'Métricas de validação da remoção (supressão, recuperação do pico)'],
+    ['epoch_exclusion', 'Critério de exclusão de época'],
+    ['motion', 'Tratamento de artefato de movimento'],
+    ['harmonics', 'Verificação de harmônicos']
+  ]],
+  ['Análise espectral', [
+    ['estimator', 'Estimador espectral e todos os parâmetros (janela, sobreposição, nfft, tapers)'],
+    ['normalization', 'Método de normalização'],
+    ['specparam', 'Parâmetros do specparam / ajuste aperiódico'],
+    ['bands', 'Definição exata das bandas']
+  ]],
+  ['Bursts', [
+    ['burst_method', 'Método (Hilbert / wavelet / linha de base 1/f)'],
+    ['burst_band', 'Banda usada'],
+    ['burst_threshold', 'Percentil de limiar'],
+    ['burst_min_duration', 'Duração mínima'],
+    ['burst_gaps', 'Como bursts adjacentes a lacunas foram tratados']
+  ]],
+  ['Crônico', [
+    ['n_days', 'n de dias e de pontos válidos'],
+    ['outliers', 'Método de remoção de outliers'],
+    ['detrending', 'Detrending aplicado'],
+    ['cosinor', 'Método do cosinor e correção de autocorrelação'],
+    ['acrophase', 'Tratamento da acrofase como grandeza circular']
+  ]],
+  ['Estatística', [
+    ['multiple_comparison', 'Método de correção para comparação múltipla'],
+    ['n_permutations', 'n de permutações'],
+    ['bootstrap', 'Método de bootstrap'],
+    ['software', 'Software e versão']
+  ]]
+];
+
+/* Extrai o valor de um item a partir do manifesto e das métricas. */
+function valorDe(chave, prov, metrics, profile) {
+  const h = (prov && prov.header) || {};
+  const arq = (prov && prov.files && prov.files[0]) || {};
+  const passos = (prov && prov.steps) || [];
+  const passo = nome => passos.find(s => s.step === nome);
+  const ag = (metrics && metrics.acute && metrics.acute[0]) || {};
+  const cr = (metrics && metrics.chronic && metrics.chronic[0]) || {};
+  const sub = (metrics && metrics.subject) || {};
+  const val = v => (v === undefined || v === null || v === '' || (typeof v === 'number' && !isFinite(v))) ? null : v;
+
+  switch (chave) {
+    case 'device_model': return val(arq.deviceModel || sub.device_model);
+    case 'firmware': return val(arq.firmware || sub.firmware);
+    case 'programmer_version': return val(arq.programmerVersion);
+    case 'target': return val((sub.targets || []).map(t => `${t.hemisphere}:${t.target} (${t.model || '—'})`).join(', '));
+    case 'sensing_channel': return val(ag.spectrum_channel);
+    case 'fs_nominal': {
+      const p = passo('parse.timeDomain'); return val(p && p.params.fsNominal) || '250 (default do Percept)';
+    }
+    case 'fs_effective': { const p = passo('parse.timeDomain'); return val(p && p.params.fsEffective); }
+    case 'hardware_filters': { const p = passo('parse.timeDomain'); return val(p && p.params.hardwareFilters); }
+    case 'blanking': { const p = passo('parse.timeDomain'); return val(p && p.params.blankingUs); }
+    case 'device_state': return val(ag.device_state) || NAO_DET + ' (inferência de estado é da Onda 1.3, ainda não implementada)';
+    case 'stim_params': { const p = passo('parse.stimulation'); return val(p && JSON.stringify(p.params)); }
+    case 'sensing_center': return val(ag.sensing_center_hz ? `${ag.sensing_center_hz} Hz ± 2,5` : null);
+    case 'packet_loss': {
+      const p = passo('io.analyzePackets');
+      if (!p) return null;
+      return `${p.params.method === 'none' ? 'não verificável (sem GlobalSequences/TicksInMses)' :
+        `detectada por ${p.params.method}: ${p.params.pctMissing}% de amostras`} — lacunas inseridas como NaN, sem interpolação`;
+    }
+    case 'n_valid': { const p = passo('io.analyzePackets'); return p ? `${p.nOut} válidas de ${p.nIn} esperadas` : null; }
+    case 'drift': { const p = passo('parse.timeDomain'); return val(p && p.params.driftMsTotal); }
+    case 'timezone': return val(`UTC${h.timezoneOffsetMin >= 0 ? '+' : ''}${(h.timezoneOffsetMin / 60).toFixed(0)}h` +
+      (h.timezoneBreaks && h.timezoneBreaks.length ? `; ${h.timezoneBreaks.length} quebra(s) tratada(s)` : '; nenhuma quebra detectada'));
+    case 'artifact_types': return val('cardíaco (F15)' + (ag.ecg_detected != null ? '; detectado: ' + (ag.ecg_detected ? 'sim' : 'não') : '') +
+      '. Rampa de estimulação, polifásicos e movimento: Onda 2.2/2.3, ainda não implementados');
+    case 'rpeak_method': return val(ag.ecg_detection_method ? `${ag.ecg_detection_method} (confiança ${ag.ecg_detection_confidence})` : null);
+    case 'ecg_method': return val(ag.ecg_cleaning_method ?
+      `${ag.ecg_cleaning_method}, janela ±${ag.ecg_cleaning_window_s} s` +
+      (ag.ecg_svd_components ? `, k = ${ag.ecg_svd_components} componentes` : '') : null);
+    case 'ecg_validation': return val(isFinite(ag.ecg_suppression_db) ?
+      `supressão ${ag.ecg_suppression_db} dB; recuperação do pico beta ${ag.ecg_beta_peak_recovery}; veredito: ${ag.ecg_cleaning_verdict}` : null);
+    case 'epoch_exclusion': return val('segmentos com qualquer NaN são descartados do Welch (maxNanPct = 0); épocas sobre lacuna não entram na matriz de SVD');
+    case 'motion': return NAO_APL + ' — regressão por IMU é da Onda 2.3, ainda não implementada';
+    case 'harmonics': return NAO_APL + ' — verificação de harmônicos é da Onda 2.2, ainda não implementada';
+    case 'estimator': { const p = passo('dsp.welchPSD'); return p ? `Welch (Hann, nperseg ${p.params.nperseg}, sobreposição ${p.params.overlap}, Δf ${p.params.df} Hz, ${p.params.nSegments} segmentos usados e ${p.params.nSegmentsDropped} descartados)` : null; }
+    case 'normalization': return val(profile ? profile.normalization : ag.normalization);
+    case 'specparam': { const p = passo('dsp.fitAperiodic'); return p ? `regressão robusta iterativa em log-log, fmin ${p.params.fmin} Hz, fmax ${p.params.fmax} Hz (aproximação do specparam/FOOOF)` : null; }
+    case 'bands': return val(profile ? profile.bands.map(b => `${b.key} ${b.lo}–${b.hi} Hz`).join('; ') : null);
+    case 'burst_method': return val(ag.burst_method || 'envelope de Hilbert com limiar por percentil');
+    case 'burst_band': return val(ag.burst_band_hz ? ag.burst_band_hz + ' Hz' : null);
+    case 'burst_threshold': return val(ag.burst_percentile ? 'percentil ' + ag.burst_percentile : null);
+    case 'burst_min_duration': { const p = passo('dsp.detectBursts'); return val(p && p.params.minDurationMs ? p.params.minDurationMs + ' ms' : '100 ms (default)'); }
+    case 'burst_gaps': return val('bursts que encostam em lacuna recebem truncated=true, entram na contagem e ficam fora das estatísticas de duração');
+    case 'n_days': return val(cr.n_days ? `${cr.n_days} dias, ${cr.n_points} pontos válidos (${cr.n_removed} removidos)` : null);
+    case 'outliers': return val(cr.n_days ? 'mediana ± 4×MAD' : null);
+    case 'detrending': return val(cr.n_days ? 'normalização de cada dia pela própria mediana antes de agregar' : null);
+    case 'cosinor': return val(isFinite(cr.cosinor_p) ?
+      `cosinor por mínimos quadrados com harmônicos de 24 e 12 h; p bruto ${cr.cosinor_p}, p corrigido para AR(1) ${cr.cosinor_p_adj_ar1} (ρ = ${cr.rho_ar1})` : null);
+    case 'acrophase': return val(isFinite(cr.rayleigh_p) ?
+      `tratada como grandeza circular; teste de Rayleigh das acrofases diárias (R = ${cr.rayleigh_R}, p = ${cr.rayleigh_p})` : null);
+    case 'multiple_comparison': return NAO_DET + ' (correção FDR entra com o modo Coorte, Onda 6)';
+    case 'n_permutations': { const p = passo('stats.permutationTest'); return val(p && p.params.nPerm ? p.params.nPerm : '3.000 nas comparações das figuras'); }
+    case 'bootstrap': return val(cr.n_days ? 'bootstrap de blocos reamostrando dias inteiros (preserva a autocorrelação intradiária)' : null);
+    case 'software': return val(`${h.tool} ${h.appVersion}` + (h.bundleHash ? ` (bundle ${String(h.bundleHash).slice(0, 12)})` : ''));
+    default: return null;
+  }
+}
+
+/* generateChecklist(prov, metrics, profile)
+   → { items, nFilled, nTotal, markdown, docxBlocks }                        */
+function generateChecklist(prov, metrics, profile) {
+  const grupos = CHECKLIST_ITEMS.map(([grupo, itens]) => ({
+    grupo,
+    itens: itens.map(([chave, rotulo]) => {
+      const v = valorDe(chave, prov, metrics, profile);
+      const preenchido = v != null && String(v).indexOf(NAO_DET) !== 0 && String(v).indexOf(NAO_APL) !== 0;
+      return { chave, rotulo, valor: v == null ? NAO_DET : String(v), preenchido };
+    })
+  }));
+  const todos = grupos.flatMap(g => g.itens);
+  const nFilled = todos.filter(i => i.preenchido).length;
+
+  const md = ['# PERCEPT-REPORT — itens mínimos de reporte', '',
+    `Preenchido automaticamente a partir do manifesto de proveniência: **${nFilled} de ${todos.length}** itens.`,
+    'Os itens marcados como *não determinado* precisam ser informados manualmente antes da submissão.', '']
+    .concat(grupos.flatMap(g => ['', `## ${g.grupo}`, '', '| Item | Valor usado |', '|---|---|']
+      .concat(g.itens.map(i => `| ${i.rotulo} | ${i.preenchido ? i.valor : '*' + i.valor + '*'} |`))))
+    .join('\n');
+
+  const docxBlocks = [{ tipo: 'h1', texto: 'PERCEPT-REPORT — itens mínimos de reporte' },
+    { tipo: 'p', texto: `Preenchido automaticamente a partir do manifesto de proveniência: ${nFilled} de ${todos.length} itens.` }]
+    .concat(grupos.flatMap(g => [{ tipo: 'h2', texto: g.grupo }]
+      .concat(g.itens.map(i => ({ tipo: 'li', texto: `${i.rotulo}: ${i.valor}` })))));
+
+  return { items: grupos, nFilled, nTotal: todos.length, markdown: md, docxBlocks };
+}
+
+/* Documento .docx pronto para anexar como material suplementar. */
+function checklistDocx(checklist) { return makeDocx(checklist.docxBlocks); }
+
 /* ---------- core/index.js ---------- */
 /* core/index.js — barrel do núcleo.
    Monta o objeto PerceptCore com EXATAMENTE a mesma superfície pública de antes
    do refactor modular (Prompt 0.1), para que app.js e a suíte de testes não mudem.
    Ver docs/arquitetura.md para o mapa de módulos e a regra de dependência. */
+
+
+
 
 
 
@@ -3238,7 +3696,11 @@ const API = {
   ecgSuppressionRatio, betaPeakRecovery, bandPowerPreservation, correlation, validateEcgRemoval,
   /* perfis de doença (Onda 5 — L37, L38, L39) */
   PROFILES, PROFILE_IDS, getProfile, suggestProfile, bandsOf, normalizeSpectrum,
-  detectTremorFrequency, spearman, movingAverageDays
+  detectTremorFrequency, spearman, movingAverageDays,
+  /* proveniência e padrão de reporte (Onda 7.2 — L49, L50) */
+  createProvenance, verifyManifest, sha256Hex, canonical,
+  generateChecklist, checklistDocx, CHECKLIST_ITEMS,
+  makeZip, makeDocx, crc32
 };
 if (typeof module !== "undefined" && module.exports) module.exports = API;
 root.PerceptCore = API;
@@ -5187,7 +5649,10 @@ function renderRail() {
       ['⤓ CSV — métricas agudas', 'pico β, aperiódico, bursts (sessão × hemisfério)', exportAcuteCSV],
       ['⤓ CSV — métricas crônicas', 'circadiano e limiares de aDBS (Timeline)', exportChronicCSV],
       ['⤓ CSV — Timeline bruto', 'amostras de 10 min, formato longo para R', exportSession],
-      ['⤓ Todas as figuras (PNG)', 'baixa cada gráfico individualmente', downloadAllFigures]
+      ['⤓ Todas as figuras (PNG)', 'baixa cada gráfico individualmente', downloadAllFigures],
+      ['⤓ Checklist PERCEPT-REPORT (.md)', 'itens mínimos de reporte, preenchidos automaticamente', () => exportChecklist('md')],
+      ['⤓ Checklist PERCEPT-REPORT (.docx)', 'mesmo conteúdo, pronto para material suplementar', () => exportChecklist('docx')],
+      ['⤓ Manifesto de proveniência', 'todos os parâmetros efetivos + hash citável da análise', exportManifest]
     ].forEach(([label, desc, fn, cls]) => {
       grid.appendChild(el('div', { class: 'exportitem' }, [
         el('button', { class: 'btn' + (cls ? ' ' + cls : ''), text: label, onclick: fn }),
@@ -5346,6 +5811,119 @@ function downloadAllFigures() {
     if (!jobs.length) return alert('Nenhuma figura para exportar.');
     jobs.forEach(([cv, name], i) => setTimeout(() => P.downloadCanvas(cv, name), i * 350));
   }, 500);
+}
+
+
+/* -------------------------------------------- proveniência e checklist -- */
+/* Monta o manifesto da análise em curso a partir do que o núcleo registrou nos
+   objetos parseados e das opções efetivamente usadas nas figuras. */
+async function buildProvenance() {
+  const perfil = activeProfile();
+  const prov = C.createProvenance({
+    appVersion: '0.5.0',
+    now: new Date().toISOString(),
+    profileId: perfil.id, profileLabel: perfil.label,
+    timezoneOffsetMin: offMin(),
+    timezoneBreaks: []
+  });
+  for (const fl of activeFiles()) {
+    const p = fl.parsed;
+    prov.file({
+      name: fl.name,
+      sha256: fl.sha256 || null,
+      subjectId: p.patient.idHash,
+      firmware: p.device.firmware, programmerVersion: p.meta.programmerVersion,
+      deviceModel: p.device.model, implantDate: String(p.device.implantDate || '').slice(0, 10),
+      modalities: p.availability
+    });
+    (p.bsTimeDomain || []).concat(p.montageTD || []).forEach(td => {
+      const est = C.nanStats(td.data);
+      prov.record('parse.timeDomain', {
+        channel: td.label, fsNominal: td.fs,
+        fsEffective: isFinite(td.fsEff) ? +td.fsEff.toFixed(4) : null,
+        driftMsTotal: td.timing && isFinite(td.timing.driftMsTotal) ? +td.timing.driftMsTotal.toFixed(2) : null,
+        hardwareFilters: 'passa-alta do dispositivo (não exposta no JSON)'
+      }, { nIn: est.n, nOut: est.nValid, nDropped: est.nNan, dropReason: 'perda de pacotes (NaN)' });
+      const pk = td.packets || {};
+      prov.record('io.analyzePackets', {
+        method: pk.method, reliable: pk.reliable,
+        pctMissing: isFinite(pk.pctMissing) ? +pk.pctMissing.toFixed(3) : null,
+        nGaps: (pk.gaps || []).length, policy: 'NaN, sem interpolação nem concatenação'
+      }, { nIn: pk.nExpected, nOut: pk.nReceived, nDropped: pk.nMissing, dropReason: pk.reason || 'pacotes perdidos' });
+      if (pk.nMissing) prov.exclusion({
+        what: `amostras perdidas em ${td.label}`, criterion: 'perda de pacote detectada por ' + pk.method,
+        n: pk.nMissing, decidedBy: 'automático', reason: 'lacuna preservada como NaN'
+      });
+    });
+  }
+  /* passos de DSP com os parâmetros EFETIVOS usados nas figuras */
+  const d = ds();
+  const td0 = (d.bsTimeDomain[0] || d.montageTD[0]);
+  if (td0) {
+    const w = C.welchPSD(td0.data, td0.fsEff || td0.fs, { nperseg: 512, overlap: .5 });
+    prov.record('dsp.welchPSD', {
+      window: 'hann', nperseg: w.nperseg, overlap: 0.5, df: +w.df.toFixed(4),
+      detrend: 'linear por segmento', maxNanPct: 0,
+      nSegments: w.nSegments, nSegmentsDropped: w.nSegmentsDropped,
+      pctDataUsed: +(w.pctDataUsed || 0).toFixed(1)
+    }, { nIn: td0.data.length, nOut: w.p ? w.p.length : 0, figure: 'F1' });
+    prov.record('dsp.fitAperiodic', { fmin: 2, fmax: 95, method: 'regressão robusta iterativa log-log' }, { figure: 'F2' });
+    const oB = S.opts.F6 || {};
+    prov.record('dsp.detectBursts', {
+      band: [oB.blo || 13, oB.bhi || 20], percentile: oB.pct || 75,
+      minDurationMs: oB.minms || 100, envelope: 'Hilbert', gapPolicy: 'burst não atravessa lacuna'
+    }, { figure: 'F6' });
+  }
+  if (Object.keys(d.trend).length) {
+    const o9 = S.opts.F9 || {};
+    prov.record('stats.cosinor', {
+      harmonics: (o9.harm || '24+12'), binMin: o9.bin || 30, detrendDaily: o9.detrend !== false,
+      outlierRule: 'mediana ± 4×MAD', bootstrap: 'blocos por dia inteiro', nBoot: o9.boot || 200
+    }, { figure: 'F9' });
+    prov.record('stats.permutationTest', { nPerm: 3000, scope: 'comparações das figuras F7/F10/F12' });
+  }
+  return prov;
+}
+
+async function exportChecklist(formato) {
+  if (!S.files.length) return alert('Carregue ao menos um arquivo antes de gerar o checklist.');
+  const prov = await buildProvenance();
+  const b = exportBundle();
+  const ck = C.generateChecklist(prov.manifest(), b, activeProfile());
+  const nome = `PERCEPT-REPORT_${(b && b.subject.id) || 'analise'}`;
+  if (formato === 'docx') {
+    const bytes = C.checklistDocx(ck);
+    const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+    const a = document.createElement('a');
+    a.download = nome + '.docx'; a.href = URL.createObjectURL(blob); a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  } else {
+    P.downloadText(ck.markdown, nome + '.md', 'text/markdown');
+  }
+  return ck;
+}
+
+async function exportManifest() {
+  if (!S.files.length) return alert('Carregue ao menos um arquivo antes de exportar o manifesto.');
+  const prov = await buildProvenance();
+  const m = prov.manifest();
+  m.manifestHash = await prov.hash();
+  P.downloadText(JSON.stringify(m, null, 2), `manifesto_proveniencia_${m.files[0] ? m.files[0].subjectId : 'analise'}.json`, 'application/json');
+}
+
+/* Reproduz a análise a partir de um manifesto e confirma que os resultados
+   batem — é o que torna a reprodutibilidade verificável, não declarada. */
+async function verifyFromManifest(file) {
+  try {
+    const guardado = JSON.parse(await file.text());
+    const atual = (await buildProvenance()).manifest();
+    const r = C.verifyManifest(guardado, atual);
+    const det = r.ok ? '' : '\n\n' + r.divergences.slice(0, 8)
+      .map(d => `• ${d.campo}: manifesto "${d.guardado}" vs. atual "${d.atual}"`).join('\n');
+    alert(`${r.ok ? '✓' : '✗'} ${r.verdict}${det}`);
+  } catch (e) {
+    alert('Não foi possível ler o manifesto: ' + e.message);
+  }
 }
 
 /* ------------------------------------------------- relatório em PDF ----- */

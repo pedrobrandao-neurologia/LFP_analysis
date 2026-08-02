@@ -52,7 +52,7 @@ function stripModuleSyntax(src) {
     .replace(EXPORT_FROM_RE, '')
     .replace(/^\s*export\s+default\s+\w+\s*;?\s*$/gm, '')
     .replace(/^\s*export\s*\{[^}]*\}\s*;?\s*$/gm, '')
-    .replace(/^(\s*)export\s+(function|const|let|var|class)\b/gm, '$1$2');
+    .replace(/^(\s*)export\s+(async\s+function|function\s*\*|function|const|let|var|class)\b/gm, '$1$2');
 }
 
 const ENTRY = path.join(AQUI, 'core/index.js');

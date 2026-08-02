@@ -1527,7 +1527,10 @@ function renderRail() {
       ['⤓ CSV — métricas agudas', 'pico β, aperiódico, bursts (sessão × hemisfério)', exportAcuteCSV],
       ['⤓ CSV — métricas crônicas', 'circadiano e limiares de aDBS (Timeline)', exportChronicCSV],
       ['⤓ CSV — Timeline bruto', 'amostras de 10 min, formato longo para R', exportSession],
-      ['⤓ Todas as figuras (PNG)', 'baixa cada gráfico individualmente', downloadAllFigures]
+      ['⤓ Todas as figuras (PNG)', 'baixa cada gráfico individualmente', downloadAllFigures],
+      ['⤓ Checklist PERCEPT-REPORT (.md)', 'itens mínimos de reporte, preenchidos automaticamente', () => exportChecklist('md')],
+      ['⤓ Checklist PERCEPT-REPORT (.docx)', 'mesmo conteúdo, pronto para material suplementar', () => exportChecklist('docx')],
+      ['⤓ Manifesto de proveniência', 'todos os parâmetros efetivos + hash citável da análise', exportManifest]
     ].forEach(([label, desc, fn, cls]) => {
       grid.appendChild(el('div', { class: 'exportitem' }, [
         el('button', { class: 'btn' + (cls ? ' ' + cls : ''), text: label, onclick: fn }),
@@ -1686,6 +1689,119 @@ function downloadAllFigures() {
     if (!jobs.length) return alert('Nenhuma figura para exportar.');
     jobs.forEach(([cv, name], i) => setTimeout(() => P.downloadCanvas(cv, name), i * 350));
   }, 500);
+}
+
+
+/* -------------------------------------------- proveniência e checklist -- */
+/* Monta o manifesto da análise em curso a partir do que o núcleo registrou nos
+   objetos parseados e das opções efetivamente usadas nas figuras. */
+async function buildProvenance() {
+  const perfil = activeProfile();
+  const prov = C.createProvenance({
+    appVersion: '0.5.0',
+    now: new Date().toISOString(),
+    profileId: perfil.id, profileLabel: perfil.label,
+    timezoneOffsetMin: offMin(),
+    timezoneBreaks: []
+  });
+  for (const fl of activeFiles()) {
+    const p = fl.parsed;
+    prov.file({
+      name: fl.name,
+      sha256: fl.sha256 || null,
+      subjectId: p.patient.idHash,
+      firmware: p.device.firmware, programmerVersion: p.meta.programmerVersion,
+      deviceModel: p.device.model, implantDate: String(p.device.implantDate || '').slice(0, 10),
+      modalities: p.availability
+    });
+    (p.bsTimeDomain || []).concat(p.montageTD || []).forEach(td => {
+      const est = C.nanStats(td.data);
+      prov.record('parse.timeDomain', {
+        channel: td.label, fsNominal: td.fs,
+        fsEffective: isFinite(td.fsEff) ? +td.fsEff.toFixed(4) : null,
+        driftMsTotal: td.timing && isFinite(td.timing.driftMsTotal) ? +td.timing.driftMsTotal.toFixed(2) : null,
+        hardwareFilters: 'passa-alta do dispositivo (não exposta no JSON)'
+      }, { nIn: est.n, nOut: est.nValid, nDropped: est.nNan, dropReason: 'perda de pacotes (NaN)' });
+      const pk = td.packets || {};
+      prov.record('io.analyzePackets', {
+        method: pk.method, reliable: pk.reliable,
+        pctMissing: isFinite(pk.pctMissing) ? +pk.pctMissing.toFixed(3) : null,
+        nGaps: (pk.gaps || []).length, policy: 'NaN, sem interpolação nem concatenação'
+      }, { nIn: pk.nExpected, nOut: pk.nReceived, nDropped: pk.nMissing, dropReason: pk.reason || 'pacotes perdidos' });
+      if (pk.nMissing) prov.exclusion({
+        what: `amostras perdidas em ${td.label}`, criterion: 'perda de pacote detectada por ' + pk.method,
+        n: pk.nMissing, decidedBy: 'automático', reason: 'lacuna preservada como NaN'
+      });
+    });
+  }
+  /* passos de DSP com os parâmetros EFETIVOS usados nas figuras */
+  const d = ds();
+  const td0 = (d.bsTimeDomain[0] || d.montageTD[0]);
+  if (td0) {
+    const w = C.welchPSD(td0.data, td0.fsEff || td0.fs, { nperseg: 512, overlap: .5 });
+    prov.record('dsp.welchPSD', {
+      window: 'hann', nperseg: w.nperseg, overlap: 0.5, df: +w.df.toFixed(4),
+      detrend: 'linear por segmento', maxNanPct: 0,
+      nSegments: w.nSegments, nSegmentsDropped: w.nSegmentsDropped,
+      pctDataUsed: +(w.pctDataUsed || 0).toFixed(1)
+    }, { nIn: td0.data.length, nOut: w.p ? w.p.length : 0, figure: 'F1' });
+    prov.record('dsp.fitAperiodic', { fmin: 2, fmax: 95, method: 'regressão robusta iterativa log-log' }, { figure: 'F2' });
+    const oB = S.opts.F6 || {};
+    prov.record('dsp.detectBursts', {
+      band: [oB.blo || 13, oB.bhi || 20], percentile: oB.pct || 75,
+      minDurationMs: oB.minms || 100, envelope: 'Hilbert', gapPolicy: 'burst não atravessa lacuna'
+    }, { figure: 'F6' });
+  }
+  if (Object.keys(d.trend).length) {
+    const o9 = S.opts.F9 || {};
+    prov.record('stats.cosinor', {
+      harmonics: (o9.harm || '24+12'), binMin: o9.bin || 30, detrendDaily: o9.detrend !== false,
+      outlierRule: 'mediana ± 4×MAD', bootstrap: 'blocos por dia inteiro', nBoot: o9.boot || 200
+    }, { figure: 'F9' });
+    prov.record('stats.permutationTest', { nPerm: 3000, scope: 'comparações das figuras F7/F10/F12' });
+  }
+  return prov;
+}
+
+async function exportChecklist(formato) {
+  if (!S.files.length) return alert('Carregue ao menos um arquivo antes de gerar o checklist.');
+  const prov = await buildProvenance();
+  const b = exportBundle();
+  const ck = C.generateChecklist(prov.manifest(), b, activeProfile());
+  const nome = `PERCEPT-REPORT_${(b && b.subject.id) || 'analise'}`;
+  if (formato === 'docx') {
+    const bytes = C.checklistDocx(ck);
+    const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+    const a = document.createElement('a');
+    a.download = nome + '.docx'; a.href = URL.createObjectURL(blob); a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  } else {
+    P.downloadText(ck.markdown, nome + '.md', 'text/markdown');
+  }
+  return ck;
+}
+
+async function exportManifest() {
+  if (!S.files.length) return alert('Carregue ao menos um arquivo antes de exportar o manifesto.');
+  const prov = await buildProvenance();
+  const m = prov.manifest();
+  m.manifestHash = await prov.hash();
+  P.downloadText(JSON.stringify(m, null, 2), `manifesto_proveniencia_${m.files[0] ? m.files[0].subjectId : 'analise'}.json`, 'application/json');
+}
+
+/* Reproduz a análise a partir de um manifesto e confirma que os resultados
+   batem — é o que torna a reprodutibilidade verificável, não declarada. */
+async function verifyFromManifest(file) {
+  try {
+    const guardado = JSON.parse(await file.text());
+    const atual = (await buildProvenance()).manifest();
+    const r = C.verifyManifest(guardado, atual);
+    const det = r.ok ? '' : '\n\n' + r.divergences.slice(0, 8)
+      .map(d => `• ${d.campo}: manifesto "${d.guardado}" vs. atual "${d.atual}"`).join('\n');
+    alert(`${r.ok ? '✓' : '✗'} ${r.verdict}${det}`);
+  } catch (e) {
+    alert('Não foi possível ler o manifesto: ' + e.message);
+  }
 }
 
 /* ------------------------------------------------- relatório em PDF ----- */

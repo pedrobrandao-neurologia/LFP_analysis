@@ -24,6 +24,9 @@ import { peakInBand, pickSpectrum, spectralMetrics, burstMetrics, doseResponse, 
 import { mergeTrend, collectThresholds, chronicMetrics, thresholdSummary } from './metrics/chronic.js';
 import { extractMetrics, daysSince } from './metrics/extract.js';
 import { PROFILES, PROFILE_IDS, getProfile, suggestProfile, bandsOf, normalizeSpectrum, detectTremorFrequency, spearman, movingAverageDays } from './profiles/index.js';
+import { createProvenance, verifyManifest, sha256Hex, canonical } from './provenance/index.js';
+import { generateChecklist, checklistDocx, CHECKLIST_ITEMS } from './report/checklist.js';
+import { makeZip, makeDocx, crc32 } from './export/zip.js';
 
 const API = {
   parsePercept, MODALITIES, BANDS, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId,
@@ -43,7 +46,11 @@ const API = {
   ecgSuppressionRatio, betaPeakRecovery, bandPowerPreservation, correlation, validateEcgRemoval,
   /* perfis de doença (Onda 5 — L37, L38, L39) */
   PROFILES, PROFILE_IDS, getProfile, suggestProfile, bandsOf, normalizeSpectrum,
-  detectTremorFrequency, spearman, movingAverageDays
+  detectTremorFrequency, spearman, movingAverageDays,
+  /* proveniência e padrão de reporte (Onda 7.2 — L49, L50) */
+  createProvenance, verifyManifest, sha256Hex, canonical,
+  generateChecklist, checklistDocx, CHECKLIST_ITEMS,
+  makeZip, makeDocx, crc32
 };
 
 export default API;
