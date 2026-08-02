@@ -892,13 +892,238 @@ function ecdf(vals) {
 }
 
 /* ======================================================================== */
+/*  4. EXTRAÇÃO DE MÉTRICAS-CHAVE  (relatório · CSV · JSON)                   */
+/*                                                                           */
+/*  Reúne, por SESSÃO × HEMISFÉRIO (medidas agudas) e por SUJEITO ×          */
+/*  HEMISFÉRIO (medidas crônicas do Timeline), as variáveis que a literatura */
+/*  usa como desfecho — pico beta, componente aperiódico (specparam),        */
+/*  bursts, dose-resposta e ritmo circadiano — cada linha nomeada por        */
+/*  paciente, sessão e data de implante (com dias desde o implante).         */
+/*  Puro, sem DOM: alimenta o relatório, o CSV e o JSON e é testável.        */
+/* ======================================================================== */
+
+const HEMIS = ['Left', 'Right'];
+const rnd = (x, n) => (typeof x === 'number' && isFinite(x)) ? +x.toFixed(n == null ? 4 : n) : NaN;
+
+/* pico (freq, valor) da maior magnitude dentro de uma banda */
+function peakInBand(f, p, lo, hi) {
+  let pf = NaN, pv = -Infinity;
+  for (let i = 0; i < f.length; i++)
+    if (f[i] >= lo && f[i] <= hi && isFinite(p[i]) && p[i] > pv) { pv = p[i]; pf = f[i]; }
+  return { f: pf, v: isFinite(pv) ? pv : NaN };
+}
+function daysSince(fromISO, toISO) {
+  const a = T(fromISO), b = T(toISO);
+  return (isFinite(a) && isFinite(b)) ? Math.round((b - a) / 864e5) : NaN;
+}
+
+/* Escolhe o melhor espectro disponível para um hemisfério, com prioridade:
+   Signal Test (canal de sensing crônico) > Survey > Signal Check > Welch(bruto). */
+function pickSpectrum(parsed, hemi) {
+  const ss = (parsed.sensingSetup || []).filter(s => s.hemisphere === hemi && s.psd);
+  if (ss.length) { const s = ss[0]; return { f: s.psd.f, p: s.psd.p, source: 'SignalTest', channel: s.channel, center: s.centerFreq, artifact: s.psd.artifact }; }
+  const mo = (parsed.montage || []).filter(m => m.hemisphere === hemi && m.f && m.f.length);
+  if (mo.length) {
+    const best = mo.slice().sort((a, b) => peakInBand(b.f, b.mag, 13, 35).v - peakInBand(a.f, a.mag, 13, 35).v)[0];
+    return { f: best.f, p: best.mag, source: 'Survey', channel: best.label, artifact: best.artifact };
+  }
+  const sc = (parsed.signalCheck || []).filter(s => (/LEFT|_L$/i.test(String(s.channel)) ? 'Left' : 'Right') === hemi);
+  if (sc.length) { const s = sc[0]; return { f: s.f, p: s.p, source: 'SignalCheck', channel: s.channel, artifact: s.artifact }; }
+  const td = (parsed.bsTimeDomain || []).filter(t => t.hemisphere === hemi);
+  if (td.length) { const w = welchPSD(td[0].data, td[0].fs, { nperseg: 512, overlap: .5 }); return { f: Array.from(w.f), p: Array.from(w.p), source: 'Welch·streaming', channel: td[0].label }; }
+  const mt = (parsed.montageTD || []).filter(t => t.hemisphere === hemi);
+  if (mt.length) { const w = welchPSD(mt[0].data, mt[0].fs, { nperseg: 512, overlap: .5 }); return { f: Array.from(w.f), p: Array.from(w.p), source: 'Welch·survey', channel: mt[0].label }; }
+  return null;
+}
+
+/* Métricas espectrais agudas a partir de um espectro (f, p). */
+function spectralMetrics(spec) {
+  const { f, p } = spec;
+  const ap = fitAperiodic(f, p, { fmin: 2, fmax: 95 });
+  const bt = bandTable(f, p);
+  const rel = k => { const b = bt.find(x => x.key === k); return b ? b.relative : NaN; };
+  const beta = peakInBand(f, p, 13, 35), ta = peakInBand(f, p, 4, 12), gamma = peakInBand(f, p, 55, 95);
+  const betaPeaks = ap ? ap.peaks.filter(pk => pk.band === 'lowbeta' || pk.band === 'highbeta') : [];
+  const taPeaks = ap ? ap.peaks.filter(pk => pk.band === 'theta' || pk.band === 'alpha') : [];
+  return {
+    spectrum_source: spec.source, spectrum_channel: spec.channel || '',
+    sensing_center_hz: isFinite(spec.center) ? rnd(spec.center, 1) : NaN,
+    device_artifact: spec.artifact || '',
+    beta_peak_hz: rnd(beta.f, 2), beta_peak_mag: rnd(beta.v),
+    beta_rel_pct: rnd(rel('lowbeta') + rel('highbeta'), 2),
+    low_beta_rel_pct: rnd(rel('lowbeta'), 2), high_beta_rel_pct: rnd(rel('highbeta'), 2),
+    has_beta_peak: betaPeaks.length ? 1 : 0,
+    theta_alpha_peak_hz: rnd(ta.f, 2), theta_alpha_peak_mag: rnd(ta.v),
+    theta_alpha_rel_pct: rnd(rel('theta') + rel('alpha'), 2),
+    has_theta_alpha_peak: taPeaks.length ? 1 : 0,
+    gamma_peak_hz: rnd(gamma.f, 2),
+    aperiodic_exponent: rnd(ap ? ap.exponent : NaN, 4),
+    aperiodic_offset: rnd(ap ? ap.offset : NaN, 4),
+    aperiodic_r2: rnd(ap ? ap.r2 : NaN, 4)
+  };
+}
+
+/* Métricas de burst a partir do sinal bruto (streaming, senão survey). */
+function burstMetrics(parsed, hemi, opts) {
+  opts = opts || {};
+  const src = (parsed.bsTimeDomain || []).find(t => t.hemisphere === hemi);
+  const td = src || (parsed.montageTD || []).find(t => t.hemisphere === hemi);
+  if (!td) return null;
+  const pct = opts.percentile || 75, lo = opts.blo || 13, hi = opts.bhi || 30, minMs = opts.minMs || 100;
+  const bp = bandpassFFT(td.data, td.fs, lo, hi);
+  const env = hilbertEnvelope(bp);
+  const bu = detectBursts(env, td.fs, { percentile: pct, minDurationMs: minMs });
+  const w = welchPSD(td.data, td.fs, { nperseg: 512, overlap: .5 });
+  return {
+    td_source: src ? 'streaming' : 'survey',
+    td_duration_s: rnd(td.data.length / td.fs, 1),
+    burst_band_hz: lo + '-' + hi, burst_percentile: pct,
+    burst_rate_hz: rnd(bu.rate, 3), burst_mean_ms: rnd(bu.meanDurationMs, 1),
+    burst_median_ms: rnd(bu.medianDurationMs, 1), burst_prob_pct: rnd(100 * bu.probability, 1),
+    beta_power_welch: rnd(bandPower(w.f, w.p, 13, 30), 4)
+  };
+}
+
+/* Curva dose-resposta (potência × amplitude de estimulação) do BrainSenseLfp. */
+function doseResponse(parsed, hemi) {
+  const rows = (parsed.bsLfp || []).filter(b => b.series && b.series[hemi]);
+  if (!rows.length) return null;
+  const s = rows[0].series[hemi], levels = {};
+  s.ma.forEach((m, i) => { const k = (+m).toFixed(2); (levels[k] = levels[k] || []).push(s.lfp[i]); });
+  const keys = Object.keys(levels).map(parseFloat).sort((a, b) => a - b).filter(k => levels[k.toFixed(2)].length >= 4);
+  if (keys.length < 3) return { stim_levels: keys.length };
+  const meds = keys.map(k => median(levels[k.toFixed(2)]));
+  const lr = linreg(keys, meds);
+  return { stim_levels: keys.length, stim_min_ma: rnd(keys[0], 2), stim_max_ma: rnd(keys[keys.length - 1], 2), dose_slope: rnd(lr.slope, 3), dose_r2: rnd(lr.r2, 3) };
+}
+
+/* Concatena e desduplica o Timeline entre arquivos do mesmo sujeito. */
+function mergeTrend(parsedList) {
+  const out = {};
+  parsedList.forEach(p => Object.keys(p.trend || {}).forEach(h => { out[h] = (out[h] || []).concat(p.trend[h]); }));
+  Object.keys(out).forEach(h => {
+    const seen = new Set(), rows = [];
+    out[h].sort((a, b) => a.t - b.t).forEach(r => { if (!seen.has(r.t)) { seen.add(r.t); rows.push(r); } });
+    out[h] = rows;
+  });
+  return out;
+}
+
+/* Limiares de sensing/aDBS declarados no dispositivo, por hemisfério. */
+function collectThresholds(parsedList) {
+  const t = {};
+  parsedList.forEach(p => (p.sensingSetup || []).forEach(s => { if (isFinite(s.lowerThr)) t[s.hemisphere] = { lower: s.lowerThr, upper: s.upperThr, centerFreq: s.centerFreq }; }));
+  parsedList.forEach(p => (p.bsLfp || []).forEach(b => Object.keys(b.therapy.perHemi || {}).forEach(h => {
+    const x = b.therapy.perHemi[h]; if (isFinite(x.lowerThr) && !t[h]) t[h] = { lower: x.lowerThr, upper: x.upperThr, centerFreq: x.centerFreq };
+  })));
+  return t;
+}
+
+/* Métricas crônicas (circadiano + distribuição para aDBS) de um hemisfério. */
+function chronicMetrics(rows, offMin, thr) {
+  const clean = removeOutliersMAD(rows, 'lfp', 4).kept;
+  const vals = clean.map(r => r.lfp);
+  const dayset = {}; clean.forEach(r => dayset[localDayKey(r.t, offMin)] = 1);
+  const days = Object.keys(dayset).sort();
+  const out = {
+    n_points: clean.length, n_removed: rows.length - clean.length, n_days: days.length,
+    first_day_local: days[0] || '', last_day_local: days[days.length - 1] || '',
+    lfp_median: rnd(median(vals)), lfp_iqr_low: rnd(quantile(vals, .25)), lfp_iqr_high: rnd(quantile(vals, .75))
+  };
+  if (clean.length >= 12) {
+    const cos = cosinor(clean.map(r => localHour(r.t, offMin)), vals, [24, 12]);
+    const vh = varianceByHour(clean, offMin);
+    if (cos) Object.assign(out, {
+      mesor: rnd(cos.mesor), amp_24h: rnd(cos.components[0].amplitude),
+      acrophase_24h: rnd(((cos.components[0].acrophaseHours % 24) + 24) % 24, 2),
+      amp_12h: cos.components[1] ? rnd(cos.components[1].amplitude) : NaN,
+      cosinor_r2: rnd(cos.r2, 3), cosinor_F: rnd(cos.F, 2), cosinor_p: rnd(cos.p, 5),
+      rho_ar1: rnd(cos.rhoAR1, 3), cosinor_p_adj_ar1: rnd(cos.pAdjustedAR1, 5)
+    });
+    if (vh) Object.assign(out, { eta2_hour_pct: rnd(100 * vh.eta2, 2), eta2_p: rnd(vh.p, 5) });
+  }
+  if (days.length >= 2) {
+    const dp = diurnalProfile(clean, offMin, 30, true);
+    const peaks = dp.matrix.map(m => { let bi = -1, bv = -Infinity; m.values.forEach((x, i) => { if (isFinite(x) && x > bv) { bv = x; bi = i; } }); return bi >= 0 ? dp.hours[bi] : NaN; }).filter(isFinite);
+    const ray = rayleigh(peaks);
+    if (ray) Object.assign(out, { rayleigh_R: rnd(ray.R, 3), rayleigh_p: rnd(ray.p, 5), rayleigh_mean_hour: rnd(ray.meanHour, 2) });
+  }
+  const lo = thr && isFinite(thr.lower) ? thr.lower : quantile(vals, .25);
+  const hi = thr && isFinite(thr.upper) ? thr.upper : quantile(vals, .75);
+  const sm = thresholdSummary(vals, lo, hi);
+  Object.assign(out, {
+    thr_source: thr && isFinite(thr.lower) ? 'device' : 'Q1/Q3',
+    thr_lower: rnd(lo), thr_upper: rnd(hi),
+    pct_below: rnd(sm.belowPct, 1), pct_between: rnd(sm.betweenPct, 1), pct_above: rnd(sm.abovePct, 1),
+    p10: rnd(sm.p10), p90: rnd(sm.p90),
+    sensing_center_hz: thr && isFinite(thr.centerFreq) ? rnd(thr.centerFreq, 1) : NaN
+  });
+  return out;
+}
+
+/* Extrator principal: lista de sessões (parsed) → pacote de métricas tidy. */
+function extractMetrics(parsedList, offMin) {
+  parsedList = (parsedList || []).slice();
+  if (!parsedList.length) return null;
+  if (offMin == null) { const pf = parsedList.find(p => p.meta && p.meta.utcOffsetMin != null); offMin = pf ? pf.meta.utcOffsetMin : -180; }
+  const p0 = parsedList[0];
+  const implant = p0.device.implantDate || null;
+  const implantDay = implant ? String(implant).slice(0, 10) : null;
+  const targetOf = h => { const l = (p0.leads || []).find(x => x.hemisphere === h); return l ? l.target : ''; };
+  const subject = {
+    id: p0.patient.idHash, diagnosis: p0.patient.diagnosis || null, sex: p0.patient.sex || null,
+    implant_date: implantDay,
+    device_model: p0.device.model || null, device_location: p0.device.location || null, firmware: p0.device.firmware || null,
+    targets: (p0.leads || []).map(l => ({ hemisphere: l.hemisphere, target: l.target, model: l.model })),
+    timezone_offset_min: offMin
+  };
+  const sessions = parsedList.map(p => ({
+    file: p.fileName, session_start: p.meta.sessionStart || null,
+    session_date_local: p.meta.sessionStart ? localDayKey(T(p.meta.sessionStart), offMin) : null,
+    days_since_implant: (implant && p.meta.sessionStart) ? daysSince(implant, p.meta.sessionStart) : NaN,
+    n_modalities: Object.keys(p.availability || {}).filter(k => p.availability[k] > 0).length
+  }));
+  const acute = [];
+  parsedList.forEach(p => {
+    const sdate = p.meta.sessionStart ? localDayKey(T(p.meta.sessionStart), offMin) : '';
+    const dsi = (implant && p.meta.sessionStart) ? daysSince(implant, p.meta.sessionStart) : NaN;
+    HEMIS.forEach(h => {
+      const spec = pickSpectrum(p, h), bu = burstMetrics(p, h, {}), dr = doseResponse(p, h);
+      if (!spec && !bu && !dr) return;
+      const row = {
+        subject_id: subject.id, diagnosis: subject.diagnosis, implant_date: implantDay,
+        session_file: p.fileName, session_date_local: sdate, days_since_implant: dsi,
+        hemisphere: h, target: targetOf(h)
+      };
+      if (spec) Object.assign(row, spectralMetrics(spec));
+      if (bu) Object.assign(row, bu);
+      if (dr) Object.assign(row, dr);
+      acute.push(row);
+    });
+  });
+  const merged = mergeTrend(parsedList), thr = collectThresholds(parsedList), chronic = [];
+  Object.keys(merged).forEach(h => {
+    if (!merged[h].length) return;
+    const m = chronicMetrics(merged[h], offMin, thr[h]);
+    chronic.push(Object.assign({
+      subject_id: subject.id, diagnosis: subject.diagnosis, implant_date: implantDay,
+      hemisphere: h, target: targetOf(h),
+      days_since_implant_start: (implant && m.first_day_local) ? daysSince(implant, m.first_day_local) : NaN
+    }, m));
+  });
+  return { subject, sessions, acute, chronic };
+}
+
+/* ======================================================================== */
 const API = {
   parsePercept, MODALITIES, BANDS, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId,
   fft, nextPow2, welchPSD, spectrogram, bandpassFFT, hilbertEnvelope, detectBursts, fitAperiodic,
   ecgTemplateSubtract, bandPower, bandTable, bandOf,
   mean, median, sd, variance, quantile, mad, removeOutliersMAD, linreg, pearson,
   cosinor, cosinorBootstrap, rayleigh, varianceByHour, diurnalProfile, eventAligned,
-  permutationTest, thresholdSummary, histogram, ecdf, fPValue, tPValue, normCDF
+  permutationTest, thresholdSummary, histogram, ecdf, fPValue, tPValue, normCDF,
+  peakInBand, daysSince, pickSpectrum, spectralMetrics, burstMetrics, doseResponse,
+  mergeTrend, collectThresholds, chronicMetrics, extractMetrics
 };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 root.PerceptCore = API;

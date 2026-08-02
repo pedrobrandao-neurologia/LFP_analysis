@@ -217,6 +217,57 @@ const dsel = H.ds();
   t(`${id} ${JSON.stringify(o)}`, () => { const n = document.createElement('div'); fig.render(n, dsel); assert(n.children.length, 'vazio'); });
 });
 
+/* ------------------------------------------ 6. extração de métricas-chave -- */
+sec('extração de métricas (relatório · CSV · JSON)');
+{
+  const b = C.extractMetrics(parsed, null);
+  t('pacote com sujeito, sessões, agudas e crônicas', () => {
+    assert(b && b.subject && b.subject.id, 'sem sujeito');
+    assert(Array.isArray(b.acute) && Array.isArray(b.chronic) && Array.isArray(b.sessions), 'estrutura inválida');
+    return `${b.sessions.length} sessão(ões), ${b.acute.length} agudas, ${b.chronic.length} crônicas`;
+  });
+  t('linhas nomeadas por paciente, sessão e implante', () => {
+    const all = b.acute.concat(b.chronic);
+    assert(all.length, 'nenhuma linha de métrica');
+    all.forEach(r => {
+      assert(r.subject_id === b.subject.id, 'subject_id ausente/divergente');
+      assert('implant_date' in r, 'implant_date ausente');
+      assert(r.hemisphere === 'Left' || r.hemisphere === 'Right', 'hemisfério inválido');
+    });
+    return `implante ${b.subject.implant_date || '—'}`;
+  });
+  if (b.acute.length) t('métricas agudas: pico beta e flag têm valores válidos', () => {
+    b.acute.forEach(r => {
+      assert(r.has_beta_peak === 0 || r.has_beta_peak === 1, 'has_beta_peak não é 0/1');
+      if (Number.isFinite(r.beta_peak_hz)) assert(r.beta_peak_hz >= 13 && r.beta_peak_hz <= 35, 'pico beta fora de 13–35 Hz: ' + r.beta_peak_hz);
+      assert('days_since_implant' in r, 'days_since_implant ausente');
+    });
+    const withPk = b.acute.filter(r => r.has_beta_peak);
+    return `${withPk.length}/${b.acute.length} hemisférios com pico beta`;
+  });
+  if (b.chronic.length) t('métricas crônicas: cosinor e Rayleigh coerentes', () => {
+    b.chronic.forEach(r => {
+      assert(r.n_points > 0, 'sem pontos de Timeline');
+      if (Number.isFinite(r.acrophase_24h)) assert(r.acrophase_24h >= 0 && r.acrophase_24h < 24, 'acrofase fora de 0–24 h');
+      if (Number.isFinite(r.rayleigh_p)) assert(r.rayleigh_p >= 0 && r.rayleigh_p <= 1, 'p de Rayleigh fora de [0,1]');
+      const soma = (r.pct_below || 0) + (r.pct_between || 0) + (r.pct_above || 0);
+      if (Number.isFinite(soma) && soma > 0) assert(Math.abs(soma - 100) < 1.5, 'faixas de limiar não somam 100%: ' + soma);
+    });
+    const c0 = b.chronic[0];
+    return `${c0.n_days} dias · MESOR ${c0.mesor} · acrofase ${c0.acrophase_24h}h`;
+  });
+  t('CSV tidy usa a união das colunas de todas as linhas', () => {
+    const rows = b.acute.length ? b.acute : b.chronic;
+    const keys = []; const seen = new Set();
+    rows.forEach(r => Object.keys(r).forEach(k => { if (!seen.has(k)) { seen.add(k); keys.push(k); } }));
+    const csv = P.toCSV(rows, keys);
+    const header = csv.split('\n')[0].split(',');
+    assert(header.length === keys.length, 'cabeçalho incompleto');
+    assert(csv.split('\n').length === rows.length + 1, 'linhas do CSV divergem');
+    return `${keys.length} colunas × ${rows.length} linhas`;
+  });
+}
+
 /* ------------------------------------------------------------- resultado -- */
 console.log(`\n${'='.repeat(58)}`);
 console.log(`  ${ok} passaram   ${falhas} falharam   ${pulados} sem dados`);
