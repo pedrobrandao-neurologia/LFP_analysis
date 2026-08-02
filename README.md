@@ -101,6 +101,35 @@ Cada figura exporta PNG e os dados subjacentes em CSV.
 
 ---
 
+## Exportação para pesquisa clínica
+
+O painel **Exportar** (barra lateral) reúne quatro formas de tirar os dados do app, todas geradas
+localmente, sem rede:
+
+| Formato | O quê | Uso |
+|---|---|---|
+| **Gráficos individuais** | PNG de cada figura + CSV dos dados subjacentes (botões em cada figura) e **“Todas as figuras (PNG)”** para baixar tudo de uma vez | apresentações, manuscritos |
+| **Relatório PDF** | capa com identificação do caso (paciente pseudonimizado, dispositivo, **data de implante**, alvos, fuso), **resumo de métricas-chave** agudas e crônicas, seguido de todas as figuras com métodos — via *imprimir → salvar em PDF* | prontuário, discussão de caso, anexo de relatório |
+| **CSV de métricas** | tabela *tidy* pronta para planilha, em dois níveis: **agudas** (uma linha por sessão × hemisfério) e **crônicas** (uma linha por sujeito × hemisfério) | análise estatística em R/Python/Excel |
+| **JSON para estatística** | mesmo conteúdo em estrutura aninhada (`subject`, `sessions`, `acute`, `chronic`) | pipelines programáticos |
+
+**Variáveis-chave nomeadas por paciente, sessão e data de implante.** Cada linha exportada carrega
+`subject_id`, `implant_date`, `session_date_local`, `days_since_implant` e `hemisphere`, de modo que
+os desfechos ficam prontos para modelos longitudinais sem reprocessamento. As variáveis incluem:
+
+- **Agudas (sessão × hemisfério):** pico beta (Hz e magnitude), potência relativa β↓/β↑, presença de
+  pico beta (`has_beta_peak` — critério de elegibilidade a aDBS), pico teta-alfa (relevante em distonia),
+  expoente e offset aperiódicos (specparam/FOOOF), taxa/duração/probabilidade de bursts (com o percentil
+  registrado), e inclinação dose-resposta quando há rampa de estimulação.
+- **Crônicas (Timeline):** n de pontos/dias, mediana e IQR, MESOR, amplitude e acrofase de 24 h,
+  R² e *p* do cosinor **corrigido para autocorrelação AR(1)**, η² da hora do dia, *R* e *p* de Rayleigh,
+  e a distribuição da potência frente aos limiares de aDBS (% abaixo/entre/acima, p10/p90).
+
+Os identificadores de paciente já saem pseudonimizados do parser (`sub-XXXXXXXX`); nenhum nome, data de
+nascimento, prontuário ou número de série é incluído nas exportações.
+
+---
+
 ## Métodos
 
 **Espectral** — Welch (Hann, sobreposição 50 %, detrend linear por segmento); espectrograma STFT;
@@ -160,9 +189,9 @@ manifest.webmanifest       metadados da PWA
 sw.js                      service worker (offline)
 icon-*.png                 ícones
 src/                       fontes editáveis da aplicação
-  percept-core.js            parser do JSON, DSP e estatística
+  percept-core.js            parser do JSON, DSP, estatística e extração de métricas
   percept-plot.js            biblioteca de plotagem em Canvas 2D
-  app.js                     UI e renderizadores F1–F12
+  app.js                     UI, renderizadores F1–F12 e exportação (PDF/CSV/JSON)
   styles.css                 folha de estilos
   index.template.html        template
   build.mjs                  gera index.html
@@ -184,7 +213,7 @@ node tools/gerar_exemplo.mjs examples
 node tests/run.mjs
 ```
 
-47 testes cobrindo parser, DSP, estatística, camada gráfica e os 12 renderizadores.
+52 testes cobrindo parser, DSP, estatística, camada gráfica, os 12 renderizadores e a extração de métricas.
 
 ---
 

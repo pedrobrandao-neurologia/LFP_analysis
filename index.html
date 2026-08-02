@@ -169,10 +169,40 @@ footer.foot{padding:24px 20px 40px;text-align:center;font:11px/1.7 var(--mono);c
 .privacy{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border:1px solid var(--rule);
   border-radius:3px;background:var(--panel);font:10.5px/1 var(--mono);color:var(--ink-2)}
 .privacy i{width:7px;height:7px;border-radius:50%;background:var(--ok);display:inline-block}
+/* ---------- painel de exportação ---------- */
+.exportgrid{display:flex;flex-direction:column;gap:9px}
+.exportitem{display:flex;flex-direction:column;gap:3px}
+.exportitem .btn{width:100%;text-align:left}
+.exphint{font:10px/1.4 var(--mono);color:var(--ink-3);padding-left:1px}
+
+/* ---------- capa do relatório (visível só na impressão) ---------- */
+.report-cover{display:none}
+.rc-head{display:flex;justify-content:space-between;align-items:flex-end;
+  border-bottom:2px solid var(--ink);padding-bottom:8px;margin-bottom:12px}
+.rc-brand b{font:600 16px/1.05 var(--mono);letter-spacing:.02em}
+.rc-brand span{display:block;font:10.5px/1.3 var(--mono);color:var(--ink-2)}
+.rc-date{font:10px/1 var(--mono);color:var(--ink-3)}
+.rc-kv{margin-bottom:4px}
+.rc-h{font:600 11px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink);margin:16px 0 2px}
+.rc-note{margin:12px 0}
+.rc-figtitle{font:600 11px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink);
+  margin-top:16px;border-top:1px solid var(--rule);padding-top:10px}
+
 @media print{
-  .rail,header.top,.spine,.ctrls,.btn{display:none!important}
-  .fig .content{display:block!important}
+  header.top,.spine,aside.rail,footer.foot,.ctrls,.drop{display:none!important}
+  .btn{display:none!important}
+  .fig>header .chev,.fig>header .state{display:none!important}
+  .wrap{display:block!important;padding:0;gap:0}
+  main{gap:0}
   body{background:#fff}
+  .report-cover{display:block}
+  .fig{break-inside:avoid;page-break-inside:avoid;border:0;border-bottom:1px solid var(--rule);border-radius:0;margin-bottom:8px}
+  .fig>header{border-bottom:1px solid var(--rule-2);padding:8px 0;cursor:default}
+  .fig .content{display:block!important;padding:8px 0 4px}
+  .fig .note,.fig table.data,.plotbox,.plotgrid{break-inside:avoid;page-break-inside:avoid}
+  .plotbox{border:0;padding:0}
+  .report-cover table.data td,.report-cover table.data th{font-size:10px;padding:3px 6px}
+  a[href]:after{content:''}
 }
 @media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style>
@@ -1118,13 +1148,238 @@ function ecdf(vals) {
 }
 
 /* ======================================================================== */
+/*  4. EXTRAÇÃO DE MÉTRICAS-CHAVE  (relatório · CSV · JSON)                   */
+/*                                                                           */
+/*  Reúne, por SESSÃO × HEMISFÉRIO (medidas agudas) e por SUJEITO ×          */
+/*  HEMISFÉRIO (medidas crônicas do Timeline), as variáveis que a literatura */
+/*  usa como desfecho — pico beta, componente aperiódico (specparam),        */
+/*  bursts, dose-resposta e ritmo circadiano — cada linha nomeada por        */
+/*  paciente, sessão e data de implante (com dias desde o implante).         */
+/*  Puro, sem DOM: alimenta o relatório, o CSV e o JSON e é testável.        */
+/* ======================================================================== */
+
+const HEMIS = ['Left', 'Right'];
+const rnd = (x, n) => (typeof x === 'number' && isFinite(x)) ? +x.toFixed(n == null ? 4 : n) : NaN;
+
+/* pico (freq, valor) da maior magnitude dentro de uma banda */
+function peakInBand(f, p, lo, hi) {
+  let pf = NaN, pv = -Infinity;
+  for (let i = 0; i < f.length; i++)
+    if (f[i] >= lo && f[i] <= hi && isFinite(p[i]) && p[i] > pv) { pv = p[i]; pf = f[i]; }
+  return { f: pf, v: isFinite(pv) ? pv : NaN };
+}
+function daysSince(fromISO, toISO) {
+  const a = T(fromISO), b = T(toISO);
+  return (isFinite(a) && isFinite(b)) ? Math.round((b - a) / 864e5) : NaN;
+}
+
+/* Escolhe o melhor espectro disponível para um hemisfério, com prioridade:
+   Signal Test (canal de sensing crônico) > Survey > Signal Check > Welch(bruto). */
+function pickSpectrum(parsed, hemi) {
+  const ss = (parsed.sensingSetup || []).filter(s => s.hemisphere === hemi && s.psd);
+  if (ss.length) { const s = ss[0]; return { f: s.psd.f, p: s.psd.p, source: 'SignalTest', channel: s.channel, center: s.centerFreq, artifact: s.psd.artifact }; }
+  const mo = (parsed.montage || []).filter(m => m.hemisphere === hemi && m.f && m.f.length);
+  if (mo.length) {
+    const best = mo.slice().sort((a, b) => peakInBand(b.f, b.mag, 13, 35).v - peakInBand(a.f, a.mag, 13, 35).v)[0];
+    return { f: best.f, p: best.mag, source: 'Survey', channel: best.label, artifact: best.artifact };
+  }
+  const sc = (parsed.signalCheck || []).filter(s => (/LEFT|_L$/i.test(String(s.channel)) ? 'Left' : 'Right') === hemi);
+  if (sc.length) { const s = sc[0]; return { f: s.f, p: s.p, source: 'SignalCheck', channel: s.channel, artifact: s.artifact }; }
+  const td = (parsed.bsTimeDomain || []).filter(t => t.hemisphere === hemi);
+  if (td.length) { const w = welchPSD(td[0].data, td[0].fs, { nperseg: 512, overlap: .5 }); return { f: Array.from(w.f), p: Array.from(w.p), source: 'Welch·streaming', channel: td[0].label }; }
+  const mt = (parsed.montageTD || []).filter(t => t.hemisphere === hemi);
+  if (mt.length) { const w = welchPSD(mt[0].data, mt[0].fs, { nperseg: 512, overlap: .5 }); return { f: Array.from(w.f), p: Array.from(w.p), source: 'Welch·survey', channel: mt[0].label }; }
+  return null;
+}
+
+/* Métricas espectrais agudas a partir de um espectro (f, p). */
+function spectralMetrics(spec) {
+  const { f, p } = spec;
+  const ap = fitAperiodic(f, p, { fmin: 2, fmax: 95 });
+  const bt = bandTable(f, p);
+  const rel = k => { const b = bt.find(x => x.key === k); return b ? b.relative : NaN; };
+  const beta = peakInBand(f, p, 13, 35), ta = peakInBand(f, p, 4, 12), gamma = peakInBand(f, p, 55, 95);
+  const betaPeaks = ap ? ap.peaks.filter(pk => pk.band === 'lowbeta' || pk.band === 'highbeta') : [];
+  const taPeaks = ap ? ap.peaks.filter(pk => pk.band === 'theta' || pk.band === 'alpha') : [];
+  return {
+    spectrum_source: spec.source, spectrum_channel: spec.channel || '',
+    sensing_center_hz: isFinite(spec.center) ? rnd(spec.center, 1) : NaN,
+    device_artifact: spec.artifact || '',
+    beta_peak_hz: rnd(beta.f, 2), beta_peak_mag: rnd(beta.v),
+    beta_rel_pct: rnd(rel('lowbeta') + rel('highbeta'), 2),
+    low_beta_rel_pct: rnd(rel('lowbeta'), 2), high_beta_rel_pct: rnd(rel('highbeta'), 2),
+    has_beta_peak: betaPeaks.length ? 1 : 0,
+    theta_alpha_peak_hz: rnd(ta.f, 2), theta_alpha_peak_mag: rnd(ta.v),
+    theta_alpha_rel_pct: rnd(rel('theta') + rel('alpha'), 2),
+    has_theta_alpha_peak: taPeaks.length ? 1 : 0,
+    gamma_peak_hz: rnd(gamma.f, 2),
+    aperiodic_exponent: rnd(ap ? ap.exponent : NaN, 4),
+    aperiodic_offset: rnd(ap ? ap.offset : NaN, 4),
+    aperiodic_r2: rnd(ap ? ap.r2 : NaN, 4)
+  };
+}
+
+/* Métricas de burst a partir do sinal bruto (streaming, senão survey). */
+function burstMetrics(parsed, hemi, opts) {
+  opts = opts || {};
+  const src = (parsed.bsTimeDomain || []).find(t => t.hemisphere === hemi);
+  const td = src || (parsed.montageTD || []).find(t => t.hemisphere === hemi);
+  if (!td) return null;
+  const pct = opts.percentile || 75, lo = opts.blo || 13, hi = opts.bhi || 30, minMs = opts.minMs || 100;
+  const bp = bandpassFFT(td.data, td.fs, lo, hi);
+  const env = hilbertEnvelope(bp);
+  const bu = detectBursts(env, td.fs, { percentile: pct, minDurationMs: minMs });
+  const w = welchPSD(td.data, td.fs, { nperseg: 512, overlap: .5 });
+  return {
+    td_source: src ? 'streaming' : 'survey',
+    td_duration_s: rnd(td.data.length / td.fs, 1),
+    burst_band_hz: lo + '-' + hi, burst_percentile: pct,
+    burst_rate_hz: rnd(bu.rate, 3), burst_mean_ms: rnd(bu.meanDurationMs, 1),
+    burst_median_ms: rnd(bu.medianDurationMs, 1), burst_prob_pct: rnd(100 * bu.probability, 1),
+    beta_power_welch: rnd(bandPower(w.f, w.p, 13, 30), 4)
+  };
+}
+
+/* Curva dose-resposta (potência × amplitude de estimulação) do BrainSenseLfp. */
+function doseResponse(parsed, hemi) {
+  const rows = (parsed.bsLfp || []).filter(b => b.series && b.series[hemi]);
+  if (!rows.length) return null;
+  const s = rows[0].series[hemi], levels = {};
+  s.ma.forEach((m, i) => { const k = (+m).toFixed(2); (levels[k] = levels[k] || []).push(s.lfp[i]); });
+  const keys = Object.keys(levels).map(parseFloat).sort((a, b) => a - b).filter(k => levels[k.toFixed(2)].length >= 4);
+  if (keys.length < 3) return { stim_levels: keys.length };
+  const meds = keys.map(k => median(levels[k.toFixed(2)]));
+  const lr = linreg(keys, meds);
+  return { stim_levels: keys.length, stim_min_ma: rnd(keys[0], 2), stim_max_ma: rnd(keys[keys.length - 1], 2), dose_slope: rnd(lr.slope, 3), dose_r2: rnd(lr.r2, 3) };
+}
+
+/* Concatena e desduplica o Timeline entre arquivos do mesmo sujeito. */
+function mergeTrend(parsedList) {
+  const out = {};
+  parsedList.forEach(p => Object.keys(p.trend || {}).forEach(h => { out[h] = (out[h] || []).concat(p.trend[h]); }));
+  Object.keys(out).forEach(h => {
+    const seen = new Set(), rows = [];
+    out[h].sort((a, b) => a.t - b.t).forEach(r => { if (!seen.has(r.t)) { seen.add(r.t); rows.push(r); } });
+    out[h] = rows;
+  });
+  return out;
+}
+
+/* Limiares de sensing/aDBS declarados no dispositivo, por hemisfério. */
+function collectThresholds(parsedList) {
+  const t = {};
+  parsedList.forEach(p => (p.sensingSetup || []).forEach(s => { if (isFinite(s.lowerThr)) t[s.hemisphere] = { lower: s.lowerThr, upper: s.upperThr, centerFreq: s.centerFreq }; }));
+  parsedList.forEach(p => (p.bsLfp || []).forEach(b => Object.keys(b.therapy.perHemi || {}).forEach(h => {
+    const x = b.therapy.perHemi[h]; if (isFinite(x.lowerThr) && !t[h]) t[h] = { lower: x.lowerThr, upper: x.upperThr, centerFreq: x.centerFreq };
+  })));
+  return t;
+}
+
+/* Métricas crônicas (circadiano + distribuição para aDBS) de um hemisfério. */
+function chronicMetrics(rows, offMin, thr) {
+  const clean = removeOutliersMAD(rows, 'lfp', 4).kept;
+  const vals = clean.map(r => r.lfp);
+  const dayset = {}; clean.forEach(r => dayset[localDayKey(r.t, offMin)] = 1);
+  const days = Object.keys(dayset).sort();
+  const out = {
+    n_points: clean.length, n_removed: rows.length - clean.length, n_days: days.length,
+    first_day_local: days[0] || '', last_day_local: days[days.length - 1] || '',
+    lfp_median: rnd(median(vals)), lfp_iqr_low: rnd(quantile(vals, .25)), lfp_iqr_high: rnd(quantile(vals, .75))
+  };
+  if (clean.length >= 12) {
+    const cos = cosinor(clean.map(r => localHour(r.t, offMin)), vals, [24, 12]);
+    const vh = varianceByHour(clean, offMin);
+    if (cos) Object.assign(out, {
+      mesor: rnd(cos.mesor), amp_24h: rnd(cos.components[0].amplitude),
+      acrophase_24h: rnd(((cos.components[0].acrophaseHours % 24) + 24) % 24, 2),
+      amp_12h: cos.components[1] ? rnd(cos.components[1].amplitude) : NaN,
+      cosinor_r2: rnd(cos.r2, 3), cosinor_F: rnd(cos.F, 2), cosinor_p: rnd(cos.p, 5),
+      rho_ar1: rnd(cos.rhoAR1, 3), cosinor_p_adj_ar1: rnd(cos.pAdjustedAR1, 5)
+    });
+    if (vh) Object.assign(out, { eta2_hour_pct: rnd(100 * vh.eta2, 2), eta2_p: rnd(vh.p, 5) });
+  }
+  if (days.length >= 2) {
+    const dp = diurnalProfile(clean, offMin, 30, true);
+    const peaks = dp.matrix.map(m => { let bi = -1, bv = -Infinity; m.values.forEach((x, i) => { if (isFinite(x) && x > bv) { bv = x; bi = i; } }); return bi >= 0 ? dp.hours[bi] : NaN; }).filter(isFinite);
+    const ray = rayleigh(peaks);
+    if (ray) Object.assign(out, { rayleigh_R: rnd(ray.R, 3), rayleigh_p: rnd(ray.p, 5), rayleigh_mean_hour: rnd(ray.meanHour, 2) });
+  }
+  const lo = thr && isFinite(thr.lower) ? thr.lower : quantile(vals, .25);
+  const hi = thr && isFinite(thr.upper) ? thr.upper : quantile(vals, .75);
+  const sm = thresholdSummary(vals, lo, hi);
+  Object.assign(out, {
+    thr_source: thr && isFinite(thr.lower) ? 'device' : 'Q1/Q3',
+    thr_lower: rnd(lo), thr_upper: rnd(hi),
+    pct_below: rnd(sm.belowPct, 1), pct_between: rnd(sm.betweenPct, 1), pct_above: rnd(sm.abovePct, 1),
+    p10: rnd(sm.p10), p90: rnd(sm.p90),
+    sensing_center_hz: thr && isFinite(thr.centerFreq) ? rnd(thr.centerFreq, 1) : NaN
+  });
+  return out;
+}
+
+/* Extrator principal: lista de sessões (parsed) → pacote de métricas tidy. */
+function extractMetrics(parsedList, offMin) {
+  parsedList = (parsedList || []).slice();
+  if (!parsedList.length) return null;
+  if (offMin == null) { const pf = parsedList.find(p => p.meta && p.meta.utcOffsetMin != null); offMin = pf ? pf.meta.utcOffsetMin : -180; }
+  const p0 = parsedList[0];
+  const implant = p0.device.implantDate || null;
+  const implantDay = implant ? String(implant).slice(0, 10) : null;
+  const targetOf = h => { const l = (p0.leads || []).find(x => x.hemisphere === h); return l ? l.target : ''; };
+  const subject = {
+    id: p0.patient.idHash, diagnosis: p0.patient.diagnosis || null, sex: p0.patient.sex || null,
+    implant_date: implantDay,
+    device_model: p0.device.model || null, device_location: p0.device.location || null, firmware: p0.device.firmware || null,
+    targets: (p0.leads || []).map(l => ({ hemisphere: l.hemisphere, target: l.target, model: l.model })),
+    timezone_offset_min: offMin
+  };
+  const sessions = parsedList.map(p => ({
+    file: p.fileName, session_start: p.meta.sessionStart || null,
+    session_date_local: p.meta.sessionStart ? localDayKey(T(p.meta.sessionStart), offMin) : null,
+    days_since_implant: (implant && p.meta.sessionStart) ? daysSince(implant, p.meta.sessionStart) : NaN,
+    n_modalities: Object.keys(p.availability || {}).filter(k => p.availability[k] > 0).length
+  }));
+  const acute = [];
+  parsedList.forEach(p => {
+    const sdate = p.meta.sessionStart ? localDayKey(T(p.meta.sessionStart), offMin) : '';
+    const dsi = (implant && p.meta.sessionStart) ? daysSince(implant, p.meta.sessionStart) : NaN;
+    HEMIS.forEach(h => {
+      const spec = pickSpectrum(p, h), bu = burstMetrics(p, h, {}), dr = doseResponse(p, h);
+      if (!spec && !bu && !dr) return;
+      const row = {
+        subject_id: subject.id, diagnosis: subject.diagnosis, implant_date: implantDay,
+        session_file: p.fileName, session_date_local: sdate, days_since_implant: dsi,
+        hemisphere: h, target: targetOf(h)
+      };
+      if (spec) Object.assign(row, spectralMetrics(spec));
+      if (bu) Object.assign(row, bu);
+      if (dr) Object.assign(row, dr);
+      acute.push(row);
+    });
+  });
+  const merged = mergeTrend(parsedList), thr = collectThresholds(parsedList), chronic = [];
+  Object.keys(merged).forEach(h => {
+    if (!merged[h].length) return;
+    const m = chronicMetrics(merged[h], offMin, thr[h]);
+    chronic.push(Object.assign({
+      subject_id: subject.id, diagnosis: subject.diagnosis, implant_date: implantDay,
+      hemisphere: h, target: targetOf(h),
+      days_since_implant_start: (implant && m.first_day_local) ? daysSince(implant, m.first_day_local) : NaN
+    }, m));
+  });
+  return { subject, sessions, acute, chronic };
+}
+
+/* ======================================================================== */
 const API = {
   parsePercept, MODALITIES, BANDS, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId,
   fft, nextPow2, welchPSD, spectrogram, bandpassFFT, hilbertEnvelope, detectBursts, fitAperiodic,
   ecgTemplateSubtract, bandPower, bandTable, bandOf,
   mean, median, sd, variance, quantile, mad, removeOutliersMAD, linreg, pearson,
   cosinor, cosinorBootstrap, rayleigh, varianceByHour, diurnalProfile, eventAligned,
-  permutationTest, thresholdSummary, histogram, ecdf, fPValue, tPValue, normCDF
+  permutationTest, thresholdSummary, histogram, ecdf, fPValue, tPValue, normCDF,
+  peakInBand, daysSince, pickSpectrum, spectralMetrics, burstMetrics, doseResponse,
+  mergeTrend, collectThresholds, chronicMetrics, extractMetrics
 };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 root.PerceptCore = API;
@@ -2715,6 +2970,26 @@ function renderRail() {
     add('bateria', isFinite(p0.device.batteryPct) ? p0.device.batteryPct + ' %' : '—');
     add('fuso aplicado', `UTC${offMin() >= 0 ? '+' : '−'}${String(Math.floor(Math.abs(offMin()) / 60)).padStart(2, '0')}:${String(Math.abs(offMin()) % 60).padStart(2, '0')}`);
     bs.appendChild(kv); cs.appendChild(bs); rail.appendChild(cs);
+
+    /* exportação */
+    const ce = el('div', { class: 'card' }, [el('h3', {}, ['Exportar'])]);
+    const be = el('div', { class: 'body' });
+    const grid = el('div', { class: 'exportgrid' });
+    [
+      ['⤓ Relatório PDF', 'todas as figuras + resumo de métricas', generateReport, 'primary'],
+      ['⤓ JSON para estatística', 'variáveis-chave por sessão · paciente · implante', exportJSON],
+      ['⤓ CSV — métricas agudas', 'pico β, aperiódico, bursts (sessão × hemisfério)', exportAcuteCSV],
+      ['⤓ CSV — métricas crônicas', 'circadiano e limiares de aDBS (Timeline)', exportChronicCSV],
+      ['⤓ CSV — Timeline bruto', 'amostras de 10 min, formato longo para R', exportSession],
+      ['⤓ Todas as figuras (PNG)', 'baixa cada gráfico individualmente', downloadAllFigures]
+    ].forEach(([label, desc, fn, cls]) => {
+      grid.appendChild(el('div', { class: 'exportitem' }, [
+        el('button', { class: 'btn' + (cls ? ' ' + cls : ''), text: label, onclick: fn }),
+        el('span', { class: 'exphint', text: desc })
+      ]));
+    });
+    be.appendChild(grid);
+    ce.appendChild(be); rail.appendChild(ce);
   }
 }
 
@@ -2806,10 +3081,144 @@ function exportSession() {
   P.downloadText(P.toCSV(rows), 'percept_timeline_para_R.csv', 'text/csv');
 }
 
+/* ---------------------------------------------- exportação de métricas -- */
+function exportBundle() {
+  const ps = activeFiles().map(x => x.parsed);
+  return ps.length ? C.extractMetrics(ps, offMin()) : null;
+}
+function unionKeys(rows) {
+  const seen = new Set(), out = [];
+  rows.forEach(r => Object.keys(r).forEach(k => { if (!seen.has(k)) { seen.add(k); out.push(k); } }));
+  return out;
+}
+function exportJSON() {
+  const b = exportBundle();
+  if (!b) return alert('Carregue ao menos um arquivo antes de exportar.');
+  const doc = {
+    export: {
+      tool: 'Percept LFP Studio', generated_at: new Date().toISOString(),
+      timezone_offset_min: offMin(),
+      note: 'Identificadores pseudonimizados no dispositivo. Métricas nomeadas por sessão × hemisfério (agudas) e sujeito × hemisfério (crônicas), com a data de implante e os dias desde o implante em cada linha.'
+    },
+    subject: b.subject, sessions: b.sessions, acute: b.acute, chronic: b.chronic
+  };
+  P.downloadText(JSON.stringify(doc, null, 2), `percept_${b.subject.id}_metricas.json`, 'application/json');
+}
+function exportAcuteCSV() {
+  const b = exportBundle();
+  if (!b) return alert('Carregue ao menos um arquivo antes de exportar.');
+  if (!b.acute.length) return alert('Nenhuma métrica aguda (espectro ou sinal bruto) nos arquivos carregados.');
+  P.downloadText(P.toCSV(b.acute, unionKeys(b.acute)), `percept_${b.subject.id}_metricas_agudas.csv`, 'text/csv');
+}
+function exportChronicCSV() {
+  const b = exportBundle();
+  if (!b) return alert('Carregue ao menos um arquivo antes de exportar.');
+  if (!b.chronic.length) return alert('Nenhum dado de Timeline (crônico) nos arquivos carregados.');
+  P.downloadText(P.toCSV(b.chronic, unionKeys(b.chronic)), `percept_${b.subject.id}_metricas_cronicas.csv`, 'text/csv');
+}
+
+/* Abre e renderiza todas as figuras com dados (usado por relatório e PNG). */
+function renderAllReady() {
+  const d = ds();
+  FIGURES.forEach(fig => {
+    if (!fig.has(d)) return;
+    const det = document.getElementById('fig-' + fig.id);
+    if (det) { det.open = true; renderFigure(fig.id); }
+  });
+}
+function downloadAllFigures() {
+  if (!S.files.length) return alert('Carregue ao menos um arquivo antes de exportar.');
+  renderAllReady();
+  setTimeout(() => {
+    const d = ds(), jobs = [];
+    FIGURES.forEach(fig => {
+      if (!fig.has(d)) return;
+      const node = document.getElementById('content-' + fig.id);
+      const cvs = node ? Array.from(node.querySelectorAll('canvas')) : [];
+      cvs.forEach((cv, j) => jobs.push([cv, cvs.length > 1 ? `${fig.id}_${j + 1}` : fig.id]));
+    });
+    if (!jobs.length) return alert('Nenhuma figura para exportar.');
+    jobs.forEach(([cv, name], i) => setTimeout(() => P.downloadCanvas(cv, name), i * 350));
+  }, 500);
+}
+
+/* ------------------------------------------------- relatório em PDF ----- */
+function buildReportCover(b) {
+  const s = b.subject;
+  const off = s.timezone_offset_min;
+  const wrap = el('div', { class: 'report-cover', id: 'report-cover' });
+  wrap.appendChild(el('div', { class: 'rc-head' }, [
+    el('div', { class: 'rc-brand', html: '<b>PERCEPT LFP STUDIO</b><span>Relatório de análise de LFP subtalâmico</span>' }),
+    el('div', { class: 'rc-date', text: 'Gerado em ' + new Date().toLocaleString('pt-BR') })
+  ]));
+  const kv = el('dl', { class: 'kv rc-kv' });
+  const add = (k, v) => { kv.appendChild(el('dt', { text: k })); kv.appendChild(el('dd', { text: (v == null || v === '') ? '—' : String(v) })); };
+  add('identificador', s.id);
+  add('diagnóstico', s.diagnosis || '—');
+  add('dispositivo', `${s.device_model || '—'} · fw ${s.firmware || '—'} · ${s.device_location || '—'}`);
+  add('data de implante', s.implant_date || '—');
+  add('alvos', s.targets.map(t => `${(t.hemisphere || '')[0]}:${t.target}`).join('  ') || '—');
+  add('fuso aplicado', `UTC${off >= 0 ? '+' : '−'}${String(Math.floor(Math.abs(off) / 60)).padStart(2, '0')}:${String(Math.abs(off) % 60).padStart(2, '0')}`);
+  add('sessões', `${b.sessions.length}` + (b.sessions.length ? ` (${b.sessions[0].session_date_local || '—'} → ${b.sessions[b.sessions.length - 1].session_date_local || '—'})` : ''));
+  wrap.appendChild(kv);
+
+  if (b.acute.length) {
+    wrap.appendChild(el('h3', { class: 'rc-h', text: 'Métricas agudas — por sessão e hemisfério' }));
+    wrap.appendChild(table(
+      ['hemisfério', 'sessão', 'd. impl.', 'fonte', 'pico β (Hz)', 'β?', 'χ aperiód.', 'burst/s', 'dur. méd. (ms)'],
+      b.acute.map(r => [
+        { html: `<span class="hemi-${(r.hemisphere || '')[0]}">${hname(r.hemisphere)}</span>` },
+        r.session_date_local || '—', r.days_since_implant, r.spectrum_source || '—',
+        r.beta_peak_hz, { html: r.has_beta_peak ? '<span class="sig">sim</span>' : '<span class="ns">não</span>' },
+        r.aperiodic_exponent, r.burst_rate_hz, r.burst_mean_ms
+      ])
+    ));
+  }
+  if (b.chronic.length) {
+    wrap.appendChild(el('h3', { class: 'rc-h', text: 'Métricas crônicas (Timeline) — por hemisfério' }));
+    wrap.appendChild(table(
+      ['hemisfério', 'dias (n)', 'MESOR', 'amp. 24 h', 'acrofase', 'cosinor p*', 'Rayleigh p', '<lim %', 'entre %', '>lim %'],
+      b.chronic.map(r => [
+        { html: `<span class="hemi-${(r.hemisphere || '')[0]}">${hname(r.hemisphere)}</span>` },
+        `${r.n_days} (${r.n_points})`, r.mesor, r.amp_24h,
+        isFinite(r.acrophase_24h) ? r.acrophase_24h + ' h' : '—',
+        { html: pHtml(r.cosinor_p_adj_ar1) }, { html: pHtml(r.rayleigh_p) },
+        r.pct_below, r.pct_between, r.pct_above
+      ])
+    ));
+  }
+  wrap.appendChild(el('div', {
+    class: 'note rc-note', html:
+      '<b>Notas metodológicas.</b> Espectro por Welch (Hann, 50% de sobreposição) ou nativo do dispositivo; componente aperiódico por ' +
+      'aproximação do specparam/FOOOF; bursts por envelope de Hilbert com limiar no percentil 75 (<i>pré-registre o percentil</i>); ' +
+      'ritmo circadiano por cosinor de 24+12 h com <i>p</i> corrigido para autocorrelação AR(1) (coluna cosinor p*) e teste de Rayleigh ' +
+      'das acrofases diárias; timestamps do Percept (UTC) convertidos para hora local. ' +
+      'Ferramenta de pesquisa e apoio à decisão — não substitui o julgamento clínico nem o software regulado do fabricante.'
+  }));
+  wrap.appendChild(el('div', { class: 'rc-figtitle', text: 'Figuras' }));
+  return wrap;
+}
+function generateReport() {
+  if (!S.files.length) return alert('Carregue ao menos um Session Report antes de gerar o relatório.');
+  renderAllReady();
+  const bundle = exportBundle();
+  const main = $('#figs');
+  const old = document.getElementById('report-cover'); if (old) old.remove();
+  if (bundle) main.insertBefore(buildReportCover(bundle), main.firstChild);
+  document.body.classList.add('printing');
+  const cleanup = () => {
+    document.body.classList.remove('printing');
+    const c = document.getElementById('report-cover'); if (c) c.remove();
+    window.removeEventListener('afterprint', cleanup);
+  };
+  window.addEventListener('afterprint', cleanup);
+  setTimeout(() => window.print(), 500);
+}
+
 function init() {
   $('#fileInput').addEventListener('change', e => { handleFiles(e.target.files); e.target.value = ''; });
   $('#btnExport').addEventListener('click', exportSession);
-  $('#btnPrint').addEventListener('click', () => { $$('.fig').forEach(f => f.open = true); setTimeout(() => window.print(), 400); });
+  $('#btnPrint').addEventListener('click', generateReport);
   $('#tz').addEventListener('change', e => {
     S.tzOverride = e.target.value === 'auto' ? null : parseInt(e.target.value, 10);
     renderAll();
@@ -2823,7 +3232,7 @@ function init() {
 }
 document.addEventListener('DOMContentLoaded', init);
 /* hook de depuração (usado pela suíte de testes; inerte em produção) */
-window.__PLS__ = { FIGURES, ds, S, renderFigure, handleFiles, offMin };
+window.__PLS__ = { FIGURES, ds, S, renderFigure, handleFiles, offMin, exportBundle, buildReportCover };
 })();
 </script>
 </body>

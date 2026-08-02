@@ -1168,6 +1168,26 @@ function renderRail() {
     add('bateria', isFinite(p0.device.batteryPct) ? p0.device.batteryPct + ' %' : '—');
     add('fuso aplicado', `UTC${offMin() >= 0 ? '+' : '−'}${String(Math.floor(Math.abs(offMin()) / 60)).padStart(2, '0')}:${String(Math.abs(offMin()) % 60).padStart(2, '0')}`);
     bs.appendChild(kv); cs.appendChild(bs); rail.appendChild(cs);
+
+    /* exportação */
+    const ce = el('div', { class: 'card' }, [el('h3', {}, ['Exportar'])]);
+    const be = el('div', { class: 'body' });
+    const grid = el('div', { class: 'exportgrid' });
+    [
+      ['⤓ Relatório PDF', 'todas as figuras + resumo de métricas', generateReport, 'primary'],
+      ['⤓ JSON para estatística', 'variáveis-chave por sessão · paciente · implante', exportJSON],
+      ['⤓ CSV — métricas agudas', 'pico β, aperiódico, bursts (sessão × hemisfério)', exportAcuteCSV],
+      ['⤓ CSV — métricas crônicas', 'circadiano e limiares de aDBS (Timeline)', exportChronicCSV],
+      ['⤓ CSV — Timeline bruto', 'amostras de 10 min, formato longo para R', exportSession],
+      ['⤓ Todas as figuras (PNG)', 'baixa cada gráfico individualmente', downloadAllFigures]
+    ].forEach(([label, desc, fn, cls]) => {
+      grid.appendChild(el('div', { class: 'exportitem' }, [
+        el('button', { class: 'btn' + (cls ? ' ' + cls : ''), text: label, onclick: fn }),
+        el('span', { class: 'exphint', text: desc })
+      ]));
+    });
+    be.appendChild(grid);
+    ce.appendChild(be); rail.appendChild(ce);
   }
 }
 
@@ -1259,10 +1279,144 @@ function exportSession() {
   P.downloadText(P.toCSV(rows), 'percept_timeline_para_R.csv', 'text/csv');
 }
 
+/* ---------------------------------------------- exportação de métricas -- */
+function exportBundle() {
+  const ps = activeFiles().map(x => x.parsed);
+  return ps.length ? C.extractMetrics(ps, offMin()) : null;
+}
+function unionKeys(rows) {
+  const seen = new Set(), out = [];
+  rows.forEach(r => Object.keys(r).forEach(k => { if (!seen.has(k)) { seen.add(k); out.push(k); } }));
+  return out;
+}
+function exportJSON() {
+  const b = exportBundle();
+  if (!b) return alert('Carregue ao menos um arquivo antes de exportar.');
+  const doc = {
+    export: {
+      tool: 'Percept LFP Studio', generated_at: new Date().toISOString(),
+      timezone_offset_min: offMin(),
+      note: 'Identificadores pseudonimizados no dispositivo. Métricas nomeadas por sessão × hemisfério (agudas) e sujeito × hemisfério (crônicas), com a data de implante e os dias desde o implante em cada linha.'
+    },
+    subject: b.subject, sessions: b.sessions, acute: b.acute, chronic: b.chronic
+  };
+  P.downloadText(JSON.stringify(doc, null, 2), `percept_${b.subject.id}_metricas.json`, 'application/json');
+}
+function exportAcuteCSV() {
+  const b = exportBundle();
+  if (!b) return alert('Carregue ao menos um arquivo antes de exportar.');
+  if (!b.acute.length) return alert('Nenhuma métrica aguda (espectro ou sinal bruto) nos arquivos carregados.');
+  P.downloadText(P.toCSV(b.acute, unionKeys(b.acute)), `percept_${b.subject.id}_metricas_agudas.csv`, 'text/csv');
+}
+function exportChronicCSV() {
+  const b = exportBundle();
+  if (!b) return alert('Carregue ao menos um arquivo antes de exportar.');
+  if (!b.chronic.length) return alert('Nenhum dado de Timeline (crônico) nos arquivos carregados.');
+  P.downloadText(P.toCSV(b.chronic, unionKeys(b.chronic)), `percept_${b.subject.id}_metricas_cronicas.csv`, 'text/csv');
+}
+
+/* Abre e renderiza todas as figuras com dados (usado por relatório e PNG). */
+function renderAllReady() {
+  const d = ds();
+  FIGURES.forEach(fig => {
+    if (!fig.has(d)) return;
+    const det = document.getElementById('fig-' + fig.id);
+    if (det) { det.open = true; renderFigure(fig.id); }
+  });
+}
+function downloadAllFigures() {
+  if (!S.files.length) return alert('Carregue ao menos um arquivo antes de exportar.');
+  renderAllReady();
+  setTimeout(() => {
+    const d = ds(), jobs = [];
+    FIGURES.forEach(fig => {
+      if (!fig.has(d)) return;
+      const node = document.getElementById('content-' + fig.id);
+      const cvs = node ? Array.from(node.querySelectorAll('canvas')) : [];
+      cvs.forEach((cv, j) => jobs.push([cv, cvs.length > 1 ? `${fig.id}_${j + 1}` : fig.id]));
+    });
+    if (!jobs.length) return alert('Nenhuma figura para exportar.');
+    jobs.forEach(([cv, name], i) => setTimeout(() => P.downloadCanvas(cv, name), i * 350));
+  }, 500);
+}
+
+/* ------------------------------------------------- relatório em PDF ----- */
+function buildReportCover(b) {
+  const s = b.subject;
+  const off = s.timezone_offset_min;
+  const wrap = el('div', { class: 'report-cover', id: 'report-cover' });
+  wrap.appendChild(el('div', { class: 'rc-head' }, [
+    el('div', { class: 'rc-brand', html: '<b>PERCEPT LFP STUDIO</b><span>Relatório de análise de LFP subtalâmico</span>' }),
+    el('div', { class: 'rc-date', text: 'Gerado em ' + new Date().toLocaleString('pt-BR') })
+  ]));
+  const kv = el('dl', { class: 'kv rc-kv' });
+  const add = (k, v) => { kv.appendChild(el('dt', { text: k })); kv.appendChild(el('dd', { text: (v == null || v === '') ? '—' : String(v) })); };
+  add('identificador', s.id);
+  add('diagnóstico', s.diagnosis || '—');
+  add('dispositivo', `${s.device_model || '—'} · fw ${s.firmware || '—'} · ${s.device_location || '—'}`);
+  add('data de implante', s.implant_date || '—');
+  add('alvos', s.targets.map(t => `${(t.hemisphere || '')[0]}:${t.target}`).join('  ') || '—');
+  add('fuso aplicado', `UTC${off >= 0 ? '+' : '−'}${String(Math.floor(Math.abs(off) / 60)).padStart(2, '0')}:${String(Math.abs(off) % 60).padStart(2, '0')}`);
+  add('sessões', `${b.sessions.length}` + (b.sessions.length ? ` (${b.sessions[0].session_date_local || '—'} → ${b.sessions[b.sessions.length - 1].session_date_local || '—'})` : ''));
+  wrap.appendChild(kv);
+
+  if (b.acute.length) {
+    wrap.appendChild(el('h3', { class: 'rc-h', text: 'Métricas agudas — por sessão e hemisfério' }));
+    wrap.appendChild(table(
+      ['hemisfério', 'sessão', 'd. impl.', 'fonte', 'pico β (Hz)', 'β?', 'χ aperiód.', 'burst/s', 'dur. méd. (ms)'],
+      b.acute.map(r => [
+        { html: `<span class="hemi-${(r.hemisphere || '')[0]}">${hname(r.hemisphere)}</span>` },
+        r.session_date_local || '—', r.days_since_implant, r.spectrum_source || '—',
+        r.beta_peak_hz, { html: r.has_beta_peak ? '<span class="sig">sim</span>' : '<span class="ns">não</span>' },
+        r.aperiodic_exponent, r.burst_rate_hz, r.burst_mean_ms
+      ])
+    ));
+  }
+  if (b.chronic.length) {
+    wrap.appendChild(el('h3', { class: 'rc-h', text: 'Métricas crônicas (Timeline) — por hemisfério' }));
+    wrap.appendChild(table(
+      ['hemisfério', 'dias (n)', 'MESOR', 'amp. 24 h', 'acrofase', 'cosinor p*', 'Rayleigh p', '<lim %', 'entre %', '>lim %'],
+      b.chronic.map(r => [
+        { html: `<span class="hemi-${(r.hemisphere || '')[0]}">${hname(r.hemisphere)}</span>` },
+        `${r.n_days} (${r.n_points})`, r.mesor, r.amp_24h,
+        isFinite(r.acrophase_24h) ? r.acrophase_24h + ' h' : '—',
+        { html: pHtml(r.cosinor_p_adj_ar1) }, { html: pHtml(r.rayleigh_p) },
+        r.pct_below, r.pct_between, r.pct_above
+      ])
+    ));
+  }
+  wrap.appendChild(el('div', {
+    class: 'note rc-note', html:
+      '<b>Notas metodológicas.</b> Espectro por Welch (Hann, 50% de sobreposição) ou nativo do dispositivo; componente aperiódico por ' +
+      'aproximação do specparam/FOOOF; bursts por envelope de Hilbert com limiar no percentil 75 (<i>pré-registre o percentil</i>); ' +
+      'ritmo circadiano por cosinor de 24+12 h com <i>p</i> corrigido para autocorrelação AR(1) (coluna cosinor p*) e teste de Rayleigh ' +
+      'das acrofases diárias; timestamps do Percept (UTC) convertidos para hora local. ' +
+      'Ferramenta de pesquisa e apoio à decisão — não substitui o julgamento clínico nem o software regulado do fabricante.'
+  }));
+  wrap.appendChild(el('div', { class: 'rc-figtitle', text: 'Figuras' }));
+  return wrap;
+}
+function generateReport() {
+  if (!S.files.length) return alert('Carregue ao menos um Session Report antes de gerar o relatório.');
+  renderAllReady();
+  const bundle = exportBundle();
+  const main = $('#figs');
+  const old = document.getElementById('report-cover'); if (old) old.remove();
+  if (bundle) main.insertBefore(buildReportCover(bundle), main.firstChild);
+  document.body.classList.add('printing');
+  const cleanup = () => {
+    document.body.classList.remove('printing');
+    const c = document.getElementById('report-cover'); if (c) c.remove();
+    window.removeEventListener('afterprint', cleanup);
+  };
+  window.addEventListener('afterprint', cleanup);
+  setTimeout(() => window.print(), 500);
+}
+
 function init() {
   $('#fileInput').addEventListener('change', e => { handleFiles(e.target.files); e.target.value = ''; });
   $('#btnExport').addEventListener('click', exportSession);
-  $('#btnPrint').addEventListener('click', () => { $$('.fig').forEach(f => f.open = true); setTimeout(() => window.print(), 400); });
+  $('#btnPrint').addEventListener('click', generateReport);
   $('#tz').addEventListener('change', e => {
     S.tzOverride = e.target.value === 'auto' ? null : parseInt(e.target.value, 10);
     renderAll();
@@ -1276,5 +1430,5 @@ function init() {
 }
 document.addEventListener('DOMContentLoaded', init);
 /* hook de depuração (usado pela suíte de testes; inerte em produção) */
-window.__PLS__ = { FIGURES, ds, S, renderFigure, handleFiles, offMin };
+window.__PLS__ = { FIGURES, ds, S, renderFigure, handleFiles, offMin, exportBundle, buildReportCover };
 })();
