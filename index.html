@@ -258,15 +258,19 @@ footer.foot{padding:24px 20px 40px;text-align:center;font:11px/1.7 var(--mono);c
 </footer>
 
 <script>/* ==========================================================================
-   PERCEPT LFP STUDIO — núcleo de parsing, processamento de sinal e estatística
-   Sem dependências externas. Funciona em browser e em Node.
+   PERCEPT LFP STUDIO — núcleo (gerado de src/core/** por build.mjs)
+   Não edite este bloco no index.html: edite src/core/** e reconstrua.
    ========================================================================== */
 (function (root) {
 'use strict';
+/* ---------- core/io/parse.js ---------- */
+/* io/parse.js — parsing do JSON e pseudonimização (io)
+   Gerado do refactor modular (Prompt 0.1). Ver docs/arquitetura.md. */
 
-/* ---------------------------------------------------------------- helpers */
 const tail = s => (typeof s === 'string' && s.includes('.')) ? s.split('.').pop() : s;
+
 const num  = v => (typeof v === 'number' && isFinite(v)) ? v : NaN;
+
 const isArr = Array.isArray;
 
 function parseUtcOffsetMin(str) {           // "-02:00" -> -120
@@ -276,13 +280,16 @@ function parseUtcOffsetMin(str) {           // "-02:00" -> -120
   const sign = m[1] === '-' ? -1 : 1;
   return sign * (parseInt(m[2], 10) * 60 + parseInt(m[3], 10));
 }
+
 const T = s => { const d = new Date(s); return isFinite(d.getTime()) ? d.getTime() : NaN; };
 
 /* Hora decimal local (0–24) a partir de epoch ms e offset em minutos */
+
 function localHour(ms, offMin) {
   const d = new Date(ms + offMin * 60000);
   return d.getUTCHours() + d.getUTCMinutes() / 60 + d.getUTCSeconds() / 3600;
 }
+
 function localDayKey(ms, offMin) {
   return new Date(ms + offMin * 60000).toISOString().slice(0, 10);
 }
@@ -565,11 +572,14 @@ function hashId(a, b) {                       // pseudonimização determinísti
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
   return 'sub-' + ('00000000' + h.toString(16)).slice(-8);
 }
+
 function normElec(e) {
   const t = String(tail(e) || '').replace(/^Sen[Ss]ight_?/i, '');
   return t === 'Case' ? 'Case' : t;
 }
+
 const CH_MAP = { ZERO: '0', ONE: '1', TWO: '2', THREE: '3' };
+
 function prettyChannel(c) {
   if (!c) return '';
   let s = String(c).replace(/_(LEFT|RIGHT)(_RING|_SEGMENT)?$/i, '').replace(/_(LEFT|RIGHT)$/i, '');
@@ -583,9 +593,14 @@ function prettyChannel(c) {
 /*  2. DSP                                                                   */
 /* ======================================================================== */
 
+/* ---------- core/dsp/fft.js ---------- */
+/* dsp/fft.js — FFT e utilidades de janela (dsp)
+   Gerado do refactor modular (Prompt 0.1). Ver docs/arquitetura.md. */
+
 function nextPow2(n) { let p = 1; while (p < n) p <<= 1; return p; }
 
 /* FFT radix-2 in-place (Cooley–Tukey) */
+
 function fft(re, im, inverse) {
   const n = re.length;
   for (let i = 1, j = 0; i < n; i++) {
@@ -613,6 +628,7 @@ function fft(re, im, inverse) {
 }
 
 function hann(n) { const w = new Float64Array(n); for (let i = 0; i < n; i++) w[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (n - 1)); return w; }
+
 function detrendLinear(x) {
   const n = x.length; let sx = 0, sy = 0, sxx = 0, sxy = 0;
   for (let i = 0; i < n; i++) { sx += i; sy += x[i]; sxx += i * i; sxy += i * x[i]; }
@@ -622,6 +638,11 @@ function detrendLinear(x) {
 }
 
 /* PSD de Welch — retorna densidade em unidade²/Hz */
+
+/* ---------- core/dsp/spectral.js ---------- */
+/* dsp/spectral.js — PSD de Welch, espectrograma e bandas (dsp)
+   Gerado do refactor modular (Prompt 0.1). Ver docs/arquitetura.md. */
+
 function welchPSD(x, fs, opts) {
   opts = opts || {};
   const nper = opts.nperseg || Math.min(nextPow2(Math.floor(fs)), nextPow2(x.length));
@@ -652,6 +673,7 @@ function welchPSD(x, fs, opts) {
 }
 
 /* Espectrograma (STFT) */
+
 function spectrogram(x, fs, opts) {
   opts = opts || {};
   const win = opts.window || nextPow2(fs);            // ~1 s
@@ -677,6 +699,42 @@ function spectrogram(x, fs, opts) {
 }
 
 /* Filtro passa-banda de fase zero via FFT */
+
+const BANDS = [
+  { key: 'delta', label: 'δ', lo: 1, hi: 4, color: '#3B3F73' },
+  { key: 'theta', label: 'θ', lo: 4, hi: 8, color: '#2F6E8E' },
+  { key: 'alpha', label: 'α', lo: 8, hi: 13, color: '#2E8B7A' },
+  { key: 'lowbeta', label: 'β↓', lo: 13, hi: 20, color: '#B8912A' },
+  { key: 'highbeta', label: 'β↑', lo: 20, hi: 35, color: '#C4652B' },
+  { key: 'gamma', label: 'γ', lo: 35, hi: 100, color: '#8E3B4E' }
+];
+
+function bandOf(f) { const b = BANDS.find(b => f >= b.lo && f < b.hi); return b ? b.key : '—'; }
+
+function bandPower(f, p, lo, hi) {
+  let s = 0, n = 0;
+  for (let i = 0; i < f.length; i++) if (f[i] >= lo && f[i] <= hi) { s += p[i]; n++; }
+  return n ? s * (f[1] - f[0]) : NaN;
+}
+
+function bandTable(f, p) {
+  const tot = bandPower(f, p, 1, 100);
+  return BANDS.map(b => {
+    const abs = bandPower(f, p, b.lo, b.hi);
+    let peakF = NaN, peakV = -Infinity;
+    for (let i = 0; i < f.length; i++) if (f[i] >= b.lo && f[i] <= b.hi && p[i] > peakV) { peakV = p[i]; peakF = f[i]; }
+    return { ...b, absolute: abs, relative: 100 * abs / tot, peakF, peakV };
+  });
+}
+
+/* ======================================================================== */
+/*  3. ESTATÍSTICA                                                           */
+/* ======================================================================== */
+
+/* ---------- core/dsp/filters.js ---------- */
+/* dsp/filters.js — passa-banda de fase zero e envelope de Hilbert (dsp)
+   Gerado do refactor modular (Prompt 0.1). Ver docs/arquitetura.md. */
+
 function bandpassFFT(x, fs, lo, hi) {
   const n = nextPow2(x.length);
   const re = new Float64Array(n), im = new Float64Array(n);
@@ -695,6 +753,7 @@ function bandpassFFT(x, fs, lo, hi) {
 }
 
 /* Envelope de Hilbert */
+
 function hilbertEnvelope(x) {
   const n = nextPow2(x.length);
   const re = new Float64Array(n), im = new Float64Array(n);
@@ -709,6 +768,98 @@ function hilbertEnvelope(x) {
 }
 
 /* Detecção de bursts sobre o envelope */
+
+/* ---------- core/stats/descriptive.js ---------- */
+/* stats/descriptive.js — estatística descritiva e regressão (stats)
+   Gerado do refactor modular (Prompt 0.1). Ver docs/arquitetura.md. */
+
+const sum = a => a.reduce((x, y) => x + y, 0);
+
+const mean = a => a.length ? sum(a) / a.length : NaN;
+
+function variance(a) { if (a.length < 2) return NaN; const m = mean(a); return sum(a.map(v => (v - m) * (v - m))) / (a.length - 1); }
+
+const sd = a => Math.sqrt(variance(a));
+
+function median(a) { return quantile(a, 0.5); }
+
+function quantile(a, q) {
+  if (!a.length) return NaN;
+  const s = Array.from(a).filter(isFinite).sort((x, y) => x - y);
+  if (!s.length) return NaN;
+  const h = (s.length - 1) * q, lo = Math.floor(h), hi = Math.ceil(h);
+  return s[lo] + (h - lo) * (s[hi] - s[lo]);
+}
+
+function mad(a) { const m = median(a); return 1.4826 * median(a.map(v => Math.abs(v - m))); }
+
+function removeOutliersMAD(rows, key, k) {
+  k = k || 4;
+  const vals = rows.map(r => r[key]).filter(isFinite);
+  const m = median(vals), s = mad(vals) || 1e-9;
+  const kept = rows.filter(r => isFinite(r[key]) && Math.abs(r[key] - m) <= k * s);
+  return { kept, removed: rows.length - kept.length, median: m, mad: s, lo: m - k * s, hi: m + k * s };
+}
+
+function linreg(x, y) {
+  const n = x.length; if (n < 2) return { slope: NaN, intercept: NaN, r2: NaN };
+  const mx = mean(x), my = mean(y);
+  let sxy = 0, sxx = 0, syy = 0;
+  for (let i = 0; i < n; i++) { sxy += (x[i] - mx) * (y[i] - my); sxx += (x[i] - mx) ** 2; syy += (y[i] - my) ** 2; }
+  const b = sxy / sxx;
+  return { slope: b, intercept: my - b * mx, r2: (sxy * sxy) / (sxx * syy), n };
+}
+
+function pearson(x, y) { const r = linreg(x, y); return Math.sign(r.slope) * Math.sqrt(Math.max(0, r.r2)); }
+
+/* --- distribuições ----------------------------------------------------- */
+
+function histogram(vals, nBins) {
+  const v = vals.filter(isFinite); if (!v.length) return null;
+  nBins = nBins || 40;
+  const lo = Math.min(...v), hi = Math.max(...v), w = (hi - lo) / nBins || 1;
+  const counts = new Array(nBins).fill(0);
+  v.forEach(x => counts[Math.min(nBins - 1, Math.floor((x - lo) / w))]++);
+  return { lo, hi, width: w, counts, centers: counts.map((_, i) => lo + (i + 0.5) * w), n: v.length };
+}
+
+function ecdf(vals) {
+  const v = vals.filter(isFinite).sort((a, b) => a - b);
+  return { x: v, y: v.map((_, i) => (i + 1) / v.length) };
+}
+
+/* ======================================================================== */
+/*  4. EXTRAÇÃO DE MÉTRICAS-CHAVE  (relatório · CSV · JSON)                   */
+/*                                                                           */
+/*  Reúne, por SESSÃO × HEMISFÉRIO (medidas agudas) e por SUJEITO ×          */
+/*  HEMISFÉRIO (medidas crônicas do Timeline), as variáveis que a literatura */
+/*  usa como desfecho — pico beta, componente aperiódico (specparam),        */
+/*  bursts, dose-resposta e ritmo circadiano — cada linha nomeada por        */
+/*  paciente, sessão e data de implante (com dias desde o implante).         */
+/*  Puro, sem DOM: alimenta o relatório, o CSV e o JSON e é testável.        */
+/* ======================================================================== */
+
+const rnd = (x, n) => (typeof x === 'number' && isFinite(x)) ? +x.toFixed(n == null ? 4 : n) : NaN;
+
+/* pico (freq, valor) da maior magnitude dentro de uma banda */
+
+function bimodalityCoefficient(a) {
+  const v = (a || []).filter(isFinite), n = v.length;
+  if (n < 4) return NaN;
+  const m = mean(v), s = Math.sqrt(variance(v));
+  if (!s || !isFinite(s)) return NaN;
+  let m3 = 0, m4 = 0;
+  for (const x of v) { const z = (x - m) / s; m3 += z * z * z; m4 += z * z * z * z; }
+  m3 /= n; m4 /= n;
+  const g1 = m3, g2 = m4 - 3;                       // assimetria e curtose (excesso)
+  const denom = g2 + 3 * (n - 1) * (n - 1) / ((n - 2) * (n - 3));
+  return denom ? (g1 * g1 + 1) / denom : NaN;
+}
+
+/* ---------- core/dsp/bursts.js ---------- */
+/* dsp/bursts.js — detecção de bursts (dsp)
+   Gerado do refactor modular (Prompt 0.1). Ver docs/arquitetura.md. */
+
 function detectBursts(env, fs, opts) {
   opts = opts || {};
   const pct = opts.percentile == null ? 75 : opts.percentile;
@@ -739,6 +890,7 @@ function detectBursts(env, fs, opts) {
     durationHistogram: burstHistogram(bursts)
   };
 }
+
 function burstHistogram(bursts) {
   const edges = [200, 350, 500, 650, 800, Infinity];
   const labels = ['<200', '200–350', '350–500', '500–650', '650–800', '>800'];
@@ -751,6 +903,12 @@ function burstHistogram(bursts) {
 }
 
 /* Parametrização espectral (aproximação de specparam/FOOOF) */
+
+/* ---------- core/dsp/aperiodic.js ---------- */
+/* dsp/aperiodic.js — parametrização aperiódica — specparam/FOOOF (dsp)
+   Gerado do refactor modular (Prompt 0.1). Ver docs/arquitetura.md. */
+
+
 function fitAperiodic(f, p, opts) {
   opts = opts || {};
   const fmin = opts.fmin || 2, fmax = opts.fmax || 95;
@@ -786,6 +944,7 @@ function fitAperiodic(f, p, opts) {
     f: idx.map(i => f[i]), observed: idx.map(i => p[i]), aperiodic: model, periodic: resid, peaks
   };
 }
+
 function findPeaks(f, y, minH) {
   const out = [];
   for (let i = 1; i < y.length - 1; i++) {
@@ -799,6 +958,12 @@ function findPeaks(f, y, minH) {
 }
 
 /* Remoção de artefato cardíaco por subtração de template (QRS) */
+
+/* ---------- core/artifact/ecg.js ---------- */
+/* artifact/ecg.js — remoção de artefato cardíaco (artifact)
+   Gerado do refactor modular (Prompt 0.1). Ver docs/arquitetura.md. */
+
+
 function ecgTemplateSubtract(x, fs) {
   const bp = bandpassFFT(x, fs, 5, 30);
   const env = hilbertEnvelope(bp);
@@ -823,65 +988,10 @@ function ecgTemplateSubtract(x, fs) {
   return { cleaned: out, nBeats: usable.length, bpm: 60 / (median(rr) || NaN), template: tpl, peaks: usable, applied: true };
 }
 
-const BANDS = [
-  { key: 'delta', label: 'δ', lo: 1, hi: 4, color: '#3B3F73' },
-  { key: 'theta', label: 'θ', lo: 4, hi: 8, color: '#2F6E8E' },
-  { key: 'alpha', label: 'α', lo: 8, hi: 13, color: '#2E8B7A' },
-  { key: 'lowbeta', label: 'β↓', lo: 13, hi: 20, color: '#B8912A' },
-  { key: 'highbeta', label: 'β↑', lo: 20, hi: 35, color: '#C4652B' },
-  { key: 'gamma', label: 'γ', lo: 35, hi: 100, color: '#8E3B4E' }
-];
-function bandOf(f) { const b = BANDS.find(b => f >= b.lo && f < b.hi); return b ? b.key : '—'; }
-function bandPower(f, p, lo, hi) {
-  let s = 0, n = 0;
-  for (let i = 0; i < f.length; i++) if (f[i] >= lo && f[i] <= hi) { s += p[i]; n++; }
-  return n ? s * (f[1] - f[0]) : NaN;
-}
-function bandTable(f, p) {
-  const tot = bandPower(f, p, 1, 100);
-  return BANDS.map(b => {
-    const abs = bandPower(f, p, b.lo, b.hi);
-    let peakF = NaN, peakV = -Infinity;
-    for (let i = 0; i < f.length; i++) if (f[i] >= b.lo && f[i] <= b.hi && p[i] > peakV) { peakV = p[i]; peakF = f[i]; }
-    return { ...b, absolute: abs, relative: 100 * abs / tot, peakF, peakV };
-  });
-}
+/* ---------- core/stats/distributions.js ---------- */
+/* stats/distributions.js — distribuições F, t e normal (stats)
+   Gerado do refactor modular (Prompt 0.1). Ver docs/arquitetura.md. */
 
-/* ======================================================================== */
-/*  3. ESTATÍSTICA                                                           */
-/* ======================================================================== */
-
-const sum = a => a.reduce((x, y) => x + y, 0);
-const mean = a => a.length ? sum(a) / a.length : NaN;
-function variance(a) { if (a.length < 2) return NaN; const m = mean(a); return sum(a.map(v => (v - m) * (v - m))) / (a.length - 1); }
-const sd = a => Math.sqrt(variance(a));
-function median(a) { return quantile(a, 0.5); }
-function quantile(a, q) {
-  if (!a.length) return NaN;
-  const s = Array.from(a).filter(isFinite).sort((x, y) => x - y);
-  if (!s.length) return NaN;
-  const h = (s.length - 1) * q, lo = Math.floor(h), hi = Math.ceil(h);
-  return s[lo] + (h - lo) * (s[hi] - s[lo]);
-}
-function mad(a) { const m = median(a); return 1.4826 * median(a.map(v => Math.abs(v - m))); }
-function removeOutliersMAD(rows, key, k) {
-  k = k || 4;
-  const vals = rows.map(r => r[key]).filter(isFinite);
-  const m = median(vals), s = mad(vals) || 1e-9;
-  const kept = rows.filter(r => isFinite(r[key]) && Math.abs(r[key] - m) <= k * s);
-  return { kept, removed: rows.length - kept.length, median: m, mad: s, lo: m - k * s, hi: m + k * s };
-}
-function linreg(x, y) {
-  const n = x.length; if (n < 2) return { slope: NaN, intercept: NaN, r2: NaN };
-  const mx = mean(x), my = mean(y);
-  let sxy = 0, sxx = 0, syy = 0;
-  for (let i = 0; i < n; i++) { sxy += (x[i] - mx) * (y[i] - my); sxx += (x[i] - mx) ** 2; syy += (y[i] - my) ** 2; }
-  const b = sxy / sxx;
-  return { slope: b, intercept: my - b * mx, r2: (sxy * sxy) / (sxx * syy), n };
-}
-function pearson(x, y) { const r = linreg(x, y); return Math.sign(r.slope) * Math.sqrt(Math.max(0, r.r2)); }
-
-/* --- distribuições ----------------------------------------------------- */
 function logGamma(z) {
   const g = [676.5203681218851, -1259.1392167224028, 771.32342877765313, -176.61502916214059,
     12.507343278686905, -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7];
@@ -891,6 +1001,7 @@ function logGamma(z) {
   const t = z + g.length - 0.5;
   return 0.5 * Math.log(2 * Math.PI) + (z + 0.5) * Math.log(t) - t + Math.log(x);
 }
+
 function betacf(a, b, x) {
   const MAXIT = 200, EPS = 3e-12, FPMIN = 1e-300;
   const qab = a + b, qap = a + 1, qam = a - 1;
@@ -911,20 +1022,25 @@ function betacf(a, b, x) {
   }
   return h;
 }
+
 function ibeta(a, b, x) {
   if (x <= 0) return 0; if (x >= 1) return 1;
   const bt = Math.exp(logGamma(a + b) - logGamma(a) - logGamma(b) + a * Math.log(x) + b * Math.log(1 - x));
   return x < (a + 1) / (a + b + 2) ? bt * betacf(a, b, x) / a : 1 - bt * betacf(b, a, 1 - x) / b;
 }
+
 function fPValue(F, d1, d2) {
   if (!isFinite(F) || F <= 0) return 1;
   return 1 - ibeta(d1 / 2, d2 / 2, d1 * F / (d1 * F + d2));
 }
+
 function tPValue(t, df) {
   const x = df / (df + t * t);
   return ibeta(df / 2, 0.5, x);
 }
+
 function normCDF(z) { return 0.5 * (1 + erf(z / Math.SQRT2)); }
+
 function erf(x) {
   const s = Math.sign(x); x = Math.abs(x);
   const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741, a4 = -1.453152027, a5 = 1.061405429, p = 0.3275911;
@@ -934,6 +1050,13 @@ function erf(x) {
 
 /* --- COSINOR ----------------------------------------------------------- */
 /* y ~ M + Σ [ β_k cos(2πt/τ_k) + γ_k sin(2πt/τ_k) ]                        */
+
+/* ---------- core/stats/circadian.js ---------- */
+/* stats/circadian.js — cosinor, bootstrap e ritmo circadiano (stats)
+   Gerado do refactor modular (Prompt 0.1). Ver docs/arquitetura.md. */
+
+
+
 function cosinor(tHours, y, periods) {
   periods = periods || [24];
   const n = y.length;
@@ -981,6 +1104,7 @@ function cosinor(tHours, y, periods) {
       a + beta[1 + 2 * i] * Math.cos(2 * Math.PI * h / tau) + beta[2 + 2 * i] * Math.sin(2 * Math.PI * h / tau), 0)
   };
 }
+
 function olsSolve(X, y) {                        // normal equations + Gauss-Jordan
   const k = X[0].length, n = X.length;
   const A = Array.from({ length: k }, () => new Float64Array(k + 1));
@@ -1000,6 +1124,7 @@ function olsSolve(X, y) {                        // normal equations + Gauss-Jor
 }
 
 /* Bootstrap por blocos (dia) para IC dos parâmetros do cosinor */
+
 function cosinorBootstrap(rows, periods, nBoot, offMin) {
   nBoot = nBoot || 400;
   const byDay = {};
@@ -1017,6 +1142,7 @@ function cosinorBootstrap(rows, periods, nBoot, offMin) {
   const ci = a => [quantile(a, 0.025), quantile(a, 0.975)];
   return { nBoot: mesor.length, nDays: days.length, mesorCI: ci(mesor), amplitudeCI: ci(amp), acrophaseCI: circCI(acro) };
 }
+
 function circCI(hours) {
   const ang = hours.map(h => 2 * Math.PI * h / 24);
   const m = Math.atan2(mean(ang.map(Math.sin)), mean(ang.map(Math.cos)));
@@ -1027,6 +1153,7 @@ function circCI(hours) {
 }
 
 /* Teste de Rayleigh (uniformidade circular) */
+
 function rayleigh(hours, period) {
   period = period || 24;
   const n = hours.length; if (n < 3) return null;
@@ -1040,6 +1167,7 @@ function rayleigh(hours, period) {
 }
 
 /* Variância explicada pela hora do dia (ANOVA de 1 fator com bins) */
+
 function varianceByHour(rows, offMin, nBins) {
   nBins = nBins || 24;
   const groups = Array.from({ length: nBins }, () => []);
@@ -1053,6 +1181,7 @@ function varianceByHour(rows, offMin, nBins) {
 }
 
 /* Perfil diurno: mediana por bin dentro do dia, depois mediana entre dias */
+
 function diurnalProfile(rows, offMin, binMin, detrendDaily) {
   binMin = binMin || 30;
   const nBins = Math.round(24 * 60 / binMin);
@@ -1079,6 +1208,11 @@ function diurnalProfile(rows, offMin, binMin, detrendDaily) {
 }
 
 /* Média alinhada a evento */
+
+/* ---------- core/stats/events.js ---------- */
+/* stats/events.js — média alinhada a evento e permutação (stats)
+   Gerado do refactor modular (Prompt 0.1). Ver docs/arquitetura.md. */
+
 function eventAligned(rows, eventTimes, preMin, postMin, binMin, normalize) {
   preMin = preMin || 60; postMin = postMin || 180; binMin = binMin || 10;
   const nBins = Math.round((preMin + postMin) / binMin) + 1;
@@ -1112,6 +1246,7 @@ function eventAligned(rows, eventTimes, preMin, postMin, binMin, normalize) {
 }
 
 /* Teste de permutação para comparar duas curvas/amostras */
+
 function permutationTest(a, b, nPerm) {
   nPerm = nPerm || 5000;
   const obs = Math.abs(mean(a) - mean(b));
@@ -1125,59 +1260,114 @@ function permutationTest(a, b, nPerm) {
 }
 
 /* ECDF e proporções vs limiares de aDBS */
-function thresholdSummary(vals, lower, upper) {
-  const v = vals.filter(isFinite);
-  const below = v.filter(x => x < lower).length, above = v.filter(x => x > upper).length;
+
+/* ---------- core/stats/states.js ---------- */
+/* stats/states.js — estados ON/OFF pela amplitude do beta (stats)
+   Gerado do refactor modular (Prompt 0.1). Ver docs/arquitetura.md. */
+
+
+function enforceMinDur(pts, lab, minDur) {
+  lab = lab.slice();
+  let changed = true, guard = 0;
+  while (changed && guard++ < 2000) {
+    changed = false;
+    let i = 0;
+    while (i < pts.length) {
+      let j = i; while (j < pts.length && lab[j] === lab[i]) j++;
+      const dur = pts[j - 1].t - pts[i].t;
+      if (dur < minDur && !(i === 0 && j === pts.length)) {   // corre curta demais → funde no vizinho
+        const nl = i > 0 ? lab[i - 1] : lab[j];
+        if (nl !== lab[i]) { for (let k = i; k < j; k++) lab[k] = nl; changed = true; }
+      }
+      i = j;
+    }
+  }
+  return lab;
+}
+
+function detectStates(series, opts) {
+  opts = opts || {};
+  const pts = (series || []).filter(s => s && isFinite(s.v)).sort((a, b) => a.t - b.t);
+  if (pts.length < 8) return null;
+  const vals = pts.map(s => s.v);
+  let cLow = quantile(vals, 0.25), cHigh = quantile(vals, 0.75);      // init determinístico (sem random)
+  if (!(cHigh > cLow)) return null;
+  for (let it = 0; it < 60; it++) {                                   // k-médias (k=2) 1-D
+    let sL = 0, nL = 0, sH = 0, nH = 0;
+    for (const v of vals) { if (Math.abs(v - cLow) <= Math.abs(v - cHigh)) { sL += v; nL++; } else { sH += v; nH++; } }
+    const nlo = nL ? sL / nL : cLow, nhi = nH ? sH / nH : cHigh;
+    if (Math.abs(nlo - cLow) < 1e-9 && Math.abs(nhi - cHigh) < 1e-9) { cLow = nlo; cHigh = nhi; break; }
+    cLow = nlo; cHigh = nhi;
+  }
+  const thr = (cLow + cHigh) / 2;
+  const lo = vals.filter(v => v <= thr), hi = vals.filter(v => v > thr);
+  const pooled = Math.sqrt((Math.max(1, lo.length - 1) * (variance(lo) || 0) + Math.max(1, hi.length - 1) * (variance(hi) || 0)) / Math.max(1, lo.length + hi.length - 2));
+  const separation = pooled ? (cHigh - cLow) / pooled : NaN;         // distância padronizada (tipo d de Cohen)
+  let lab = pts.map(s => s.v > thr ? 1 : 0);                         // 1 = OFF (alto beta), 0 = ON (baixo beta)
+  if (opts.minDur) lab = enforceMinDur(pts, lab, opts.minDur);
+  const episodes = []; let i = 0;
+  while (i < pts.length) {
+    const stt = lab[i]; let j = i; while (j < pts.length && lab[j] === stt) j++;
+    episodes.push({ state: stt ? 'OFF' : 'ON', startT: pts[i].t, endT: pts[j - 1].t, n: j - i, dur: pts[j - 1].t - pts[i].t, meanV: mean(vals.slice(i, j)) });
+    i = j;
+  }
+  const offEp = episodes.filter(e => e.state === 'OFF'), onEp = episodes.filter(e => e.state === 'ON');
+  const dur = eps => eps.map(e => e.dur).filter(v => isFinite(v) && v > 0);
   return {
-    n: v.length,
-    belowPct: 100 * below / v.length,
-    betweenPct: 100 * (v.length - below - above) / v.length,
-    abovePct: 100 * above / v.length,
-    median: median(v), q1: quantile(v, 0.25), q3: quantile(v, 0.75),
-    p10: quantile(v, 0.1), p90: quantile(v, 0.9)
+    threshold: thr, betaLow: cLow, betaHigh: cHigh, separation, bimodality: bimodalityCoefficient(vals),
+    labels: lab, points: pts, episodes, span: pts[pts.length - 1].t - pts[0].t,
+    offFraction: lab.reduce((a, b) => a + b, 0) / lab.length,
+    nOff: offEp.length, nOn: onEp.length,
+    meanOffDur: mean(dur(offEp)), meanOnDur: mean(dur(onEp))
   };
 }
-function histogram(vals, nBins) {
-  const v = vals.filter(isFinite); if (!v.length) return null;
-  nBins = nBins || 40;
-  const lo = Math.min(...v), hi = Math.max(...v), w = (hi - lo) / nBins || 1;
-  const counts = new Array(nBins).fill(0);
-  v.forEach(x => counts[Math.min(nBins - 1, Math.floor((x - lo) / w))]++);
-  return { lo, hi, width: w, counts, centers: counts.map((_, i) => lo + (i + 0.5) * w), n: v.length };
+/* Série de amplitude de beta ao longo do tempo, a partir do sinal bruto:
+   passa-banda (13–30 Hz) → envelope de Hilbert → média móvel de winS s. */
+
+function betaEnvelopeSeries(td, opts) {
+  opts = opts || {};
+  const lo = opts.lo || 13, hi = opts.hi || 30, winS = opts.winS || 1;
+  const bp = bandpassFFT(td.data, td.fs, lo, hi);
+  const env = hilbertEnvelope(bp);
+  const w = Math.max(1, Math.round(winS * td.fs)), step = Math.max(1, Math.round(w / 2));
+  const out = [];
+  for (let s = 0; s + w <= env.length; s += step) {
+    let sum = 0; for (let k = s; k < s + w; k++) sum += env[k];
+    out.push({ t: (s + w / 2) / td.fs, v: sum / w });
+  }
+  return out;
 }
-function ecdf(vals) {
-  const v = vals.filter(isFinite).sort((a, b) => a - b);
-  return { x: v, y: v.map((_, i) => (i + 1) / v.length) };
+/* ON/OFF resumido de um streaming bruto (BrainSense Streaming). */
+
+function streamOnOff(parsed, hemi, opts) {
+  opts = opts || {};
+  const td = (parsed.bsTimeDomain || []).find(t => t.hemisphere === hemi);
+  if (!td || td.data.length < td.fs * 8) return null;
+  const ser = betaEnvelopeSeries(td, { lo: opts.lo || 13, hi: opts.hi || 30, winS: opts.winS || 1 });
+  const st = detectStates(ser, { minDur: opts.minDur || 2 });
+  if (!st) return null;
+  return { stream_off_pct: rnd(100 * st.offFraction, 1), stream_n_off_episodes: st.nOff, stream_beta_state_sep: rnd(st.separation, 2), stream_beta_bimodality: rnd(st.bimodality, 3) };
 }
 
-/* ======================================================================== */
-/*  4. EXTRAÇÃO DE MÉTRICAS-CHAVE  (relatório · CSV · JSON)                   */
-/*                                                                           */
-/*  Reúne, por SESSÃO × HEMISFÉRIO (medidas agudas) e por SUJEITO ×          */
-/*  HEMISFÉRIO (medidas crônicas do Timeline), as variáveis que a literatura */
-/*  usa como desfecho — pico beta, componente aperiódico (specparam),        */
-/*  bursts, dose-resposta e ritmo circadiano — cada linha nomeada por        */
-/*  paciente, sessão e data de implante (com dias desde o implante).         */
-/*  Puro, sem DOM: alimenta o relatório, o CSV e o JSON e é testável.        */
-/* ======================================================================== */
+/* Extrator principal: lista de sessões (parsed) → pacote de métricas tidy. */
+
+/* ---------- core/metrics/acute.js ---------- */
+/* metrics/acute.js — métricas agudas por sessão × hemisfério (metrics)
+   Gerado do refactor modular (Prompt 0.1). Ver docs/arquitetura.md. */
+
+
+
+
 
 const HEMIS = ['Left', 'Right'];
-const rnd = (x, n) => (typeof x === 'number' && isFinite(x)) ? +x.toFixed(n == null ? 4 : n) : NaN;
 
-/* pico (freq, valor) da maior magnitude dentro de uma banda */
 function peakInBand(f, p, lo, hi) {
   let pf = NaN, pv = -Infinity;
   for (let i = 0; i < f.length; i++)
     if (f[i] >= lo && f[i] <= hi && isFinite(p[i]) && p[i] > pv) { pv = p[i]; pf = f[i]; }
   return { f: pf, v: isFinite(pv) ? pv : NaN };
 }
-function daysSince(fromISO, toISO) {
-  const a = T(fromISO), b = T(toISO);
-  return (isFinite(a) && isFinite(b)) ? Math.round((b - a) / 864e5) : NaN;
-}
 
-/* Escolhe o melhor espectro disponível para um hemisfério, com prioridade:
-   Signal Test (canal de sensing crônico) > Survey > Signal Check > Welch(bruto). */
 function pickSpectrum(parsed, hemi) {
   const ss = (parsed.sensingSetup || []).filter(s => s.hemisphere === hemi && s.psd);
   if (ss.length) { const s = ss[0]; return { f: s.psd.f, p: s.psd.p, source: 'SignalTest', channel: s.channel, center: s.centerFreq, artifact: s.psd.artifact }; }
@@ -1196,6 +1386,7 @@ function pickSpectrum(parsed, hemi) {
 }
 
 /* Métricas espectrais agudas a partir de um espectro (f, p). */
+
 function spectralMetrics(spec) {
   const { f, p } = spec;
   const ap = fitAperiodic(f, p, { fmin: 2, fmax: 95 });
@@ -1223,6 +1414,7 @@ function spectralMetrics(spec) {
 }
 
 /* Métricas de burst a partir do sinal bruto (streaming, senão survey). */
+
 function burstMetrics(parsed, hemi, opts) {
   opts = opts || {};
   const src = (parsed.bsTimeDomain || []).find(t => t.hemisphere === hemi);
@@ -1244,6 +1436,7 @@ function burstMetrics(parsed, hemi, opts) {
 }
 
 /* Curva dose-resposta (potência × amplitude de estimulação) do BrainSenseLfp. */
+
 function doseResponse(parsed, hemi) {
   const rows = (parsed.bsLfp || []).filter(b => b.series && b.series[hemi]);
   if (!rows.length) return null;
@@ -1257,6 +1450,27 @@ function doseResponse(parsed, hemi) {
 }
 
 /* Concatena e desduplica o Timeline entre arquivos do mesmo sujeito. */
+
+/* ---------- core/metrics/chronic.js ---------- */
+/* metrics/chronic.js — métricas crônicas do Timeline (metrics)
+   Gerado do refactor modular (Prompt 0.1). Ver docs/arquitetura.md. */
+
+
+
+
+function thresholdSummary(vals, lower, upper) {
+  const v = vals.filter(isFinite);
+  const below = v.filter(x => x < lower).length, above = v.filter(x => x > upper).length;
+  return {
+    n: v.length,
+    belowPct: 100 * below / v.length,
+    betweenPct: 100 * (v.length - below - above) / v.length,
+    abovePct: 100 * above / v.length,
+    median: median(v), q1: quantile(v, 0.25), q3: quantile(v, 0.75),
+    p10: quantile(v, 0.1), p90: quantile(v, 0.9)
+  };
+}
+
 function mergeTrend(parsedList) {
   const out = {};
   parsedList.forEach(p => Object.keys(p.trend || {}).forEach(h => { out[h] = (out[h] || []).concat(p.trend[h]); }));
@@ -1269,6 +1483,7 @@ function mergeTrend(parsedList) {
 }
 
 /* Limiares de sensing/aDBS declarados no dispositivo, por hemisfério. */
+
 function collectThresholds(parsedList) {
   const t = {};
   parsedList.forEach(p => (p.sensingSetup || []).forEach(s => { if (isFinite(s.lowerThr)) t[s.hemisphere] = { lower: s.lowerThr, upper: s.upperThr, centerFreq: s.centerFreq }; }));
@@ -1279,6 +1494,7 @@ function collectThresholds(parsedList) {
 }
 
 /* Métricas crônicas (circadiano + distribuição para aDBS) de um hemisfério. */
+
 function chronicMetrics(rows, offMin, thr) {
   const clean = removeOutliersMAD(rows, 'lfp', 4).kept;
   const vals = clean.map(r => r.lfp);
@@ -1339,99 +1555,22 @@ function chronicMetrics(rows, offMin, thr) {
    com dois modos (ou achatada); BC baixo indica um único pico — nesse caso a
    divisão ON/OFF é arbitrária. É um indicador honesto de "há dois estados?",
    ao contrário da distância entre clusters, que o k-médias sempre infla. */
-function bimodalityCoefficient(a) {
-  const v = (a || []).filter(isFinite), n = v.length;
-  if (n < 4) return NaN;
-  const m = mean(v), s = Math.sqrt(variance(v));
-  if (!s || !isFinite(s)) return NaN;
-  let m3 = 0, m4 = 0;
-  for (const x of v) { const z = (x - m) / s; m3 += z * z * z; m4 += z * z * z * z; }
-  m3 /= n; m4 /= n;
-  const g1 = m3, g2 = m4 - 3;                       // assimetria e curtose (excesso)
-  const denom = g2 + 3 * (n - 1) * (n - 1) / ((n - 2) * (n - 3));
-  return denom ? (g1 * g1 + 1) / denom : NaN;
-}
-function enforceMinDur(pts, lab, minDur) {
-  lab = lab.slice();
-  let changed = true, guard = 0;
-  while (changed && guard++ < 2000) {
-    changed = false;
-    let i = 0;
-    while (i < pts.length) {
-      let j = i; while (j < pts.length && lab[j] === lab[i]) j++;
-      const dur = pts[j - 1].t - pts[i].t;
-      if (dur < minDur && !(i === 0 && j === pts.length)) {   // corre curta demais → funde no vizinho
-        const nl = i > 0 ? lab[i - 1] : lab[j];
-        if (nl !== lab[i]) { for (let k = i; k < j; k++) lab[k] = nl; changed = true; }
-      }
-      i = j;
-    }
-  }
-  return lab;
-}
-function detectStates(series, opts) {
-  opts = opts || {};
-  const pts = (series || []).filter(s => s && isFinite(s.v)).sort((a, b) => a.t - b.t);
-  if (pts.length < 8) return null;
-  const vals = pts.map(s => s.v);
-  let cLow = quantile(vals, 0.25), cHigh = quantile(vals, 0.75);      // init determinístico (sem random)
-  if (!(cHigh > cLow)) return null;
-  for (let it = 0; it < 60; it++) {                                   // k-médias (k=2) 1-D
-    let sL = 0, nL = 0, sH = 0, nH = 0;
-    for (const v of vals) { if (Math.abs(v - cLow) <= Math.abs(v - cHigh)) { sL += v; nL++; } else { sH += v; nH++; } }
-    const nlo = nL ? sL / nL : cLow, nhi = nH ? sH / nH : cHigh;
-    if (Math.abs(nlo - cLow) < 1e-9 && Math.abs(nhi - cHigh) < 1e-9) { cLow = nlo; cHigh = nhi; break; }
-    cLow = nlo; cHigh = nhi;
-  }
-  const thr = (cLow + cHigh) / 2;
-  const lo = vals.filter(v => v <= thr), hi = vals.filter(v => v > thr);
-  const pooled = Math.sqrt((Math.max(1, lo.length - 1) * (variance(lo) || 0) + Math.max(1, hi.length - 1) * (variance(hi) || 0)) / Math.max(1, lo.length + hi.length - 2));
-  const separation = pooled ? (cHigh - cLow) / pooled : NaN;         // distância padronizada (tipo d de Cohen)
-  let lab = pts.map(s => s.v > thr ? 1 : 0);                         // 1 = OFF (alto beta), 0 = ON (baixo beta)
-  if (opts.minDur) lab = enforceMinDur(pts, lab, opts.minDur);
-  const episodes = []; let i = 0;
-  while (i < pts.length) {
-    const stt = lab[i]; let j = i; while (j < pts.length && lab[j] === stt) j++;
-    episodes.push({ state: stt ? 'OFF' : 'ON', startT: pts[i].t, endT: pts[j - 1].t, n: j - i, dur: pts[j - 1].t - pts[i].t, meanV: mean(vals.slice(i, j)) });
-    i = j;
-  }
-  const offEp = episodes.filter(e => e.state === 'OFF'), onEp = episodes.filter(e => e.state === 'ON');
-  const dur = eps => eps.map(e => e.dur).filter(v => isFinite(v) && v > 0);
-  return {
-    threshold: thr, betaLow: cLow, betaHigh: cHigh, separation, bimodality: bimodalityCoefficient(vals),
-    labels: lab, points: pts, episodes, span: pts[pts.length - 1].t - pts[0].t,
-    offFraction: lab.reduce((a, b) => a + b, 0) / lab.length,
-    nOff: offEp.length, nOn: onEp.length,
-    meanOffDur: mean(dur(offEp)), meanOnDur: mean(dur(onEp))
-  };
-}
-/* Série de amplitude de beta ao longo do tempo, a partir do sinal bruto:
-   passa-banda (13–30 Hz) → envelope de Hilbert → média móvel de winS s. */
-function betaEnvelopeSeries(td, opts) {
-  opts = opts || {};
-  const lo = opts.lo || 13, hi = opts.hi || 30, winS = opts.winS || 1;
-  const bp = bandpassFFT(td.data, td.fs, lo, hi);
-  const env = hilbertEnvelope(bp);
-  const w = Math.max(1, Math.round(winS * td.fs)), step = Math.max(1, Math.round(w / 2));
-  const out = [];
-  for (let s = 0; s + w <= env.length; s += step) {
-    let sum = 0; for (let k = s; k < s + w; k++) sum += env[k];
-    out.push({ t: (s + w / 2) / td.fs, v: sum / w });
-  }
-  return out;
-}
-/* ON/OFF resumido de um streaming bruto (BrainSense Streaming). */
-function streamOnOff(parsed, hemi, opts) {
-  opts = opts || {};
-  const td = (parsed.bsTimeDomain || []).find(t => t.hemisphere === hemi);
-  if (!td || td.data.length < td.fs * 8) return null;
-  const ser = betaEnvelopeSeries(td, { lo: opts.lo || 13, hi: opts.hi || 30, winS: opts.winS || 1 });
-  const st = detectStates(ser, { minDur: opts.minDur || 2 });
-  if (!st) return null;
-  return { stream_off_pct: rnd(100 * st.offFraction, 1), stream_n_off_episodes: st.nOff, stream_beta_state_sep: rnd(st.separation, 2), stream_beta_bimodality: rnd(st.bimodality, 3) };
+
+/* ---------- core/metrics/extract.js ---------- */
+/* metrics/extract.js — extrator principal de métricas tidy (metrics)
+   Gerado do refactor modular (Prompt 0.1). Ver docs/arquitetura.md. */
+
+
+
+
+function daysSince(fromISO, toISO) {
+  const a = T(fromISO), b = T(toISO);
+  return (isFinite(a) && isFinite(b)) ? Math.round((b - a) / 864e5) : NaN;
 }
 
-/* Extrator principal: lista de sessões (parsed) → pacote de métricas tidy. */
+/* Escolhe o melhor espectro disponível para um hemisfério, com prioridade:
+   Signal Test (canal de sensing crônico) > Survey > Signal Check > Welch(bruto). */
+
 function extractMetrics(parsedList, offMin) {
   parsedList = (parsedList || []).slice();
   if (!parsedList.length) return null;
@@ -1486,6 +1625,27 @@ function extractMetrics(parsedList, offMin) {
 }
 
 /* ======================================================================== */
+
+/* ---------- core/index.js ---------- */
+/* core/index.js — barrel do núcleo.
+   Monta o objeto PerceptCore com EXATAMENTE a mesma superfície pública de antes
+   do refactor modular (Prompt 0.1), para que app.js e a suíte de testes não mudem.
+   Ver docs/arquitetura.md para o mapa de módulos e a regra de dependência. */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 const API = {
   parsePercept, MODALITIES, BANDS, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId,
   fft, nextPow2, welchPSD, spectrogram, bandpassFFT, hilbertEnvelope, detectBursts, fitAperiodic,
@@ -1497,10 +1657,9 @@ const API = {
   mergeTrend, collectThresholds, chronicMetrics, extractMetrics,
   detectStates, betaEnvelopeSeries, streamOnOff, bimodalityCoefficient
 };
-if (typeof module !== 'undefined' && module.exports) module.exports = API;
+if (typeof module !== "undefined" && module.exports) module.exports = API;
 root.PerceptCore = API;
-})(typeof globalThis !== 'undefined' ? globalThis : this);
-</script>
+})(typeof globalThis !== "undefined" ? globalThis : this);</script>
 <script>/* ==========================================================================
    PERCEPT LFP STUDIO — camada gráfica (Canvas 2D, sem dependências)
    ========================================================================== */
