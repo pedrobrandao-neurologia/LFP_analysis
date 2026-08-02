@@ -91,6 +91,23 @@ class Chart {
     }
     return this.y0 - (v - this.ylim[0]) / (this.ylim[1] - this.ylim[0]) * (this.y0 - this.y1);
   }
+  /* inversas de X e Y — necessárias para saber sobre qual curva o mouse está */
+  invX(px) {
+    const t = (px - this.x0) / ((this.x1 - this.x0) || 1);
+    if (this.xlog) {
+      const a = Math.log10(Math.max(this.xlim[0], 1e-12)), b = Math.log10(this.xlim[1]);
+      return Math.pow(10, a + t * (b - a));
+    }
+    return this.xlim[0] + t * (this.xlim[1] - this.xlim[0]);
+  }
+  invY(py) {
+    const t = (this.y0 - py) / ((this.y0 - this.y1) || 1);
+    if (this.ylog) {
+      const a = Math.log10(Math.max(this.ylim[0], 1e-12)), b = Math.log10(this.ylim[1]);
+      return Math.pow(10, a + t * (b - a));
+    }
+    return this.ylim[0] + t * (this.ylim[1] - this.ylim[0]);
+  }
   clip(on) {
     const x = this.ctx;
     if (on) { x.save(); x.beginPath(); x.rect(this.x0, this.y1, this.x1 - this.x0, this.y0 - this.y1); x.clip(); }

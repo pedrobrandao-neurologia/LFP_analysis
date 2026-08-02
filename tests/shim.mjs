@@ -10,6 +10,8 @@ class Ctx {
 class Canvas {
   constructor(){ this.style={}; this.width=600; this.height=300; this._ctx=new Ctx(); }
   getContext(){ return this._ctx; }
+  addEventListener(){} removeEventListener(){}
+  get parentNode(){ return this._parent || null; }
   getBoundingClientRect(){ return {width:600,height:300}; }
   toDataURL(){ return 'data:,'; }
 }

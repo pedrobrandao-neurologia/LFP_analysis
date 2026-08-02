@@ -56,6 +56,7 @@ Estado atual (verificado):
 | `artifact/ecg.js` | `dsp`, `stats` |
 | `stats/circadian.js`, `stats/events.js`, `stats/states.js` | `stats`, `dsp`, `io` |
 | `metrics/**` | `dsp`, `stats`, `io` |
+| `metrics/survey.js` | `dsp` (aperiódico), `metrics/acute`, `stats` |
 | `report/reading.js` | `profiles` (só o perfil; nenhuma dependência de DSP) |
 | `stats/optimize.js` | `stats` (Levenberg-Marquardt compartilhado por `dsp` e `adbs`) |
 | `dsp/multitaper.js`, `dsp/specparam.js`, `dsp/wavelet.js`, `dsp/pac.js`, `dsp/gamma.js` | `dsp`, `stats` |
