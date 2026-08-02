@@ -159,6 +159,11 @@ footer.foot{padding:24px 20px 40px;text-align:center;font:11px/1.7 var(--mono);c
 .privacy{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border:1px solid var(--rule);
   border-radius:3px;background:var(--panel);font:10.5px/1 var(--mono);color:var(--ink-2)}
 .privacy i{width:7px;height:7px;border-radius:50%;background:var(--ok);display:inline-block}
+/* ---------- selo de qualidade do dado (Onda 1) ---------- */
+.seal{display:inline-block;font:10.5px/1.4 var(--mono);color:var(--ink-2);background:var(--panel-2);
+  border:1px solid var(--rule-2);border-radius:3px;padding:4px 8px;margin-bottom:10px}
+.seal.warn{color:var(--warn);background:#FBF3EA;border-color:#E8D5BE;font-weight:600}
+
 /* ---------- painel de exportação ---------- */
 .exportgrid{display:flex;flex-direction:column;gap:9px}
 .exportitem{display:flex;flex-direction:column;gap:3px}

@@ -33,6 +33,8 @@ export function fft(re, im, inverse) {
 
 export function hann(n) { const w = new Float64Array(n); for (let i = 0; i < n; i++) w[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (n - 1)); return w; }
 
+/* Detrend linear. Mantido por compatibilidade; a versão tolerante a lacunas
+   (detrendLinearNaN, em dsp/nan.js) é a usada pelo Welch e pelo espectrograma. */
 export function detrendLinear(x) {
   const n = x.length; let sx = 0, sy = 0, sxx = 0, sxy = 0;
   for (let i = 0; i < n; i++) { sx += i; sy += x[i]; sxx += i * i; sxy += i * x[i]; }

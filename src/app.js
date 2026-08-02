@@ -133,6 +133,31 @@ function plotBox(parent, h) {
   cv.style.width = '100%'; cv.style.height = (h || 260) + 'px';
   return { canvas: cv, width: Math.max(280, (box.clientWidth || w) - 12), height: h || 260 };
 }
+/* Selo de qualidade do dado (Onda 1): toda figura que consome série bruta
+   declara quantas amostras são válidas e quanto falta. Acima de 20% de dados
+   faltantes o selo vira alerta e o painel avisa que as métricas derivadas têm
+   confiabilidade reduzida — o cálculo não é bloqueado, é informado. */
+function qualitySeal(node, td) {
+  if (!td || !td.data) return;
+  const st = C.nanStats(td.data);
+  const pk = td.packets || {};
+  const alerta = st.pctNan > 20;
+  const partes = [`${st.nValid.toLocaleString('pt-BR')} / ${st.n.toLocaleString('pt-BR')} amostras válidas (${f(st.pctNan, 1)}% faltante)`];
+  if (pk.method && pk.method !== 'none') partes.push(`perda detectada por ${pk.method === 'sequences' ? 'GlobalSequences' : 'TicksInMses'}`);
+  else if (pk.reliable === false) partes.push('perda de pacotes não verificável neste registro');
+  if (td.timing && td.timing.reliable) partes.push(`fs efetiva ${f(td.fsEff, 3)} Hz`);
+  node.appendChild(el('div', { class: 'seal' + (alerta ? ' warn' : ''), text: partes.join(' · ') }));
+  if (alerta) node.appendChild(el('div', {
+    class: 'warnbox', html: `Este registro tem <b>${f(st.pctNan, 1)}% de dados faltantes</b> (maior lacuna contígua: ` +
+      `${f(st.longestGapSamples / (td.fsEff || td.fs), 2)} s). As métricas derivadas abaixo têm <b>confiabilidade reduzida</b> — ` +
+      `as lacunas não são interpoladas, e segmentos que as contêm ficam de fora do espectro.`
+  }));
+  if (td.timing && td.timing.warnDrift) node.appendChild(el('div', {
+    class: 'warnbox', html: `<b>Deriva temporal de ${f(td.timing.driftMsTotal, 1)} ms</b> neste registro ` +
+      `(fs efetiva ${f(td.fsEff, 4)} Hz vs. ${f(td.fs, 0)} Hz nominal). Relevante para análise alinhada a evento e para sincronização com dado externo.`
+  }));
+}
+
 function exportRow(items) {
   const d = el('div', { class: 'ctrls' });
   items.forEach(i => d.appendChild(el('button', { class: 'btn', onclick: i.fn, text: i.label })));
@@ -476,6 +501,8 @@ const FIGURES = [
         ctrlNumber('dur. mín (ms)', minMs, 20, 400, 10, v => setOpt('F6', 'minms', v)),
         ctrlNumber('janela vista (s)', winS, 2, 120, 2, v => setOpt('F6', 'win', v))
       ]));
+
+      qualitySeal(node, td);
 
       let x = td.data, ecg = null;
       if (doEcg) { ecg = C.ecgTemplateSubtract(td.data, td.fs); x = ecg.cleaned; }
@@ -1093,6 +1120,7 @@ const FIGURES = [
       if (cur.kind === 'stream') {
         const mds = opt('F13', 'mds', 2);
         ctrls.push(ctrlNumber('dur. mín (s)', mds, 0, 30, 1, v => setOpt('F13', 'mds', v)));
+        qualitySeal(node, cur.td);
         series = C.betaEnvelopeSeries(cur.td, { lo, hi, winS: 1 }); isTime = false; minDur = mds;
       } else {
         const mdm = opt('F13', 'mdm', 30);

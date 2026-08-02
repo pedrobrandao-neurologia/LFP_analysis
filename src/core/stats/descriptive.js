@@ -3,9 +3,22 @@
 
 export const sum = a => a.reduce((x, y) => x + y, 0);
 
-export const mean = a => a.length ? sum(a) / a.length : NaN;
+/* Média e variância ignoram amostras não finitas (equivalente a na.rm = TRUE):
+   com lacunas de pacote no sinal (Onda 1), propagar NaN para toda a estatística
+   apagaria o dado válido. O n efetivamente usado é reportado por nanStats(). */
+export const mean = a => {
+  let s = 0, n = 0;
+  for (let i = 0; i < a.length; i++) if (isFinite(a[i])) { s += a[i]; n++; }
+  return n ? s / n : NaN;
+};
 
-export function variance(a) { if (a.length < 2) return NaN; const m = mean(a); return sum(a.map(v => (v - m) * (v - m))) / (a.length - 1); }
+export function variance(a) {
+  const m = mean(a);
+  if (!isFinite(m)) return NaN;
+  let s = 0, n = 0;
+  for (let i = 0; i < a.length; i++) if (isFinite(a[i])) { s += (a[i] - m) * (a[i] - m); n++; }
+  return n > 1 ? s / (n - 1) : NaN;
+}
 
 export const sd = a => Math.sqrt(variance(a));
 

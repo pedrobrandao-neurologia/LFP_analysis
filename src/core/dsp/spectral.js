@@ -1,24 +1,43 @@
 /* dsp/spectral.js — PSD de Welch, espectrograma e bandas (dsp)
    Gerado do refactor modular (Prompt 0.1). Ver docs/arquitetura.md. */
 
-import { detrendLinear, fft, hann, nextPow2 } from './fft.js';
+import { fft, hann, nextPow2 } from './fft.js';
+import { detrendLinearNaN, segmentsWithoutNan, nanStats } from './nan.js';
 
+/* PSD de Welch (Hann, sobreposição 50%, detrend linear por segmento).
+   Entrada em µV, saída em µV²/Hz.
+
+   Tolerância a NaN (Onda 1): segmentos cuja fração de NaN excede maxNanPct
+   (default 0 — qualquer NaN descarta o segmento) são DESCARTADOS, nunca
+   preenchidos. Se sobrarem menos de 3 segmentos válidos, `p` volta como null
+   com um motivo legível, em vez de um espectro que parece válido e não é.
+
+   Nota sobre maxNanPct > 0: nesse caso o segmento é aceito e as posições
+   faltantes entram como zero após o detrend, o que é uma imputação implícita —
+   por isso o default é 0. Use tolerância apenas de forma deliberada, e leia
+   `pctNan` e `pctDataUsed` junto com o resultado. Perda de pacote real é
+   contígua (pacotes inteiros), então o descarte estrito costuma preservar a
+   maior parte dos segmentos.                                                */
 export function welchPSD(x, fs, opts) {
   opts = opts || {};
   const nper = opts.nperseg || Math.min(nextPow2(Math.floor(fs)), nextPow2(x.length));
   const nfft = nextPow2(nper);
   const overlap = opts.overlap == null ? 0.5 : opts.overlap;
   const step = Math.max(1, Math.floor(nper * (1 - overlap)));
+  const maxNanPct = isFinite(opts.maxNanPct) ? opts.maxNanPct : 0;
   const w = hann(nper);
   let U = 0; for (let i = 0; i < nper; i++) U += w[i] * w[i];
   U *= fs;
   const nBins = nfft / 2 + 1;
   const acc = new Float64Array(nBins);
+
+  const sel = segmentsWithoutNan(x, nper, step, maxNanPct);
+  const est = nanStats(x);
   let segs = 0;
-  for (let s = 0; s + nper <= x.length; s += step) {
-    const seg = detrendLinear(x.subarray ? x.subarray(s, s + nper) : x.slice(s, s + nper));
+  for (const s of sel.starts) {
+    const seg = detrendLinearNaN(x.subarray ? x.subarray(s, s + nper) : x.slice(s, s + nper));
     const re = new Float64Array(nfft), im = new Float64Array(nfft);
-    for (let i = 0; i < nper; i++) re[i] = seg[i] * w[i];
+    for (let i = 0; i < nper; i++) re[i] = isFinite(seg[i]) ? seg[i] * w[i] : 0;
     fft(re, im, false);
     for (let k = 0; k < nBins; k++) {
       const mag = (re[k] * re[k] + im[k] * im[k]) / U;
@@ -26,10 +45,21 @@ export function welchPSD(x, fs, opts) {
     }
     segs++;
   }
-  if (!segs) return { f: [], p: [], segments: 0 };
+  const meta = {
+    segments: segs, nSegments: segs, nSegmentsDropped: sel.dropped,
+    nperseg: nper, df: fs / nfft,
+    pctDataUsed: sel.total ? 100 * segs / sel.total : 0,
+    pctNan: est.pctNan
+  };
+  if (segs < 3) return Object.assign({
+    f: [], p: null,
+    reason: sel.total === 0
+      ? 'registro curto demais para um único segmento de Welch'
+      : `apenas ${segs} de ${sel.total} segmentos sem lacuna (${est.pctNan.toFixed(1)}% de dados faltantes) — insuficiente para estimar o espectro`
+  }, meta);
   const f = new Float64Array(nBins), p = new Float64Array(nBins);
   for (let k = 0; k < nBins; k++) { f[k] = k * fs / nfft; p[k] = acc[k] / segs; }
-  return { f, p, segments: segs, nperseg: nper, df: fs / nfft };
+  return Object.assign({ f, p, reason: null }, meta);
 }
 
 /* Espectrograma (STFT) */
@@ -44,18 +74,27 @@ export function spectrogram(x, fs, opts) {
   const nBins = win / 2 + 1;
   const kMax = Math.min(nBins - 1, Math.floor(fmax * win / fs));
   const cols = [], times = [];
+  let nColsNaN = 0;
   for (let s = 0; s + win <= x.length; s += hop) {
-    const seg = detrendLinear(x.subarray ? x.subarray(s, s + win) : x.slice(s, s + win));
-    const re = new Float64Array(win), im = new Float64Array(win);
-    for (let i = 0; i < win; i++) re[i] = seg[i] * w[i];
-    fft(re, im, false);
+    /* coluna que contém lacuna vira NaN (não zero): a plotagem mostra o buraco
+       como buraco, e não como silêncio espectral */
+    let temNaN = false;
+    for (let i = s; i < s + win; i++) if (!isFinite(x[i])) { temNaN = true; break; }
     const col = new Float64Array(kMax + 1);
-    for (let k = 0; k <= kMax; k++) col[k] = 2 * (re[k] * re[k] + im[k] * im[k]) / U;
+    if (temNaN) {
+      col.fill(NaN); nColsNaN++;
+    } else {
+      const seg = detrendLinearNaN(x.subarray ? x.subarray(s, s + win) : x.slice(s, s + win));
+      const re = new Float64Array(win), im = new Float64Array(win);
+      for (let i = 0; i < win; i++) re[i] = seg[i] * w[i];
+      fft(re, im, false);
+      for (let k = 0; k <= kMax; k++) col[k] = 2 * (re[k] * re[k] + im[k] * im[k]) / U;
+    }
     cols.push(col); times.push((s + win / 2) / fs);
   }
   const f = new Float64Array(kMax + 1);
   for (let k = 0; k <= kMax; k++) f[k] = k * fs / win;
-  return { t: times, f, S: cols };
+  return { t: times, f, S: cols, nColumns: cols.length, nColumnsNaN: nColsNaN };
 }
 
 /* Filtro passa-banda de fase zero via FFT */
