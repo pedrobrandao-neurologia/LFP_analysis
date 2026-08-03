@@ -37,9 +37,11 @@ export const PROFILES = {
       { key: 'gamma', label: 'γ', lo: 35, hi: 100, color: COR.gamma, clinicalReading: 'Gama; a faixa 55–95 Hz abriga a gama finamente sintonizada e a gama entrained pela estimulação.' }
     ],
     primaryBand: { lo: 13, hi: 35, label: 'beta' },
-    /* Onda 8.1 — figuras do modo clínico: as seis que respondem às perguntas de
-       consultório. O modo pesquisa continua mostrando todas. */
-    clinicalFigures: ['F1', 'F6', 'F8', 'F9', 'F11', 'F13'],
+    /* Onda 8.1 — figuras do modo clínico: as que respondem às perguntas de
+       consultório. A F28 entrou na Onda 9: a matriz hora × dia é o formato que
+       distingue OFF matinal de wearing-off, distinção que muda a conduta e que
+       nenhuma das outras figuras mostra. O modo pesquisa continua com todas. */
+    clinicalFigures: ['F1', 'F6', 'F8', 'F9', 'F11', 'F13', 'F28'],
     peakSearch: [{ band: 'beta', lo: 13, hi: 35, method: 'aperiodic_corrected' }],
     normalization: 'aperiodic_corrected',
     burstBand: { lo: 13, hi: 30 }, burstMethodDefault: 'hilbert_percentile',

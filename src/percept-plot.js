@@ -53,7 +53,9 @@ class Chart {
   constructor(canvas, o) {
     o = o || {};
     this.c = canvas;
-    this.dpr = Math.min(root.devicePixelRatio || 1, 2);
+    /* `o.dpr` força a densidade: é o que permite reexportar a MESMA figura em
+       2× sem reescrever o desenho nem esticar um bitmap já rasterizado */
+    this.dpr = o.dpr || Math.min(root.devicePixelRatio || 1, 2);
     const rect = canvas.getBoundingClientRect();
     this.w = o.width || rect.width || 640;
     this.h = o.height || rect.height || 300;
@@ -204,6 +206,47 @@ class Chart {
     if (o.label) this._legend.push({ label: o.label, color: typeof o.color === 'function' ? '#666' : o.color, swatch: 'area' });
     return this;
   }
+  /* retângulo em coordenadas de dado — base da matriz hora × dia e das barras
+     empilhadas, que precisam de controle exato de borda e opacidade */
+  rect(xa, ya, xb, yb, o) {
+    o = o || {}; const x = this.ctx;
+    const px = Math.min(this.X(xa), this.X(xb)), py = Math.min(this.Y(ya), this.Y(yb));
+    const w = Math.abs(this.X(xb) - this.X(xa)), h = Math.abs(this.Y(yb) - this.Y(ya));
+    if (o.alpha != null) x.globalAlpha = o.alpha;
+    if (o.fill) { x.fillStyle = o.fill; x.fillRect(px, py, w, h); }
+    if (o.stroke) { x.strokeStyle = o.stroke; x.lineWidth = o.lineWidth || 1; x.setLineDash([]); x.strokeRect(px, py, w, h); }
+    x.globalAlpha = 1;
+    return this;
+  }
+  /* matriz categórica: cada célula é um retângulo com uma folga branca em
+     volta. A folga é o que dá a leitura de diário em papel — é a diferença
+     entre `pcolormesh(edgecolors="white")` e `imshow`, e não é decorativa:
+     sem ela, células vizinhas do mesmo estado viram um bloco só e o olho perde
+     a contagem de bins. A linha 0 fica NO TOPO (dia 1 primeiro). */
+  cells(matrix, o) {
+    o = o || {};
+    const nR = matrix.length, nC = matrix[0] ? matrix[0].length : 0;
+    if (!nR || !nC) return this;
+    /* a matriz pode ocupar só um trecho do eixo — é o que permite pôr a barra
+       empilhada de cada dia à direita, no MESMO gráfico e na mesma baseline */
+    const ax = o.x0 == null ? this.xlim[0] : o.x0, bx = o.x1 == null ? this.xlim[1] : o.x1;
+    const dx = (bx - ax) / nC;
+    const gx = o.gapX == null ? dx * 0.12 : o.gapX;
+    const gy = o.gapY == null ? 0.12 : o.gapY;
+    const cor = o.color || (v => v);
+    this.clip(true);
+    for (let r = 0; r < nR; r++) for (let c = 0; c < nC; c++) {
+      const v = matrix[r][c];
+      const f = (v == null || (typeof v === 'number' && !isFinite(v))) ? o.emptyColor : cor(v, r, c);
+      if (!f) continue;
+      const yb = nR - r;                                   /* topo = linha 0 */
+      const a = o.alphaOf ? o.alphaOf(v, r, c) : 1;
+      this.rect(ax + c * dx + gx / 2, yb - 1 + gy / 2,
+        ax + (c + 1) * dx - gx / 2, yb - gy / 2, { fill: f, alpha: a });
+    }
+    this.clip(false);
+    return this;
+  }
   scatter(xs, ys, o) {
     o = o || {}; const x = this.ctx; this.clip(true);
     const r = o.size || 2.6;
@@ -310,8 +353,15 @@ class Chart {
     x.fillStyle = o.color || '#c00'; x.beginPath();
     const px = this.X(vx), py = this.Y(vy), s = o.size || 5;
     if (o.shape === 'tri') { x.moveTo(px, py - 2); x.lineTo(px - s, py - s * 2 - 2); x.lineTo(px + s, py - s * 2 - 2); }
+    /* ▼ apontando para baixo, ancorado NO ponto — é a marca de tomada de dose
+       do diário em papel, e precisa apontar para a coluna de hora que marca */
+    else if (o.shape === 'tridown') { x.moveTo(px, py); x.lineTo(px - s, py - s * 1.6); x.lineTo(px + s, py - s * 1.6); }
     else x.arc(px, py, s, 0, 6.284);
-    x.closePath(); x.fill();
+    x.closePath();
+    /* halo: a marca pode cair sobre célula escura, e tinta sobre tinta some.
+       O contorno claro é o que a mantém legível em qualquer fundo. */
+    if (o.halo) { x.strokeStyle = o.halo === true ? '#FFFFFF' : o.halo; x.lineWidth = 2.2; x.setLineDash([]); x.stroke(); }
+    x.fill();
     if (o.label) {
       x.font = '600 10.5px ui-monospace, SFMono-Regular, Menlo, monospace';
       x.textAlign = o.align || 'left'; x.textBaseline = 'bottom';
@@ -324,6 +374,26 @@ class Chart {
     x.font = o.font || this.theme.mono; x.fillStyle = o.color || this.theme.muted;
     x.textAlign = o.align || 'left'; x.textBaseline = o.baseline || 'top';
     x.fillText(s, px, py); return this;
+  }
+  /* legenda categórica em faixa, desenhada DENTRO da tela. Precisa estar no
+     bitmap, e não ao lado dele em HTML: o PNG exportado tem de se explicar
+     sozinho quando for parar num slide ou num prontuário. */
+  swatches(items, o) {
+    o = o || {}; const x = this.ctx, th = this.theme;
+    x.font = o.font || th.mono;
+    const x0 = o.x == null ? this.x0 : o.x, larg = (o.width || this.w) - 6;
+    let px = x0, py = o.y == null ? this.h - 30 : o.y;
+    items.forEach(it => {
+      const w = x.measureText(it.label).width;
+      if (px > x0 && px + 13 + w + 16 > larg) { px = x0; py += 15; }
+      x.globalAlpha = 1;
+      x.fillStyle = it.color; x.fillRect(px, py - 9, 10, 10);
+      x.strokeStyle = '#FFFFFF'; x.lineWidth = 1; x.setLineDash([]); x.strokeRect(px, py - 9, 10, 10);
+      x.fillStyle = th.ink; x.textAlign = 'left'; x.textBaseline = 'alphabetic';
+      x.fillText(it.label, px + 14, py);
+      px += 13 + w + 16;
+    });
+    return this;
   }
   legend(o) {
     o = o || {};

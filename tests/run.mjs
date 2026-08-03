@@ -1373,7 +1373,10 @@ sec('modo clínico, leituras em linguagem simples e pipelines');
     H.S.mode = 'pesquisa';
     const pesq = H.figurasVisiveis().map(f => f.id);
     H.S.mode = antes; H.S.profile = perfilAntes;
-    assert(clin.length === 6, 'modo clínico com ' + clin.length + ' figuras');
+    /* o conjunto tem de ser EXATAMENTE o declarado no perfil — comparar contra
+       um número mágico deixaria passar figura trocada por outra */
+    const esperado = C.PROFILES.pd.clinicalFigures;
+    assert(clin.join(' ') === esperado.join(' '), `modo clínico mostrou "${clin.join(' ')}", perfil declara "${esperado.join(' ')}"`);
     assert(pesq.length === H.FIGURES.length, 'modo pesquisa deveria mostrar todas');
     return `clínico: ${clin.join(' ')} · pesquisa: ${pesq.length} figuras`;
   });
@@ -2236,6 +2239,253 @@ sec('coorte, EDF, BIDS-like e linha de comando');
     assert(/figuras não são geradas/.test(exec.note), 'a CLI não declara o que não faz');
     fs.rmSync(destino, { recursive: true, force: true });
     return `${achados.length} arquivos escritos · ${exec.nParsed} lido(s), ${exec.nSubjects} sujeito(s), ${exec.edfWritten} EDF`;
+  });
+}
+
+/* ---- diário de Hauser, matriz hora × dia e resposta à levodopa (Onda 9) --- */
+sec('diário de Hauser, matriz hora × dia e resposta à levodopa');
+{
+  /* diário sintético com estrutura CONHECIDA: OFF matinal antes da primeira
+     dose (06:00–08:00), OFF vespertino de wearing-off (17:00–18:30), sono das
+     23h às 6h30, ON o resto do dia — 7 dias, bins de 30 min */
+  const ESTADOS = (dia, h) => {
+    if (h >= 23 || h < 6.5) return 'Asleep';
+    if (h < 8) return 'Off';
+    if (h >= 17 && h < 18.5) return 'Off';
+    if (h >= 13 && h < 14 && dia % 2 === 0) return 'On_TroublesomeDysk';
+    return 'On_NoDysk';
+  };
+  const linhasCsv = ['patient_id,condition,day,bin_index,time,hour_decimal,state'];
+  for (let dia = 1; dia <= 7; dia++) for (let b = 0; b < 48; b++) {
+    const h = b * 0.5;
+    const hh = `${String(Math.floor(h)).padStart(2, '0')}:${h % 1 ? '30' : '00'}`;
+    linhasCsv.push(`P01,Baseline,${dia},${b},${hh},${h},${ESTADOS(dia, h)}`);
+  }
+  const csv = linhasCsv.join('\n');
+
+  t('lê o diário no esquema de colunas do arquivo de referência', () => {
+    const r = C.parseDiaryCsv(csv);
+    assert(r.ok, 'não leu: ' + r.reason);
+    assert(r.binMin === 30, 'bin inferido errado: ' + r.binMin);
+    assert(r.nRows === 7 * 48, 'linhas: ' + r.nRows);
+    assert(r.conditions.length === 1 && r.conditions[0] === 'Baseline', 'condições: ' + r.conditions);
+    return `${r.nRows} bins de ${r.binMin} min · delimitador "${r.delimiter}"`;
+  });
+
+  t('estado não reconhecido é CONTADO, não descartado em silêncio', () => {
+    const sujo = csv.replace('On_NoDysk', 'BANANA');
+    const r = C.parseDiaryCsv(sujo);
+    assert(r.ok, 'recusou o arquivo inteiro por uma linha ruim');
+    assert(r.nMalformed === 1, 'não contou a linha ruim: ' + r.nMalformed);
+    assert(r.unknownStates.some(u => u.value === 'BANANA'), 'não declarou o valor desconhecido');
+    assert(/descartada/.test(r.note), 'a nota não menciona o descarte');
+    /* e aceita sinônimos de outra planilha */
+    const alt = C.parseDiaryCsv(csv.replace(/On_NoDysk/g, 'ON').replace(/Asleep/g, 'sono'));
+    assert(alt.ok && alt.rows.some(x => x.state === 'On_NoDysk') && alt.rows.some(x => x.state === 'Asleep'), 'não aceitou sinônimos');
+    return `1 linha contada como inválida · sinônimos "ON"/"sono" reconhecidos`;
+  });
+
+  t('célula sem registro fica vazia — nunca preenchida pelo vizinho', () => {
+    const faltando = linhasCsv.filter((_, i) => i === 0 || i % 7 !== 0).join('\n');
+    const r = C.parseDiaryCsv(faltando);
+    const g = C.diaryGrid(r.rows, { binMin: 30 });
+    assert(g.ok, g.reason);
+    assert(g.nMissing > 0, 'não sobrou buraco para testar');
+    const vazias = g.cells.flat().filter(v => v === null).length;
+    assert(vazias === g.nMissing, `contabilidade não fecha: ${vazias} nulos vs ${g.nMissing} declarados`);
+    return `${g.nMissing} de ${g.nCells} células vazias (${g.pctMissing}%), todas declaradas`;
+  });
+
+  t('composição diária recupera as horas construídas', () => {
+    const r = C.parseDiaryCsv(csv);
+    const g = C.diaryGrid(r.rows, { binMin: 30 });
+    const c24 = C.dailyComposition(g, { awakeOnly: false });
+    assert(Math.abs(c24.meanTotal - 24) < 1e-6, 'o dia de 24 h não soma 24: ' + c24.meanTotal);
+    /* OFF construído: 06:30–08:00 (1,5 h) + 17:00–18:30 (1,5 h) = 3 h */
+    assert(Math.abs(c24.byState.Off.mean - 3) < 1e-6, 'OFF de 24 h: ' + c24.byState.Off.mean);
+    assert(Math.abs(c24.byState.Asleep.mean - 7.5) < 1e-6, 'sono: ' + c24.byState.Asleep.mean);
+    const cv = C.dailyComposition(g, { awakeOnly: true });
+    assert(Math.abs(cv.meanTotal - 16.5) < 1e-6, 'vigília: ' + cv.meanTotal);
+    assert(Math.abs(cv.byState.Off.mean - 3) < 1e-6, 'o OFF muda entre recortes');
+    assert(cv.byState.Asleep === undefined, 'o sono entrou no recorte de vigília');
+    return `24 h: 3,0 h OFF + 7,5 h sono · vigília: 16,5 h de total, 3,0 h OFF`;
+  });
+
+  t('dia incompleto não entra na média — e a exclusão é declarada', () => {
+    const cortado = linhasCsv.filter((l, i) => i === 0 || !/^P01,Baseline,3,(3[0-9]|4[0-7]),/.test(l)).join('\n');
+    const r = C.parseDiaryCsv(cortado);
+    const g = C.diaryGrid(r.rows, { binMin: 30 });
+    const c = C.dailyComposition(g, { awakeOnly: false, minCoverage: 0.9 });
+    assert(c.nDaysExcluded === 1, 'dias excluídos: ' + c.nDaysExcluded);
+    assert(c.byState.Off.n === 6, 'a média usou o dia incompleto: n=' + c.byState.Off.n);
+    assert(/cobertura/.test(c.note), 'a nota não declara a exclusão');
+    return `${c.nDaysExcluded} dia fora da média · n = ${c.byState.Off.n} dias`;
+  });
+
+  t('perfil circadiano encontra onde o OFF se concentra', () => {
+    const r = C.parseDiaryCsv(csv);
+    const g = C.diaryGrid(r.rows, { binMin: 30 });
+    const p = C.circadianStateProfile(g);
+    assert(p.ok, 'perfil não calculado');
+    assert(p.props.Off[13] === 100, 'às 06:30 nem todo dia está OFF: ' + p.props.Off[13]);
+    assert(p.props.Off[20] === 0, 'às 10:00 alguém ficou OFF: ' + p.props.Off[20]);
+    assert(isFinite(p.peakOffHour), 'hora de pico do OFF não estimada');
+    return `pico de OFF às ${p.peakOffHour} h em ${p.peakOffPct}% dos dias`;
+  });
+
+  t('comparação entre condições usa permutação EXATA quando dá', () => {
+    /* pós-tratamento: sem o OFF vespertino → 1,5 h a menos por dia */
+    const pos = linhasCsv.slice(1).map(l => {
+      const c = l.split(',');
+      const h = +c[5];
+      if (c[6] === 'Off' && h >= 17) c[6] = 'On_NoDysk';
+      c[1] = 'Post';
+      return c.join(',');
+    });
+    const r = C.parseDiaryCsv([linhasCsv[0]].concat(linhasCsv.slice(1), pos).join('\n'));
+    const cmp = C.compareConditions(r.rows, { binMin: 30, awakeOnly: true });
+    assert(cmp.ok, cmp.reason);
+    assert(Math.abs(cmp.deltaOff + 1.5) < 1e-6, 'Δ OFF: ' + cmp.deltaOff);
+    assert(cmp.test.exact, 'não enumerou as partições');
+    assert(cmp.test.nPermutations === 3432, 'partições: ' + cmp.test.nPermutations);
+    assert(!cmp.paired, 'pareou dias que não são pares');
+    assert(/não pareada/.test(cmp.caveat), 'não declara o pressuposto');
+    /* e é reprodutível: mesmo dado, mesmo p */
+    return `Δ = ${cmp.deltaOff} h · p exato ${cmp.test.p} sobre ${cmp.test.nPermutations} partições`;
+  });
+
+  t('permutação com semente fixa devolve o mesmo p duas vezes', () => {
+    const a = Array.from({ length: 40 }, (_, i) => 5 + Math.sin(i) * 2);
+    const b = Array.from({ length: 40 }, (_, i) => 6 + Math.cos(i) * 2);
+    const p1 = C.permutationTwoSample(a, b, { seed: 7, nPermutations: 2000 });
+    const p2 = C.permutationTwoSample(a, b, { seed: 7, nPermutations: 2000 });
+    assert(!p1.exact, 'enumerou 40+40, o que seria caro demais');
+    assert(p1.p === p2.p, `p variou entre execuções: ${p1.p} vs ${p2.p}`);
+    const p3 = C.permutationTwoSample([1, 2, 3, 4], [8, 9, 10, 11], {});
+    assert(p3.exact && p3.nPermutations === 70, 'não enumerou C(8,4): ' + p3.nPermutations);
+    return `p = ${p1.p} reproduzido (semente ${p1.seed}) · exato com 70 partições no caso pequeno`;
+  });
+
+  t('matriz do Timeline usa a MESMA grade e declara o limiar', () => {
+    const trend = C.removeOutliersMAD(parsed[0].trend.Left || Object.values(parsed[0].trend)[0], 'lfp', 4).kept;
+    const tg = C.timelineGrid(trend, -180, { binMin: 30 });
+    assert(tg.ok, tg.reason);
+    assert(tg.nBins === 48, 'bins: ' + tg.nBins);
+    assert(tg.states.length === tg.values.length, 'grade categórica e contínua com tamanhos diferentes');
+    assert(isFinite(tg.threshold) && /k-médias/.test(tg.thresholdDetail), 'limiar não declarado');
+    assert(/NÃO é OFF clínico/.test(tg.caveat), 'não avisa que o limiar não é diagnóstico');
+    /* limiar por percentil: 50% acima por construção */
+    const tp = C.timelineGrid(trend, -180, { binMin: 30, thresholdMethod: 'percentile', pct: 50 });
+    assert(Math.abs(tp.highFraction - 0.5) < 0.03, 'percentil 50 não parte a distribuição ao meio: ' + tp.highFraction);
+    assert(tp.thresholdParams.pct === 50, 'não exportou o parâmetro do percentil');
+    /* célula sem dado é NaN, e a contabilidade fecha */
+    const nans = tg.values.flat().filter(v => !isFinite(v)).length;
+    assert(nans === tg.nMissing, `contabilidade: ${nans} NaN vs ${tg.nMissing} declarados`);
+    return `${tg.days.length} dias × ${tg.nBins} bins · limiar ${tg.threshold} (${tg.thresholdMethod}) · ${tg.pctMissing}% sem dado`;
+  });
+
+  t('marcas de dose saem dos eventos do aparelho, com os nomes disponíveis', () => {
+    const dm = C.doseMarkers(parsed[0].snapshots, -180, {});
+    assert(dm.ok, dm.reason);
+    assert(dm.n > 0 && dm.nDays > 0, 'nenhuma marca');
+    assert(dm.hours.every(h => h >= 0 && h < 24), 'hora fora de [0,24)');
+    const vazio = C.doseMarkers([], -180, {});
+    assert(!vazio.ok && /não tem eventos/.test(vazio.reason), 'não explica a ausência');
+    const semMatch = C.doseMarkers([{ t: Date.now(), name: 'Caiu' }], -180, {});
+    assert(!semMatch.ok && semMatch.availableNames.includes('Caiu'), 'não lista os eventos disponíveis');
+    return `${dm.n} tomadas em ${dm.nDays} dias · mediana ${dm.dosesPerDay}/dia`;
+  });
+
+  t('resposta à levodopa recupera latência, nadir e duração construídos', () => {
+    /* série com efeito CONHECIDO: queda de 30% começando 30 min após cada dose,
+       nadir por volta de 90 min, retorno perto de 220 min */
+    const t0 = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const doses = [];
+    for (let d = 0; d < 14; d++) [7, 12, 17].forEach(h => doses.push(t0 + d * 864e5 + (h + (d % 3) * 0.7) * 36e5));
+    const linhas = [];
+    for (let k = 0; k < 14 * 144; k++) {
+      const tt = t0 + k * 6e5;
+      let fator = 1;
+      for (let i = doses.length - 1; i >= 0; i--) {
+        if (doses[i] > tt) continue;
+        const m = (tt - doses[i]) / 60000;
+        if (m >= 30 && m <= 220) fator = 1 - 0.30 * Math.sin(Math.PI * (m - 30) / 190);
+        break;
+      }
+      linhas.push({ t: tt, lfp: 40 * fator * (1 + 0.04 * Math.sin(k / 11)) });
+    }
+    const rl = C.levodopaResponse(linhas, doses, 0, { nSurrogates: 200, nBootstrap: 300, seed: 11 });
+    assert(rl.ok, rl.reason);
+    assert(rl.detected, 'não detectou um efeito de 30% construído (p=' + rl.p + ')');
+    assert(rl.latencyMin >= 20 && rl.latencyMin <= 60, 'latência fora do esperado: ' + rl.latencyMin);
+    assert(rl.timeToNadirMin >= 60 && rl.timeToNadirMin <= 140, 'nadir fora do esperado: ' + rl.timeToNadirMin);
+    assert(rl.dropPct > 20, 'magnitude subestimada: ' + rl.dropPct);
+    assert(isFinite(rl.surrogateDropPct), 'não reportou a queda dos surrogados');
+    return `latência ${rl.latencyMin} min (construída 30) · nadir ${rl.timeToNadirMin} min (95) · queda ${rl.dropPct}% (30) · p ${rl.p}`;
+  });
+
+  t('sem efeito real, a resposta à levodopa NÃO inventa latência', () => {
+    /* mesma série, mas as doses não têm relação com o sinal: só ritmo diurno */
+    const t0 = Date.UTC(2025, 0, 1, 0, 0, 0);
+    const linhas = [];
+    for (let k = 0; k < 14 * 144; k++) {
+      const tt = t0 + k * 6e5, hora = (tt / 36e5) % 24;
+      linhas.push({ t: tt, lfp: 40 * (1 + 0.15 * Math.cos(2 * Math.PI * (hora - 9.5) / 24)) });
+    }
+    const doses = [];
+    for (let d = 0; d < 14; d++) [8.3, 13.1, 19.7].forEach(h => doses.push(t0 + d * 864e5 + h * 36e5));
+    const rl = C.levodopaResponse(linhas, doses, 0, { nSurrogates: 200, nBootstrap: 200, seed: 11 });
+    assert(rl.ok, rl.reason);
+    assert(!isFinite(rl.latencyMin), 'reportou latência sobre curva sem efeito: ' + rl.latencyMin);
+    assert(!isFinite(rl.durationMin), 'reportou duração sobre curva sem efeito');
+    assert(/não é possível afirmar|não se separa/.test(rl.interpretation), 'não diz que não é possível determinar');
+    assert(/mesma coluna do desenho/.test(rl.confound), 'não declara a confusão com a hora do dia');
+    return `p = ${rl.p} · nenhum marco reportado · queda dos surrogados ${rl.surrogateDropPct}%`;
+  });
+
+  t('concordância diário × LFP mede em vez de assumir, e declara o alinhamento', () => {
+    const r = C.parseDiaryCsv(csv);
+    const gd = C.diaryGrid(r.rows, { binMin: 30 });
+    /* LFP construído para BATER com o diário: beta alto exatamente no OFF */
+    const dias = gd.days;
+    const alto = { ok: true, kind: 'lfp', binMin: 30, nBins: 48, days: dias.slice(),
+      states: gd.cells.map(l => l.map(v => v == null ? null : (v === 'Off' ? 'LFP_high' : 'LFP_low'))) };
+    const ag = C.diaryVsLfpAgreement(gd, alto, {});
+    assert(ag.ok, ag.reason);
+    assert(ag.kappa > 0.95, 'concordância perfeita não foi reconhecida: kappa ' + ag.kappa);
+    assert(/por data|por ordem/.test(ag.alignment), 'não declara o alinhamento');
+    assert(ag.nSleepBins > 0 && ag.n < gd.nCells, 'não excluiu os bins de sono');
+    /* agora um LFP invertido: kappa tem de despencar */
+    const inv = Object.assign({}, alto, { states: alto.states.map(l => l.map(v => v == null ? null : (v === 'LFP_high' ? 'LFP_low' : 'LFP_high'))) });
+    const ag2 = C.diaryVsLfpAgreement(gd, inv, {});
+    assert(ag2.kappa < 0, 'LFP invertido não foi penalizado: kappa ' + ag2.kappa);
+    assert(/não é validação/.test(ag2.caveat), 'não avisa que concordância não é validação');
+    return `kappa ${ag.kappa} (concordante) vs ${ag2.kappa} (invertido) · ${ag.n} bins, sono fora`;
+  });
+
+  t('a matriz desenha células, barras e marcas — e exporta em 2×', () => {
+    const r = C.parseDiaryCsv(csv);
+    const g = C.diaryGrid(r.rows, { binMin: 30 });
+    const comp = C.dailyComposition(g, { awakeOnly: false });
+    const paleta = {}; C.DIARY_STATES.forEach(s => { paleta[s.id] = s; });
+    const pai = document.createElement('div');
+    let baixado = 0;
+    const antes = P.downloadCanvas;
+    P.downloadCanvas = () => { baixado++; };
+    const bx = H.painelMatriz(pai, {
+      days: g.days, nBins: g.nBins, cells: g.cells, states: g.cells,
+      rows: comp.perDay.map(dd => C.DIARY_STATES.map(s => ({ state: s.id, hours: dd.hours[s.id] || 0 }))),
+      barMax: 24, palette: paleta,
+      legend: C.DIARY_STATES.map(s => ({ label: s.label, color: s.color })),
+      doseRows: g.days.map(() => [7, 11, 15, 19]),
+      rowLabel: dia => 'Dia ' + dia, title: 'teste'
+    });
+    assert(bx && bx.canvas, 'não devolveu a tela');
+    assert(bx.canvas._ctx.calls > 0, 'nada foi escrito na tela');
+    bx.exportar2x('teste');
+    P.downloadCanvas = antes;
+    assert(baixado === 1, 'a exportação 2× não gerou download');
+    return `${g.days.length} linhas desenhadas · exportação 2× em tela fora do documento`;
   });
 }
 

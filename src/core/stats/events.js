@@ -49,4 +49,55 @@ export function permutationTest(a, b, nPerm) {
   return { observed: obs, p: (count + 1) / (nPerm + 1), nPerm };
 }
 
+/* permutationTwoSample(a, b, opts) — versão reprodutível de `permutationTest`.
+
+   Duas diferenças que importam. Primeira: quando o número de partições
+   possíveis é pequeno (poucos dias de diário, que é o caso típico), o teste é
+   ENUMERADO por inteiro — o p é exato, não uma estimativa de Monte Carlo.
+   Segunda: quando não é, o sorteio usa semente fixa, e a semente sai no
+   resultado; sem isso o mesmo dado dá p diferente a cada abertura da página, e
+   o manifesto de proveniência deixa de fechar.
+
+   Referência: Ernst MD. Stat Sci 2004;19:676-85 (testes de permutação).     */
+export function permutationTwoSample(a, b, opts) {
+  opts = opts || {};
+  const A = (a || []).filter(isFinite), B = (b || []).filter(isFinite);
+  const n = A.length, m = B.length;
+  if (n < 2 || m < 2) return { p: NaN, reason: 'menos de 2 observações em um dos grupos', nPermutations: 0, exact: false };
+  const pool = A.concat(B), N = n + m;
+  const obs = Math.abs(mean(A) - mean(B));
+  const somaPool = pool.reduce((x, y) => x + y, 0);
+  /* estatística a partir da soma do primeiro grupo: evita refazer as médias */
+  const dif = sA => Math.abs(sA / n - (somaPool - sA) / m);
+  const maxExato = opts.maxExact || 30000;
+  let combos = 1;
+  for (let i = 0; i < n && combos <= maxExato; i++) combos = combos * (N - i) / (i + 1);
+  combos = Math.round(combos);
+
+  if (combos <= maxExato) {
+    let conta = 0, total = 0;
+    const idx = new Array(n);
+    const anda = (inicio, prof, soma) => {
+      if (prof === n) { total++; if (dif(soma) >= obs - 1e-12) conta++; return; }
+      for (let i = inicio; i <= N - (n - prof); i++) anda(i + 1, prof + 1, soma + pool[i]);
+    };
+    anda(0, 0, 0);
+    return { observed: +obs.toFixed(6), p: +(conta / total).toFixed(6), nPermutations: total, exact: true, seed: null };
+  }
+  const nPerm = opts.nPermutations || 10000;
+  let semente = isFinite(opts.seed) ? (opts.seed >>> 0) : 20240517;
+  const prox = () => { semente = (Math.imul(semente, 1664525) + 1013904223) >>> 0; return semente / 4294967296; };
+  const s = pool.slice();
+  let conta = 0;
+  for (let k = 0; k < nPerm; k++) {
+    for (let j = N - 1; j > 0; j--) { const i = (prox() * (j + 1)) | 0; const tmp = s[j]; s[j] = s[i]; s[i] = tmp; }
+    let soma = 0; for (let i = 0; i < n; i++) soma += s[i];
+    if (dif(soma) >= obs - 1e-12) conta++;
+  }
+  return {
+    observed: +obs.toFixed(6), p: +((conta + 1) / (nPerm + 1)).toFixed(6),
+    nPermutations: nPerm, exact: false, seed: isFinite(opts.seed) ? (opts.seed >>> 0) : 20240517
+  };
+}
+
 /* ECDF e proporções vs limiares de aDBS */

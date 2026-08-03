@@ -63,6 +63,37 @@ function sinalBruto(segundos, picoHz, ampBeta, comEcg = true) {
   return Array.from(x, v => +v.toFixed(4));
 }
 
+/* ------------------------------------------------------- tomadas de dose --
+   O paciente sintético toma levodopa quatro vezes ao dia, com o atraso e o
+   esquecimento que existem na vida real. As MESMAS marcas alimentam o Timeline
+   (efeito farmacodinâmico sobre o beta) e os eventos registrados no aparelho —
+   sem isso, a figura de resposta à levodopa não teria dado com que ser testada,
+   e o exemplo mostraria "sem resposta demonstrável" por construção. */
+const DIAS_TIMELINE = 21;
+const INICIO_TIMELINE = T0 - DIAS_TIMELINE * 864e5;
+const TOMADAS = (() => {
+  const out = [];
+  for (let d = 0; d < DIAS_TIMELINE; d++) {
+    [7, 11, 15, 19].forEach(h => {
+      if (rnd() < 0.06) return;                       // dose esquecida
+      const hora = h + (rnd() - 0.5) * 2.6;           // atraso/adiantamento real
+      out.push(INICIO_TIMELINE + d * 864e5 + (hora - OFFSET_MIN / 60) * 36e5);
+    });
+  }
+  return out.sort((a, b) => a - b);
+})();
+
+/* Resposta do beta a uma tomada: latência de ~30 min, nadir por volta de 75 min,
+   retorno à linha de base perto de 210 min (wearing-off). Fator multiplicativo. */
+function efeitoDose(minutos) {
+  if (minutos < 0 || minutos > 260) return 1;
+  const lat = 30, dur = 190;
+  if (minutos < lat) return 1 - 0.05 * (minutos / lat);
+  const u = (minutos - lat) / dur;
+  if (u > 1) return 1;
+  return 1 - 0.30 * Math.sin(Math.PI * Math.pow(u, 0.75));
+}
+
 /* ------------------------------------------------ Timeline (LFPTrendLogs) -- */
 function timeline(dias, hemi) {
   const base = hemi === 'Left' ? 42 : 37;
@@ -81,7 +112,14 @@ function timeline(dias, hemi) {
       const circ = 1 + 0.17 * Math.cos(2 * Math.PI * (horaLocal - 9.5) / 24)
         + 0.05 * Math.cos(2 * Math.PI * (horaLocal - 14) / 12);
       ar = PHI * ar + Math.sqrt(1 - PHI * PHI) * gauss();
-      let v = base * derivaDia * circ + 2.6 * ar;
+      /* farmacodinâmica: a tomada mais recente que ainda faz efeito */
+      let dose = 1;
+      for (let k = TOMADAS.length - 1; k >= 0; k--) {
+        if (TOMADAS[k] > t) continue;
+        dose = efeitoDose((t - TOMADAS[k]) / 60000);
+        break;
+      }
+      let v = base * derivaDia * circ * dose + 2.6 * ar;
       if (rnd() < 0.004) v *= 2.6 + rnd() * 3;                   // outliers de movimento
       linhas.push({ DateTime: iso(t), LFP: Math.max(1, Math.round(v)),
         AmplitudeInMilliAmps: hemi === 'Left' ? 2.9 : 3.1 });
@@ -100,9 +138,13 @@ function snapshots() {
     { id: 4, nome: 'Caiu', ganho: 1.20 }
   ];
   const out = [];
+  /* as marcas de "Tomou medicação" caem sobre as tomadas de verdade — é o que
+     permite a F29 alinhar o Timeline às doses; os demais eventos são esparsos */
+  const daMed = TOMADAS.filter((_, i) => i % Math.ceil(TOMADAS.length / 14) === 0);
   eventos.forEach(ev => {
-    for (let k = 0; k < 8; k++) {
-      const t = T0 - (rnd() * 20 + 1) * 864e5;
+    const n = ev.id === 1 ? daMed.length : 8;
+    for (let k = 0; k < n; k++) {
+      const t = ev.id === 1 ? daMed[k] : T0 - (rnd() * 20 + 1) * 864e5;
       const hemi = {};
       ['Right', 'Left'].forEach(h => {
         const e = espectro(PICO[h], 2.4 * ev.ganho * (0.9 + 0.2 * rnd()));
@@ -289,7 +331,7 @@ const relatorio = {
     { EventName: 'Tempo "OFF"', 'Additional Behavior': 'LFP' },
     { EventName: 'Caiu' }] },
   EventSummary: { SessionStartDate: iso(T0 - 21 * 864e5), SessionEndDate: iso(T0),
-    Eventos: [{ EventName: 'Tomou medicação', EventCount: 8 },
+    Eventos: [{ EventName: 'Tomou medicação', EventCount: TOMADAS.filter((_, i) => i % Math.ceil(TOMADAS.length / 14) === 0).length },
       { EventName: 'Discinesia', EventCount: 8 },
       { EventName: 'Tempo "OFF"', EventCount: 8 }, { EventName: 'Caiu', EventCount: 8 }],
     LfpAndAmplitudeSummary: ['Left', 'Right'].map(h => ({ GroupId: 'GroupIdDef.GROUP_A',

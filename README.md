@@ -94,10 +94,11 @@ guardada no navegador (apenas a preferência de interface — nenhum dado de pac
 
 ### Modo clínico — o que sai da consulta
 
-- **Seis figuras**, escolhidas pelo **perfil de doença** (campo `clinicalFigures` em
-  `src/core/profiles/index.js`): em Parkinson, F1 · F6 · F8 · F9 · F11 · F13; em distonia e
-  tremor essencial, F13 sai (o detector de estados é definido sobre beta e não descreve essas
-  condições) e entra F5, o mapa de canais.
+- **Um conjunto curto de figuras**, escolhido pelo **perfil de doença** (campo `clinicalFigures`
+  em `src/core/profiles/index.js`): em Parkinson, F1 · F6 · F8 · F9 · F11 · F13 · F28; em distonia
+  e tremor essencial, F13 e F28 saem (o detector de estados e o diário de Hauser são definidos
+  sobre beta e sobre flutuação motora, e não descrevem essas condições) e entra F5, o mapa de
+  canais.
 - **Leitura em linguagem simples no topo de cada figura**, gerada em `src/core/report/reading.js`
   a partir das métricas — a interface não interpreta nada por conta própria. Cada leitura traz
   quatro partes fixas: a frase, os números, **os parâmetros que produziram aqueles números** e a
@@ -159,6 +160,8 @@ A coluna **Leitura clínica** resume, em uma frase, o que cada figura diz ao mé
 | **F25** | **Actograma duplo-plot e banda-controle** | `LFPTrendLogs` (≥ 2 dias) + snapshots datados | Se o horário do pico **deriva entre os dias** e se o padrão diurno é **específico da banda**. |
 | **F26** | **Longitudinal — impedância, confiabilidade e uso** | ≥ 2 sessões | Se o que mudou entre visitas foi **o cérebro ou a medida**. |
 | **F27** | **Coorte — todos os registros lado a lado** | ≥ 1 registro | Prevalência de pico com **IC de Wilson**, tabela por sujeito e estatísticas de grupo. |
+| **F28** | **Matriz hora × dia — ON/OFF ligados à sua integral** | `LFPTrendLogs` e/ou diário de Hauser em CSV | **Onde no dia** o OFF cai — OFF matinal, wearing-off vespertino ou flutuação picada —, o que a barra empilhada apaga. |
+| **F29** | **Resposta à levodopa alinhada às tomadas** | `LFPTrendLogs` + eventos de medicação marcados no aparelho | Se o beta **cai depois da dose**, com que latência e por quanto tempo — ou se isso não se separa do ritmo diurno. |
 
 Cada figura exporta PNG e os dados subjacentes em CSV.
 
@@ -495,6 +498,48 @@ contígua** de diferença maior do que o acaso produziria?". E registra, junto d
 autoriza concluir: um cluster significativo diz que há diferença em algum lugar dentro dele, não
 que ela vale para cada ponto, nem que as bordas do cluster são as bordas do efeito
 (Sassenhagen & Draschkow 2019).
+
+**Matriz hora × dia (F28)** — o desfecho primário de praticamente todo ensaio em Parkinson avançado
+é "horas OFF em vigília", e ele é publicado como barra empilhada. A barra destrói exatamente a
+informação que muda a conduta: 6 h de OFF concentradas na manhã (*delayed-on*) pedem outra coisa que
+6 h de wearing-off vespertino ou 6 h picadas ao longo do dia. Aqui:
+
+- **Cada linha é um dia, cada célula um bin de 30 min**, o Dia 1 no topo, e uma folga branca entre
+  as células — sem ela, bins vizinhos do mesmo estado viram um bloco só e o olho perde a contagem.
+  Os **▼** marcam as tomadas, vindas dos eventos que o paciente registrou no próprio aparelho (ou
+  de um horário fixo informado, quando a fonte é um diário em papel).
+- **Cada linha tem, à direita e na mesma baseline, a sua própria barra empilhada** — o raster e a
+  sua integral no mesmo desenho. Passar o cursor sobre uma célula acende juntas todas as células
+  daquele dia naquele estado e o segmento que elas somam. Exportação em **PNG 2×** redesenha a
+  figura em densidade dobrada, sem esticar bitmap.
+- **A mesma grade serve para o LFP.** A matriz hora × dia é a estrutura do BrainSense Timeline
+  (dias × bins de potência beta); basta trocar a escala categórica pela contínua. Com o diário *e*
+  o Timeline carregados, o painel (d) mede a concordância célula a célula — **kappa de Cohen** com
+  IC, sensibilidade e especificidade —, e diz na cara que concordância **não é validação**: o
+  limiar de beta vale para aquele registro, aquele par de contatos e aquele grupo de estimulação.
+- **Barras empilhadas em dois recortes**: 24 h dia a dia (inclui sono) e a média por condição
+  restrita à **vigília**, que é o formato canônico dos ECRs de LCIG, apomorfina e opicapona. A barra
+  de erro vai **só no segmento OFF**, como se costuma reportar — e a nota explica por quê: os
+  estados de um mesmo dia somam um total fixo, então os erros não são independentes.
+- **Comparação entre condições** por **permutação exata** quando o número de partições permite
+  (com 7 + 7 dias são 3 432 partições, e o p é exato, não uma estimativa de Monte Carlo). O padrão
+  é **não pareado**: dia 1 do basal e dia 1 do pós não são a mesma observação, e parear estreitaria
+  o IC sem justificativa. O gráfico ligando dia a dia é recurso visual, não teste pareado.
+- **Diário próprio em CSV** com o esquema `patient_id, condition, day, bin_index, time,
+  hour_decimal, state`. Estado não reconhecido é **contado e listado**, nunca descartado em
+  silêncio; célula sem registro fica **vazia**, nunca preenchida pelo vizinho; dia com cobertura
+  abaixo de 80 % dos bins **não entra na média**, e a exclusão sai declarada.
+
+**Resposta à levodopa (F29)** — alinha o Timeline a cada tomada marcada, normaliza pela linha de
+base pré-dose e mede latência, tempo até o nadir, magnitude e duração, cada uma com a definição
+impressa ao lado do número. A significância vem de **surrogados por deslocamento circular** das
+marcas de dose: sortear horas ao acaso destruiria a autocorrelação do beta e faria qualquer queda
+parecer significativa, enquanto deslocar todas as marcas pelo mesmo intervalo preserva a estrutura
+temporal e muda só a fase. Se o teste não separa do acaso, **os marcos não são reportados** — uma
+latência medida sobre curva que não se distingue de ruído é um número frágil. E a figura declara o
+que nenhum teste resolve: com esquema de tomadas rígido, **hora do dia e efeito da dose ocupam a
+mesma coluna do desenho experimental**, então "não significativo" quer dizer *não separável*, não
+*sem efeito* — o software mostra, ao lado, quanta queda o ritmo diurno sozinho já explica.
 
 **Longitudinal (F26)** — comparar o beta de hoje com o de seis meses atrás só faz sentido se o que
 mudou foi o cérebro, e não a medida:
