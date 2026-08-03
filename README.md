@@ -156,6 +156,8 @@ A coluna **Leitura clínica** resume, em uma frase, o que cada figura diz ao mé
 | **F21** | **PAC — acoplamento fase-amplitude e comodulograma** | `BrainSenseTimeDomain` (fs ≥ 250 Hz) | Se a **amplitude do gama acompanha a fase do beta** — marcador de interação entre ritmos, elevado no OFF. |
 | **F22** | **Gama finamente sintonizada vs. entrained em f_stim/2** | qualquer espectro que chegue a 95 Hz | Se um pico de gama é **endógeno** (associado a ON/discinesia) ou **eco da própria estimulação**. |
 | **F24** | **Sinal externo (IMU/EMG/ECG) — alinhamento e coerência** | `BrainSenseTimeDomain` + CSV/TSV externo | Se a oscilação do LFP é **do cérebro** ou é o próprio movimento entrando pelo eletrodo. |
+| **F25** | **Actograma duplo-plot e banda-controle** | `LFPTrendLogs` (≥ 2 dias) + snapshots datados | Se o horário do pico **deriva entre os dias** e se o padrão diurno é **específico da banda**. |
+| **F26** | **Longitudinal — impedância, confiabilidade e uso** | ≥ 2 sessões | Se o que mudou entre visitas foi **o cérebro ou a medida**. |
 
 Cada figura exporta PNG e os dados subjacentes em CSV.
 
@@ -376,6 +378,43 @@ fixa, reprodutível) e o p empírico. Junto roda a **checagem de forma de onda**
 de Cole & Voytek), porque uma onda não senoidal gera harmônicos que se acoplam à própria
 fundamental — PAC espúrio, sem nenhuma interação entre redes. Validação: z = 24 em sinal acoplado
 simulado, z ≈ 0 no controle sem acoplamento.
+
+**Actograma e banda-controle (F25)** — o actograma é a representação clássica da cronobiologia:
+cada linha traz o dia **e o dia seguinte lado a lado** (duplo-plot), o que torna visível a deriva
+de fase — um ritmo que atrasa um pouco por dia aparece como faixa diagonal, coisa que o heatmap
+simples esconde. A acrofase de cada dia é a **média circular do perfil ponderada pelo excesso
+sobre o mínimo**, não o bin de máximo: com poucas amostras por bin, o argmax salta para o vizinho
+por ruído e a "deriva" resultante é do estimador, não do ritmo. Recuperação medida: derivas
+verdadeiras de 0, +0,25 e −0,5 h/dia estimadas em 0,05, 0,22 e −0,51.
+
+A **banda-controle** responde à pergunta que separa ritmo de artefato: um padrão diurno na potência
+do marcador pode ser ritmo neural — ou postura, movimento, impedância que muda com a temperatura,
+qualquer coisa que module o sinal **inteiro**. O teste é ver se a mesma variação aparece numa banda
+que não deveria carregar o biomarcador. A comparação entre os dois perfis é feita por **permutação
+de cluster** ao longo do eixo de hora, não ponto a ponto.
+
+**Permutação de cluster (`stats/cluster.js`)** — comparar 48 bins de hora ponto a ponto gera
+dezenas de testes: Bonferroni destrói o poder, não corrigir produz achados onde só há ruído. O
+teste troca a unidade de inferência — em vez de "este bin difere?", pergunta "existe uma **região
+contígua** de diferença maior do que o acaso produziria?". E registra, junto do p, o que ele **não**
+autoriza concluir: um cluster significativo diz que há diferença em algum lugar dentro dele, não
+que ela vale para cada ponto, nem que as bordas do cluster são as bordas do efeito
+(Sassenhagen & Draschkow 2019).
+
+**Longitudinal (F26)** — comparar o beta de hoje com o de seis meses atrás só faz sentido se o que
+mudou foi o cérebro, e não a medida:
+
+- **Deriva de impedância** por contato monopolar, com inclinação em Ω/dia. Impedância sobe com
+  encapsulamento glial e altera o divisor de tensão, portanto a amplitude registrada: uma queda de
+  potência no mesmo contato, no mesmo período de um salto de impedância, não é achado neural.
+- **ICC (`stats/icc.js`)** — ICC(2,1) *e* ICC(3,1) com IC de 95 % pelo método F. Os dois saem porque
+  a escolha muda o número: o (3,1) ignora diferença sistemática entre sessões e dá valor maior; para
+  test-retest o pertinente é o (2,1). Quando o IC atravessa categorias — comum com poucos sujeitos —
+  o software diz que **o dado não distingue confiabilidade ruim de excelente**, em vez de reportar o
+  ponto. Com menos de 3 sujeitos ele recusa e explica o motivo estatístico: não existe variância
+  entre sujeitos para comparar com o ruído de medida.
+- **Uso e bateria** a partir dos contadores acumulados, com a ressalva de que descrevem o aparelho,
+  não a adesão do paciente.
 
 **Sinal externo, sincronização e coerência (F24)** — várias perguntas de LFP só se respondem com
 um segundo sinal. Em tremor: a oscilação do STN é do cérebro ou é o próprio tremor entrando pelo

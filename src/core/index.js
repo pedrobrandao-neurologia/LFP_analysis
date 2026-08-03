@@ -44,6 +44,10 @@ import { detectGamma, confirmEntrainment } from './dsp/gamma.js';
 import { parseExternalCsv, resampleUniform } from './io/external.js';
 import { coherence, coherenceBand } from './dsp/coherence.js';
 import { alignByCrossCorrelation, alignByStimArtifact, alignByTimestamp, detectStimSteps } from './io/sync.js';
+import { clusterPermutation } from './stats/cluster.js';
+import { controlBandDiurnal, actogram } from './metrics/control.js';
+import { icc } from './stats/icc.js';
+import { impedanceDrift, usageAndBattery, longitudinalReliability } from './metrics/longitudinal.js';
 import { assessEligibility, PREVALENCIA_BETA } from './adbs/eligibility.js';
 import { simulateAdbs, thresholdSweep, suggestThresholds } from './adbs/simulate.js';
 import { fitDoseResponse, MODELOS } from './adbs/doseresponse.js';
@@ -94,7 +98,11 @@ const API = {
   detectGamma, confirmEntrainment,
   /* sinais externos, sincronização e coerência (Onda 2.3) */
   parseExternalCsv, resampleUniform, coherence, coherenceBand,
-  alignByCrossCorrelation, alignByStimArtifact, alignByTimestamp, detectStimSteps
+  alignByCrossCorrelation, alignByStimArtifact, alignByTimestamp, detectStimSteps,
+  /* actograma, banda-controle e cluster (Onda 4.1) */
+  clusterPermutation, controlBandDiurnal, actogram,
+  /* confiabilidade longitudinal, impedância e uso (Onda 4.3) */
+  icc, impedanceDrift, usageAndBattery, longitudinalReliability
 };
 
 export default API;
