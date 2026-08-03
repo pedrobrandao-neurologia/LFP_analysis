@@ -456,6 +456,35 @@ Regras que decorrem disso:
 - **Exportações e o relatório em PDF também anunciam suas etapas**, porque recalculam todas as
   métricas e todas as figuras.
 
+### Trabalhador de segundo plano (Web Worker)
+
+Anunciar cada etapa resolve o *"travou?"*, mas o cálculo continuava na thread principal — e
+enquanto ele roda, a página não repinta e nada responde ao clique. Os três passos mais caros
+(`parsePerceptText`, `extractMetrics`, `qcPanel`) agora rodam num **Web Worker**.
+
+Sem quebrar o invariante do arquivo único: o worker **não vem de um arquivo separado**. O código
+do núcleo já está no primeiro `<script>` da página e é lido de volta em tempo de execução
+(`document.scripts[0].textContent`), concatenado a um pequeno despachante e transformado em Blob.
+Nenhuma requisição de rede, nenhum arquivo adicional, nenhuma duplicação do bundle. O worker só
+executa **funções próprias e nomeadas do núcleo** — nunca código vindo da interface.
+
+Quando não dá (navegador sem `Worker`, `file://` restritivo), **não há degradação silenciosa**: o
+motivo é registrado, aparece no rodapé do painel de processo e vai para o manifesto de
+proveniência, e o cálculo roda na thread principal exatamente como antes.
+
+Medido em Chromium com um registro de 5,4 MB, cronometrando o atraso de um timer de 25 ms durante
+todo o carregamento:
+
+| | mediana do bloqueio | pior bloqueio | bloqueio acumulado |
+| --- | ---: | ---: | ---: |
+| antes | 60 ms | 851 ms | 1549 ms |
+| **com o trabalhador** | **1 ms** | **196 ms** | **419 ms** |
+
+O que sobra é o desenho das figuras, que precisa mesmo da thread principal (canvas). O manifesto
+de proveniência passou a registrar, para cada passo pesado, **quanto levou e onde foi calculado** —
+é o que permite dizer, meses depois, que o número saiu do cálculo completo e não de um caminho
+degradado.
+
 O gargalo real do carregamento era o **bootstrap de blocos do cosinor** (F9). Ele foi
 reescrito somando as **equações normais por dia**: como (XᵀX, Xᵀy) é aditivo sobre blocos
 disjuntos, cada reamostragem de dias inteiros passou a ser a soma de matrizes pré-calculadas e a

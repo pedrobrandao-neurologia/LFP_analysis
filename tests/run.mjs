@@ -1764,6 +1764,69 @@ sec('varredura do Survey — ranking dos pares bipolares (F1)');
   });
 }
 
+/* -------------------- trabalho em segundo plano (Onda 0.2) ---------------- */
+sec('trabalho em segundo plano e instrumentação');
+{
+  t('parsePerceptText devolve o mesmo que parsePercept sobre o JSON', () => {
+    const arq = arquivos[0];
+    const texto = fs.readFileSync(path.join(PASTA, arq), 'utf8');
+    const a = C.parsePercept(JSON.parse(texto), arq);
+    const b = C.parsePerceptText(texto, arq);
+    assert(a.patient.idHash === b.patient.idHash, 'identificador diferente');
+    assert(JSON.stringify(a.availability) === JSON.stringify(b.availability), 'modalidades diferentes');
+    assert((a.montage || []).length === (b.montage || []).length, 'número de canais de survey diferente');
+    return `${arq}: ${(b.montage || []).length} canais de survey, ${Object.keys(b.availability).length} modalidades`;
+  });
+
+  await ta('sem Worker, o cálculo cai para a thread principal e isso é declarado', async () => {
+    /* neste ambiente não existe Worker — é exatamente o caminho de degradação
+       que precisa funcionar em navegador antigo ou em file:// restritivo */
+    assert(typeof Worker !== 'function', 'este ambiente tem Worker; o teste precisa do caminho sem ele');
+    assert(!H.Trabalhador.disponivel(), 'o trabalhador se declarou disponível sem Worker');
+    const out = await H.Trabalhador.chamar('extractMetrics', [parsed, -180, { profileId: 'pd' }]);
+    assert(out.r && out.r.subject, 'não devolveu o pacote de métricas');
+    assert(/thread principal/.test(out.ondeRodou), 'não declarou onde rodou: ' + out.ondeRodou);
+    assert(isFinite(out.ms), 'não mediu o tempo');
+    return `${out.ondeRodou} em ${out.ms} ms · motivo: ${H.Trabalhador.motivo || '—'}`;
+  });
+
+  await ta('o trabalhador só executa funções nomeadas do núcleo', async () => {
+    let erro = null;
+    try { await H.Trabalhador.chamar('naoExiste', []); } catch (e) { erro = e.message; }
+    assert(erro && /desconhecida/.test(erro), 'aceitou nome arbitrário: ' + erro);
+    let erro2 = null;
+    try { await H.Trabalhador.chamar('constructor', []); } catch (e) { erro2 = e.message; }
+    assert(erro2 && /desconhecida/.test(erro2), 'aceitou um membro herdado de Object: ' + erro2);
+    return 'nomes fora do núcleo são recusados';
+  });
+
+  await ta('a instrumentação registra passo, tempo e onde rodou', async () => {
+    H.Instrumentacao.limpa();
+    const a = await H.Trabalhador.chamar('extractMetrics', [parsed, -180, { profileId: 'pd' }]);
+    H.Instrumentacao.registra('extractMetrics', a.ms, a.ondeRodou);
+    const r = H.Instrumentacao.resumo();
+    assert(r.nSteps === 1, 'passos: ' + r.nSteps);
+    assert(r.steps[0].step === 'extractMetrics' && isFinite(r.steps[0].ms), 'passo malformado');
+    assert(r.workerState === 'indisponível' || r.workerState === 'não iniciado', 'estado: ' + r.workerState);
+    assert(r.nInWorker === 0, 'contou passos no trabalhador onde não há trabalhador');
+    return `${r.nSteps} passo(s), ${r.totalMs} ms, ${r.nInWorker} no trabalhador, estado "${r.workerState}"`;
+  });
+
+  await ta('o manifesto de proveniência registra onde o cálculo aconteceu', async () => {
+    H.S.subject = chaves[0]; H.S.opts = {};
+    H.Instrumentacao.limpa();
+    const a = await H.Trabalhador.chamar('extractMetrics', [parsed, -180, { profileId: 'pd' }]);
+    H.Instrumentacao.registra('extractMetrics', a.ms, a.ondeRodou);
+    const prov = await H.buildProvenance();
+    const m = prov.manifest();
+    const passo = (m.steps || []).find(x => x.step === 'runtime.instrumentation');
+    assert(passo, 'o manifesto não traz a instrumentação');
+    assert(passo.params.stepsTotal >= 1, 'nenhum passo registrado no manifesto');
+    assert('workerState' in passo.params, 'o manifesto não diz o estado do trabalhador');
+    return `manifesto declara estado "${passo.params.workerState}", ${passo.params.stepsInWorker}/${passo.params.stepsTotal} no trabalhador`;
+  });
+}
+
 /* ------------------------------------------------------------- resultado -- */
 console.log(`\n${'='.repeat(58)}`);
 console.log(`  ${ok} passaram   ${falhas} falharam   ${pulados} sem dados`);
