@@ -18,9 +18,9 @@ import { ecgSuppressionRatio, betaPeakRecovery, bandPowerPreservation, correlati
 import { mean, median, sd, variance, quantile, mad, removeOutliersMAD, linreg, pearson, histogram, ecdf, bimodalityCoefficient } from './stats/descriptive.js';
 import { fPValue, tPValue, normCDF } from './stats/distributions.js';
 import { cosinor, cosinorBootstrap, rayleigh, varianceByHour, diurnalProfile } from './stats/circadian.js';
-import { eventAligned, permutationTest } from './stats/events.js';
+import { eventAligned, permutationTest, permutationTwoSample } from './stats/events.js';
 import { detectStates, betaEnvelopeSeries, streamOnOff } from './stats/states.js';
-import { peakInBand, pickSpectrum, spectralMetrics, burstMetrics, doseResponse, ecgMetrics, deviceStateMetrics, deviceStateMetrics } from './metrics/acute.js';
+import { peakInBand, pickSpectrum, spectralMetrics, burstMetrics, doseResponse, ecgMetrics, deviceStateMetrics } from './metrics/acute.js';
 import { mergeTrend, collectThresholds, chronicMetrics, thresholdSummary } from './metrics/chronic.js';
 import { extractMetrics, daysSince } from './metrics/extract.js';
 import { rankSurveyChannels } from './metrics/survey.js';
@@ -51,6 +51,11 @@ import { coherence, coherenceBand } from './dsp/coherence.js';
 import { alignByCrossCorrelation, alignByStimArtifact, alignByTimestamp, detectStimSteps } from './io/sync.js';
 import { clusterPermutation } from './stats/cluster.js';
 import { controlBandDiurnal, actogram } from './metrics/control.js';
+import {
+  DIARY_STATES, LFP_STATES, stateById, normalizeState, parseDiaryCsv, diaryGrid,
+  dailyComposition, compareConditions, circadianStateProfile, timelineGrid,
+  doseMarkers, diaryVsLfpAgreement, levodopaResponse
+} from './metrics/diary.js';
 import { icc } from './stats/icc.js';
 import { impedanceDrift, usageAndBattery, longitudinalReliability } from './metrics/longitudinal.js';
 import { assessEligibility, PREVALENCIA_BETA } from './adbs/eligibility.js';
@@ -64,7 +69,7 @@ const API = {
   ecgTemplateSubtract, bandPower, bandTable, bandOf,
   mean, median, sd, variance, quantile, mad, removeOutliersMAD, linreg, pearson,
   cosinor, cosinorBootstrap, rayleigh, varianceByHour, diurnalProfile, eventAligned,
-  permutationTest, thresholdSummary, histogram, ecdf, fPValue, tPValue, normCDF,
+  permutationTest, permutationTwoSample, thresholdSummary, histogram, ecdf, fPValue, tPValue, normCDF,
   peakInBand, daysSince, pickSpectrum, spectralMetrics, burstMetrics, doseResponse, ecgMetrics, deviceStateMetrics,
   mergeTrend, collectThresholds, chronicMetrics, extractMetrics,
   /* ranking dos pares bipolares do Survey (F1) */
@@ -108,6 +113,10 @@ const API = {
   alignByCrossCorrelation, alignByStimArtifact, alignByTimestamp, detectStimSteps,
   /* actograma, banda-controle e cluster (Onda 4.1) */
   clusterPermutation, controlBandDiurnal, actogram,
+  /* diário de Hauser, matriz hora × dia e resposta à levodopa (Onda 9) */
+  DIARY_STATES, LFP_STATES, stateById, normalizeState, parseDiaryCsv, diaryGrid,
+  dailyComposition, compareConditions, circadianStateProfile, timelineGrid,
+  doseMarkers, diaryVsLfpAgreement, levodopaResponse,
   /* confiabilidade longitudinal, impedância e uso (Onda 4.3) */
   icc, impedanceDrift, usageAndBattery, longitudinalReliability
 };

@@ -301,6 +301,7 @@ const S = {
   profile: null,        // id do perfil de doença; null = sugerir pelo JSON
   symptomSeries: null,  // série clínica importada (distonia): [{t, v}]
   external: null,       // sinal externo importado (Onda 2.3): {name, parsed}
+  diary: null,          // diário de Hauser importado (Onda 9): {name, parsed}
   mode: 'clinico',      // 'clinico' | 'pesquisa' (Onda 8.1)
   lang: 'pt',           // 'pt' | 'en' (Onda 8.2)
 };
@@ -500,6 +501,10 @@ function ctrlNumber(label, value, min, max, step, onChange) {
   const i = el('input', { type: 'number', value, min, max, step, onchange: e => onChange(parseFloat(e.target.value)) });
   return el('label', { class: 'field' }, [label, i]);
 }
+function ctrlText(label, value, placeholder, onChange) {
+  const i = el('input', { type: 'text', value: value == null ? '' : value, placeholder: placeholder || '', onchange: e => onChange(e.target.value) });
+  return el('label', { class: 'field' }, [label, i]);
+}
 function ctrlCheck(label, value, onChange) {
   const i = el('input', { type: 'checkbox', onchange: e => onChange(e.target.checked) });
   i.checked = !!value;
@@ -650,6 +655,149 @@ function painelVarredura(parent, canais, hemi, o) {
   });
   return bx;
 }
+/* ------------------------------------- matriz hora × dia ligada à integral --
+   POR QUE ESTE DESENHO. O desfecho de ensaio clínico em Parkinson avançado é
+   "horas OFF em vigília", e ele é publicado como barra empilhada. A barra
+   destrói exatamente a informação que muda a conduta: 6 h de OFF concentradas
+   na manhã (delayed-on) pedem outra coisa que 6 h picadas ao longo do dia. A
+   matriz hora × dia preserva ONDE o OFF cai; a barra diz QUANTO. As duas
+   perguntas são legítimas, e por isso as duas ficam no mesmo gráfico.
+
+   O QUE ESTA VERSÃO FAZ QUE O PAPEL NÃO FAZ. Cada linha da matriz tem, à
+   direita e na mesma baseline, a própria barra empilhada. Passar o cursor sobre
+   uma célula acende, ao mesmo tempo, todas as células daquele dia naquele
+   estado e o segmento que elas somam — o raster e a sua integral, ligados. É a
+   ligação que uma figura estática não consegue mostrar.
+
+   A folga branca entre as células é deliberada: sem ela, bins vizinhos do mesmo
+   estado viram um bloco contínuo e o olho perde a contagem de meias horas. É o
+   que faz a matriz ser lida como o diário em papel de onde ela vem.          */
+function painelMatriz(parent, cfg) {
+  const nD = cfg.days.length, nB = cfg.nBins;
+  const alturaLinha = Math.max(7, Math.min(26, 330 / Math.max(1, nD)));
+  const altura = Math.round(112 + nD * alturaLinha);
+  const bx = plotBox(parent, altura, 'svbox');
+  const tip = el('div', { class: 'svtip' });
+  if (bx.box && bx.box.appendChild) bx.box.appendChild(tip);
+  if (bx.canvas.style) bx.canvas.style.cursor = 'crosshair';
+
+  const BARW = Math.max(4, Math.ceil(cfg.barMax || 24));
+  const GAP = 2.4, BX0 = 24 + GAP, XTOT = BX0 + BARW;
+  const corDe = id => (cfg.palette[id] && cfg.palette[id].color) || '#CCD3DA';
+  const rotDe = id => (cfg.palette[id] && cfg.palette[id].label) || String(id);
+  const hFmt = h => String(Math.floor(h)).padStart(2, '0') + ':' + String(Math.round((h % 1) * 60)).padStart(2, '0');
+
+  let destaque = null, ch = null;
+  const larguraAtual = () => Math.max(320, ((bx.box && bx.box.clientWidth) || bx.width + 12) - 12);
+
+  const desenha = (canvas, larg, dpr) => {
+    ch = new P.Chart(canvas, {
+      width: larg, height: altura, dpr: dpr || undefined,
+      xlim: [0, XTOT], ylim: [0, nD],
+      xlabel: 'hora do dia (matriz)     ·     horas acumuladas (barra empilhada)',
+      title: cfg.title, pad: { l: 92, r: 14, t: 26, b: 78 }
+    });
+    const passo = Math.max(1, Math.ceil(nD / 20));
+    const linhaDe = v => nD - Math.ceil(v);
+    ch.axes({
+      grid: false,
+      xticks: [0, 3, 6, 9, 12, 15, 18, 21, 24].concat([0, 6, 12, 18, 24].map(v => BX0 + v).filter(v => v <= XTOT + 1e-9)),
+      xfmt: v => v <= 24.001 ? String(Math.round(v)).padStart(2, '0') + 'h' : String(Math.round(v - BX0)),
+      yticks: cfg.days.map((_, i) => nD - i - 0.5).filter((_, i) => i % passo === 0),
+      yfmt: v => { const i = linhaDe(v); return cfg.days[i] == null ? '' : cfg.rowLabel(cfg.days[i], i); }
+    });
+    /* noite como referência de leitura — é fundo, não dado */
+    ch.span(0, 6, { color: COL.ink, alpha: .045 });
+    ch.span(22, 24, { color: COL.ink, alpha: .045 });
+
+    const aceso = (r, c) => !destaque || (r === destaque.r && cfg.states[r][c] === destaque.state);
+    ch.cells(cfg.cells, {
+      x0: 0, x1: 24, emptyColor: cfg.emptyColor || '#F1F4F6',
+      gapY: Math.min(0.22, 2.2 / alturaLinha),
+      color: cfg.continuous ? cfg.contColor : corDe,
+      alphaOf: (v, r, c) => aceso(r, c) ? 1 : 0.18
+    });
+
+    /* barra empilhada de cada dia, à direita e na MESMA baseline da linha */
+    const mg = Math.min(0.14, 1.6 / alturaLinha);
+    cfg.rows.forEach((segs, r) => {
+      let acc = 0;
+      const yb = nD - r;
+      segs.forEach(seg => {
+        if (!(seg.hours > 0)) return;
+        const forte = !destaque || (destaque.r === r && destaque.state === seg.state);
+        ch.rect(BX0 + acc, yb - 1 + mg, BX0 + acc + seg.hours, yb - mg,
+          { fill: corDe(seg.state), stroke: '#FFFFFF', lineWidth: 1, alpha: forte ? 1 : 0.18 });
+        if (destaque && destaque.r === r && destaque.state === seg.state)
+          ch.rect(BX0 + acc, yb - 1 + mg, BX0 + acc + seg.hours, yb - mg, { stroke: COL.ink, lineWidth: 1.6 });
+        acc += seg.hours;
+      });
+    });
+    /* o traço que diz "estas células somam aquele segmento" */
+    if (destaque) {
+      const y = nD - destaque.r - 0.5;
+      ch.line([24.2, BX0 - 0.2], [y, y], { color: COL.ink, width: 0.9, dash: [2, 3] });
+    }
+    /* ▼ das tomadas, apontando para a linha do próprio dia */
+    (cfg.doseRows || []).forEach((horas, r) => {
+      (horas || []).forEach(h => ch.marker(h, nD - r - 0.04, {
+        shape: 'tridown', size: Math.max(2.6, Math.min(4.6, alturaLinha * 0.3)), color: COL.ink, halo: true
+      }));
+    });
+    ch.vline(24 + GAP / 2, { color: COL.rule, width: 1, dash: [3, 3] });
+    ch.swatches(cfg.legend, { y: altura - 34, width: larg });
+    return ch;
+  };
+  desenha(bx.canvas, larguraAtual());
+
+  /* ------------------------------------------------------ interação ----- */
+  const alvoDe = (px, py) => {
+    if (!ch) return null;
+    const fx = ch.invX(px), fy = ch.invY(py);
+    if (fx < 0 || fx > 24) return null;
+    const r = nD - Math.ceil(fy);
+    if (!(r >= 0 && r < nD)) return null;
+    const c = Math.floor(fx * nB / 24);
+    if (!(c >= 0 && c < nB)) return null;
+    const st = cfg.states[r][c];
+    return st == null ? null : { r, c, state: st };
+  };
+  const posicao = ev => { const q = bx.canvas.getBoundingClientRect(); return [ev.clientX - q.left, ev.clientY - q.top]; };
+  bx.canvas.addEventListener('mousemove', ev => {
+    const [px, py] = posicao(ev);
+    const a = alvoDe(px, py);
+    const mudou = (a && destaque) ? (a.r !== destaque.r || a.state !== destaque.state) : (!!a !== !!destaque);
+    if (mudou) { destaque = a; desenha(bx.canvas, larguraAtual()); }
+    if (a) {
+      const seg = (cfg.rows[a.r] || []).find(s => s.state === a.state);
+      const total = (cfg.rows[a.r] || []).reduce((x, s) => x + s.hours, 0);
+      const h0 = a.c * 24 / nB;
+      tip.innerHTML = `<b>${cfg.rowLabel(cfg.days[a.r], a.r)}</b> · ${hFmt(h0)}–${hFmt(h0 + 24 / nB)}<br>` +
+        `<b style="color:${corDe(a.state)}">${rotDe(a.state)}</b>` +
+        (cfg.continuous && isFinite(cfg.cells[a.r][a.c]) ? ` · ${f(cfg.cells[a.r][a.c], 1)}` : '') + '<br>' +
+        (seg ? `${f(seg.hours, 1)} h neste estado neste dia (${f(100 * seg.hours / (total || 1), 0)}% da barra)` : 'fora do recorte da barra');
+      tip.style.display = 'block';
+      tip.style.left = Math.max(4, Math.min(px + 14, larguraAtual() - 210)) + 'px';
+      tip.style.top = Math.max(4, py - 58) + 'px';
+    } else tip.style.display = 'none';
+  });
+  bx.canvas.addEventListener('mouseleave', () => {
+    tip.style.display = 'none';
+    if (destaque) { destaque = null; desenha(bx.canvas, larguraAtual()); }
+  });
+  /* exportar em 2×: a MESMA rotina de desenho numa tela fora do documento com o
+     dobro da densidade. Esticar o bitmap já rasterizado devolveria borrão. */
+  bx.exportar2x = nome => {
+    const fora = document.createElement('canvas');
+    const antes = destaque; destaque = null;
+    desenha(fora, Math.max(900, larguraAtual()), 2);
+    destaque = antes;
+    desenha(bx.canvas, larguraAtual());
+    P.downloadCanvas(fora, nome);
+  };
+  return bx;
+}
+
 /* Selo de qualidade do dado (Onda 1): toda figura que consome série bruta
    declara quantas amostras são válidas e quanto falta. Acima de 20% de dados
    faltantes o selo vira alerta e o painel avisa que as métricas derivadas têm
@@ -3303,6 +3451,422 @@ const FIGURES = [
         }
       ]));
     }
+  },
+
+  /* ----------------------------------------------------------------- F28 */
+  {
+    id: 'F28', title: 'Matriz hora × dia — estados ON/OFF ligados à sua integral',
+    sub: 'diário de Hauser e a MESMA grade no Timeline crônico · barra empilhada por dia · marcas de tomada',
+    has: d => Object.keys(d.trend).length || (S.diary && S.diary.parsed && S.diary.parsed.ok),
+    render(node, d) {
+      const temDiario = !!(S.diary && S.diary.parsed && S.diary.parsed.ok);
+      const hemis = Object.keys(d.trend);
+      const fonte = opt('F28', 'src', temDiario ? 'diary' : 'lfp');
+      const soVigilia = opt('F28', 'vig', false);
+
+      /* ---- barra de controle, com a importação do diário -------------- */
+      const barra = el('div', { class: 'ctrls' });
+      barra.appendChild(el('input', {
+        type: 'file', accept: '.csv,.tsv,.txt,text/csv', id: 'diaryFile', style: 'display:none',
+        onchange: e => { const fl = e.target.files && e.target.files[0]; e.target.value = ''; if (fl) carregaDiario(fl); }
+      }));
+      const fontes = [];
+      if (temDiario) fontes.push({ value: 'diary', label: 'diário de Hauser (CSV)' });
+      if (hemis.length) fontes.push({ value: 'lfp', label: 'Timeline do LFP' });
+      if (fontes.length > 1) barra.appendChild(ctrlSelect('fonte', fontes, fonte, v => setOpt('F28', 'src', v)));
+      barra.appendChild(ctrlCheck('só vigília', soVigilia, v => setOpt('F28', 'vig', v)));
+      barra.appendChild(el('button', {
+        class: 'btn' + (temDiario ? '' : ' primary'),
+        text: temDiario ? '↻ trocar diário' : '+ carregar diário (CSV)',
+        onclick: () => { const i = document.getElementById('diaryFile'); if (i) i.click(); }
+      }));
+      if (S.diary) barra.appendChild(el('button', {
+        class: 'btn', text: '× remover diário',
+        onclick: () => { S.diary = null; setOpt('F28', 'src', 'lfp'); }
+      }));
+
+      const usaDiario = fonte === 'diary' && temDiario;
+      let cond = null, hemi = null, binMin = 30, metodo = 'kmeans', escala = 'cat';
+      if (usaDiario) {
+        const conds = S.diary.parsed.conditions;
+        cond = opt('F28', 'cond', conds[0]);
+        if (conds.indexOf(cond) < 0) cond = conds[0];
+        if (conds.length > 1) barra.appendChild(ctrlSelect('condição', conds, cond, v => setOpt('F28', 'cond', v)));
+      } else if (hemis.length) {
+        hemi = opt('F28', 'hemi', hemis[0]);
+        binMin = opt('F28', 'bin', 30);
+        metodo = opt('F28', 'thr', 'kmeans');
+        escala = opt('F28', 'esc', 'cat');
+        barra.appendChild(ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: 'STN ' + hname(x) })), hemi, v => setOpt('F28', 'hemi', v)));
+        barra.appendChild(ctrlSelect('bin', [{ value: 10, label: '10 min' }, { value: 30, label: '30 min' }, { value: 60, label: '60 min' }], binMin, v => setOpt('F28', 'bin', +v)));
+        barra.appendChild(ctrlSelect('escala', [{ value: 'cat', label: 'categórica (limiar)' }, { value: 'cont', label: 'contínua (potência)' }], escala, v => setOpt('F28', 'esc', v)));
+        barra.appendChild(ctrlSelect('limiar', [
+          { value: 'kmeans', label: 'k-médias (2 grupos)' }, { value: 'percentile', label: 'percentil' }, { value: 'fixed', label: 'valor fixo' }
+        ], metodo, v => setOpt('F28', 'thr', v)));
+        if (metodo === 'percentile') barra.appendChild(ctrlNumber('percentil', opt('F28', 'pct', 50), 5, 95, 5, v => setOpt('F28', 'pct', v)));
+        if (metodo === 'fixed') barra.appendChild(ctrlNumber('limiar (u.a.)', opt('F28', 'lim', 40), 0, 1e6, 1, v => setOpt('F28', 'lim', v)));
+      }
+      const horarios = opt('F28', 'doses', '');
+      barra.appendChild(ctrlText('tomadas (h)', horarios, 'ex.: 07:00, 11:00, 15:00, 19:00', v => setOpt('F28', 'doses', v)));
+      node.appendChild(barra);
+
+      if (usaDiario && S.diary) node.appendChild(el('div', {
+        class: 'seal', text: `${S.diary.name} · ${S.diary.parsed.nRows} bins de ${S.diary.parsed.binMin} min · ` +
+          `${S.diary.parsed.conditions.length} condição(ões) · ${S.diary.parsed.note}`
+      }));
+      if (S.diary && !S.diary.parsed.ok) node.appendChild(el('div', { class: 'warnbox', html: `<b>Diário não lido.</b> ${S.diary.parsed.reason}.` }));
+
+      /* horários fixos digitados pelo usuário (o diário não traz a tomada) */
+      const dosesFixas = String(horarios || '').split(/[;,]/).map(s => {
+        const m = /^\s*(\d{1,2})(?::(\d{2}))?\s*$/.exec(s);
+        return m ? (+m[1]) + (m[2] ? +m[2] / 60 : 0) : NaN;
+      }).filter(v => isFinite(v) && v >= 0 && v < 24);
+
+      /* ================= (a) a matriz e a sua integral ================== */
+      let grade = null, comp = null, doseInfo = null, tg = null;
+      if (usaDiario) {
+        const p = S.diary.parsed;
+        grade = C.diaryGrid(p.rows, { condition: cond, binMin: p.binMin });
+        if (!grade.ok) return node.appendChild(el('div', { class: 'empty', text: grade.reason }));
+        comp = C.dailyComposition(grade, { awakeOnly: soVigilia });
+        const ids = C.DIARY_STATES.filter(s => !soVigilia || s.awake).map(s => s.id);
+        const paleta = {}; C.DIARY_STATES.forEach(s => { paleta[s.id] = s; });
+        const linhas = comp.perDay.map(dd => ids.map(k => ({ state: k, hours: dd.hours[k] || 0 })));
+        const bxa = painelMatriz(node, {
+          days: grade.days, nBins: grade.nBins, cells: grade.cells, states: grade.cells,
+          rows: linhas, barMax: soVigilia ? Math.max(4, Math.ceil(Math.max.apply(null, comp.perDay.map(x => x.total)))) : 24,
+          palette: paleta, legend: C.DIARY_STATES.filter(s => !soVigilia || s.awake).map(s => ({ label: s.label, color: s.color })),
+          doseRows: grade.days.map(() => dosesFixas),
+          rowLabel: (dia) => (/^\d+$/.test(String(dia)) ? 'Dia ' + dia : String(dia)),
+          title: `(a) ${cond} — ${grade.days.length} dias · bin de ${grade.binMin} min · ${soVigilia ? 'só vigília' : '24 h'}`
+        });
+        node.appendChild(el('div', {
+          class: 'note', html: `<b>Como ler.</b> Cada linha é um dia, cada célula um bin de ${grade.binMin} min, e o Dia 1 fica no topo. ` +
+            `À direita, na mesma linha, a barra empilhada daquele dia — a <b>integral</b> da própria linha. ` +
+            `Passe o cursor sobre uma célula: acendem juntas todas as células daquele dia naquele estado e o segmento que elas somam. ` +
+            `${dosesFixas.length ? `Os ▼ marcam as tomadas informadas (${dosesFixas.map(h => f(h, 1) + 'h').join(', ')}).` : 'Informe os horários das tomadas no campo acima para ver os ▼.'}`
+        }));
+        node.appendChild(exportRow([
+          { label: '⤓ PNG 2× da matriz', fn: () => bxa.exportar2x('F28a_matriz_hora_dia') },
+          {
+            label: '⤓ CSV da matriz', fn: () => P.downloadText(P.toCSV(grade.days.flatMap((dia, i) =>
+              grade.cells[i].map((v, j) => ({
+                condition: cond, day: dia, bin_index: j, hour_decimal: +((j + 0.5) * grade.binMin / 60).toFixed(3),
+                state: v == null ? '' : v, bin_min: grade.binMin
+              })))), 'F28_matriz.csv', 'text/csv')
+          }
+        ]));
+        if (grade.pctMissing > 0 || grade.nConflicts) node.appendChild(el('div', {
+          class: 'warnbox', html: `<b>Contabilidade do que falta.</b> ${f(grade.pctMissing, 1)}% das células do período não têm registro ` +
+            `(${grade.nMissing} de ${grade.nCells}) e ficam <b>vazias</b>, nunca preenchidas pelo vizinho. ` +
+            (grade.nConflicts ? `${grade.note}. ` : '') +
+            (comp.nDaysExcluded ? `${comp.nDaysExcluded} dia(s) ficaram fora da média por cobertura insuficiente.` : '')
+        }));
+      } else if (hemis.length) {
+        const limpo = C.removeOutliersMAD(d.trend[hemi], 'lfp', 4).kept;
+        tg = C.timelineGrid(limpo, offMin(), {
+          binMin, thresholdMethod: metodo, pct: opt('F28', 'pct', 50), threshold: opt('F28', 'lim', 40)
+        });
+        if (!tg.ok) return node.appendChild(el('div', { class: 'empty', text: tg.reason }));
+        const paleta = {}; C.LFP_STATES.forEach(s => { paleta[s.id] = s; });
+        const hBin = tg.binMin / 60;
+        const linhas = tg.states.map(l => ['LFP_low', 'LFP_high'].map(k => ({ state: k, hours: l.filter(v => v === k).length * hBin })));
+        const cmap = P.CMAPS.magma;
+        doseInfo = C.doseMarkers(d.snapshots, offMin(), { pattern: /medica|levodopa|dose/i });
+        const bxa = painelMatriz(node, {
+          days: tg.days, nBins: tg.nBins,
+          cells: escala === 'cont' ? tg.values : tg.states, states: tg.states,
+          continuous: escala === 'cont',
+          contColor: v => cmap((v - tg.zmin) / Math.max(1e-9, tg.zmax - tg.zmin)),
+          rows: linhas, barMax: 24, palette: paleta,
+          legend: escala === 'cont'
+            ? [{ label: `potência ${f(tg.zmin, 0)} (escuro) → ${f(tg.zmax, 0)} (claro)`, color: cmap(0.75) }]
+            : C.LFP_STATES.slice(0, 2).map(s => ({ label: s.label + ` (limiar ${f(tg.threshold, 1)})`, color: s.color })),
+          doseRows: tg.days.map(dia => (doseInfo.ok && doseInfo.byDay[dia]) || dosesFixas),
+          rowLabel: dia => String(dia).slice(5).split('-').reverse().join('/'),
+          title: `(a) Timeline — STN ${hname(hemi)} · ${tg.days.length} dias · bin de ${tg.binMin} min`
+        });
+        node.appendChild(el('div', {
+          class: 'note', html: `<b>A mesma grade, outro dado.</b> Esta é a estrutura do diário de Hauser aplicada ao BrainSense Timeline: ` +
+            `dias × bins de potência beta. A barra à direita é a integral da linha — horas acima e abaixo do limiar. ` +
+            `Limiar por <b>${tg.thresholdDetail}</b>.` +
+            (doseInfo.ok ? ` Os ▼ vêm de ${doseInfo.n} evento(s) "${doseInfo.doses[0].name}" marcados pelo paciente em ${doseInfo.nDays} dia(s).`
+              : ` ${doseInfo.reason}.`)
+        }));
+        node.appendChild(el('div', { class: 'warnbox', html: `<b>Limite deste eixo.</b> ${tg.caveat}.` }));
+        node.appendChild(exportRow([
+          { label: '⤓ PNG 2× da matriz', fn: () => bxa.exportar2x('F28a_matriz_timeline') },
+          {
+            label: '⤓ CSV da matriz', fn: () => P.downloadText(P.toCSV(tg.days.flatMap((dia, i) =>
+              tg.values[i].map((v, j) => ({
+                day: dia, bin_index: j, hour_decimal: +((j + 0.5) * tg.binMin / 60).toFixed(3),
+                power: v, state: tg.states[i][j] || '', threshold: tg.threshold, threshold_method: tg.thresholdMethod,
+                bin_min: tg.binMin, hemisphere: hemi
+              })))), 'F28_matriz_timeline.csv', 'text/csv')
+          }
+        ]));
+        if (tg.pctMissing > 0) node.appendChild(el('div', {
+          class: 'seal' + (tg.pctMissing > 20 ? ' warn' : ''),
+          text: `${f(100 - tg.pctMissing, 1)}% das células com dado · ${tg.nMissing} de ${tg.nCells} bins sem registro, deixados vazios`
+        }));
+      }
+
+      /* ============ (b) barras empilhadas: média por condição ========== */
+      if (usaDiario) {
+        node.appendChild(el('h4', { class: 'qc-title', html: '<b>(b) Média por condição — o formato de desfecho primário</b>' }));
+        const p = S.diary.parsed;
+        const cmp = p.conditions.length > 1
+          ? C.compareConditions(p.rows, { binMin: p.binMin, awakeOnly: soVigilia, paired: opt('F28', 'par', false) })
+          : null;
+        const conds = cmp && cmp.ok ? cmp.conditions
+          : [{ condition: cond, byState: comp.byState, nDays: comp.nDaysUsed, meanTotal: comp.meanTotal }];
+        const ids = C.DIARY_STATES.filter(s => !soVigilia || s.awake).map(s => s.id);
+        const corE = k => (C.DIARY_STATES.find(s => s.id === k) || {}).color || '#999';
+        const totais = conds.map(c => ids.reduce((a, k) => a + ((c.byState[k] && c.byState[k].mean) || 0), 0));
+        const ymax = Math.max.apply(null, totais.concat([1])) * 1.16;
+        const bb = plotBox(node, 320);
+        const cb = new P.Chart(bb.canvas, {
+          width: bb.width, height: 320, xlim: [0, conds.length], ylim: [0, ymax],
+          ylabel: soVigilia ? 'horas de vigília por dia' : 'horas por dia (24 h)',
+          title: `(b) média por condição — ${soVigilia ? 'recorte de vigília' : '24 h incluindo sono'}`,
+          pad: { l: 72, r: 14, t: 26, b: 78 }
+        });
+        cb.axes({ xticks: conds.map((_, i) => i + 0.5), xfmt: v => (conds[Math.floor(v)] || {}).condition || '', ny: 6 });
+        conds.forEach((c, i) => {
+          let acc = 0, topoOff = NaN;
+          ids.forEach(k => {
+            const m = (c.byState[k] && c.byState[k].mean) || 0;
+            if (!(m > 0)) return;
+            cb.rect(i + 0.28, acc, i + 0.72, acc + m, { fill: corE(k), stroke: '#FFFFFF', lineWidth: 1.4 });
+            /* o rótulo do OFF sai para fora quando o segmento é fino: dentro
+               dele ficaria por cima da barra de erro, que mora no mesmo topo */
+            const sem = (c.byState.Off && c.byState.Off.sem) || 0;
+            const cabeDentro = m >= ymax * 0.055 && !(k === 'Off' && m < ymax * 0.055 + 2 * sem);
+            if (cabeDentro) cb.text(cb.X(i + 0.5), cb.Y(acc + m / 2), f(m, 1) + ' h',
+              { align: 'center', baseline: 'middle', color: '#FFFFFF', font: '600 11.5px ui-monospace, Menlo, monospace' });
+            else if (k === 'Off') cb.text(cb.X(i + 0.74) + 6, cb.Y(acc + m / 2), f(m, 1) + ' h',
+              { align: 'left', baseline: 'middle', color: corE(k), font: '600 11.5px ui-monospace, Menlo, monospace' });
+            acc += m;
+            if (k === 'Off') topoOff = acc;         // topo do segmento, não o valor absoluto
+          });
+          /* Barra de erro SÓ no segmento OFF — é como o desfecho é reportado.
+             Ela vai no TOPO do segmento: no recorte de vigília o OFF começa em
+             zero e as duas coisas coincidem, mas no recorte de 24 h o sono está
+             embaixo, e ancorar no valor absoluto poria a barra dentro do sono. */
+          const off = c.byState.Off;
+          if (off && isFinite(off.sem) && off.sem > 0 && isFinite(topoOff)) {
+            const x = i + 0.5;
+            cb.line([x, x], [topoOff - off.sem, topoOff + off.sem], { color: COL.ink, width: 1.4 });
+            cb.line([x - 0.07, x + 0.07], [topoOff - off.sem, topoOff - off.sem], { color: COL.ink, width: 1.4 });
+            cb.line([x - 0.07, x + 0.07], [topoOff + off.sem, topoOff + off.sem], { color: COL.ink, width: 1.4 });
+          }
+        });
+        cb.swatches(C.DIARY_STATES.filter(s => !soVigilia || s.awake).map(s => ({ label: s.label, color: s.color })), { y: 320 - 34, width: bb.width });
+        node.appendChild(el('div', {
+          class: 'note', html: `<b>Por que a barra de erro fica só no OFF.</b> É o desfecho primário de LCIG, apomorfina e opicapona: ` +
+            `"horas OFF em vigília". Os outros segmentos têm dispersão própria, mas pôr barra em todos sugere que os erros são ` +
+            `independentes — e não são: os estados de um mesmo dia somam um total fixo, então o erro de um é o erro do outro com sinal trocado. ` +
+            `Aqui a barra é o EPM de ${(conds[0].byState.Off || {}).n || 0} dia(s) por condição.`
+        }));
+        if (cmp && cmp.ok) {
+          node.appendChild(table(['comparação', 'valor', 'leitura'], [
+            ['Δ tempo OFF', `${f(cmp.deltaOff, 2)} h/dia`, `${cmp.from} → ${cmp.to}${soVigilia ? ', em vigília' : ', em 24 h'}`],
+            ['método', cmp.test ? cmp.test.method : '—', cmp.paired ? 'pareado por escolha explícita' : 'não pareado (padrão conservador)'],
+            ['IC 95%', cmp.test && cmp.test.ci95 ? `${f(cmp.test.ci95[0], 2)} a ${f(cmp.test.ci95[1], 2)} h` : '—', 'aproximação normal sobre o erro-padrão da diferença'],
+            ['p', { html: cmp.test && cmp.test.p != null ? pHtml(cmp.test.p) : '—' }, cmp.test && cmp.test.exact ? 'enumeração completa das partições — p exato' : 'permutação com semente fixa']
+          ]));
+          node.appendChild(el('div', { class: 'note', html: `<b>${cmp.interpretation}.</b> ${cmp.caveat}.` }));
+          if (p.conditions.length > 1) node.appendChild(el('div', { class: 'ctrls' }, [
+            ctrlCheck('tratar os dias como pareados entre condições', opt('F28', 'par', false), v => setOpt('F28', 'par', v))
+          ]));
+        }
+        node.appendChild(exportRow([
+          { label: '⤓ PNG barras', fn: () => P.downloadCanvas(bb.canvas, 'F28b_barras') },
+          {
+            label: '⤓ CSV composição', fn: () => P.downloadText(P.toCSV(comp.perDay.map(dd => Object.assign({
+              condition: cond, day: dd.day, total_h: dd.total, coverage: dd.coverage,
+              n_missing_bins: dd.nMissing, awake_only: soVigilia ? 1 : 0
+            }, dd.hours))), 'F28_composicao_diaria.csv', 'text/csv')
+          }
+        ]));
+      }
+
+      /* ================== (c) perfil circadiano ======================== */
+      node.appendChild(el('h4', { class: 'qc-title', html: '<b>(c) Perfil circadiano — onde no dia o estado se concentra</b>' }));
+      const perfil = usaDiario ? C.circadianStateProfile(grade)
+        : (tg ? C.circadianStateProfile({ ok: true, binMin: tg.binMin, nBins: tg.nBins, days: tg.days, cells: tg.states }) : null);
+      if (!perfil || !perfil.ok) node.appendChild(el('div', { class: 'empty', text: 'sem grade para o perfil circadiano' }));
+      else {
+        const ids = usaDiario ? C.DIARY_STATES.map(s => s.id) : ['LFP_low', 'LFP_high'];
+        const corE = k => ((usaDiario ? C.DIARY_STATES : C.LFP_STATES).find(s => s.id === k) || {}).color || '#999';
+        const rotE = k => ((usaDiario ? C.DIARY_STATES : C.LFP_STATES).find(s => s.id === k) || {}).label || k;
+        const bc = plotBox(node, 300);
+        const cc = new P.Chart(bc.canvas, {
+          width: bc.width, height: 300, xlim: [0, 24], ylim: [0, 100],
+          xlabel: 'hora local', ylabel: '% dos dias no estado',
+          title: `(c) perfil circadiano — ${perfil.nDays} dias, bin de ${perfil.binMin} min`,
+          pad: { l: 66, r: 14, t: 26, b: 78 }
+        });
+        cc.axes({ grid: false, xticks: [0, 3, 6, 9, 12, 15, 18, 21, 24], xfmt: v => String(v).padStart(2, '0') + 'h' });
+        let base = perfil.hours.map(() => 0);
+        ids.forEach(k => {
+          const topo = perfil.hours.map((_, i) => {
+            const v = perfil.props[k] ? perfil.props[k][i] : NaN;
+            return isFinite(v) ? base[i] + v : NaN;
+          });
+          cc.area(perfil.hours, base, topo, { color: corE(k), alpha: .92 });
+          base = topo.map((v, i) => isFinite(v) ? v : base[i]);
+        });
+        dosesFixas.forEach(h => cc.vline(h, { color: '#FFFFFF', width: 1.2, dash: [2, 2] }));
+        cc.swatches(ids.map(k => ({ label: rotE(k), color: corE(k) })), { y: 300 - 34, width: bc.width });
+        const chave = usaDiario ? 'Off' : 'LFP_high';
+        const pico = usaDiario ? perfil.peakOffHour : (() => {
+          let melhor = NaN, v = -Infinity;
+          (perfil.props[chave] || []).forEach((x, i) => { if (isFinite(x) && x > v) { v = x; melhor = perfil.hours[i]; } });
+          return melhor;
+        })();
+        node.appendChild(el('div', {
+          class: 'note', html: `<b>O que esta figura responde que a barra não responde.</b> ` +
+            (usaDiario
+              ? `A hora com maior proporção de OFF é <b>${isFinite(perfil.peakOffHour) ? f(perfil.peakOffHour, 1) + ' h' : '—'}</b> ` +
+                `(${isFinite(perfil.peakOffPct) ? f(perfil.peakOffPct, 0) + '% dos dias' : '—'}). ` +
+                `OFF concentrado antes da primeira dose sugere <i>delayed-on</i> ou OFF matinal; concentrado no fim da tarde, <i>wearing-off</i>; ` +
+                `espalhado por todo o dia, flutuação imprevisível. O total de horas é o mesmo nos três, a conduta não é.`
+              : `A hora com maior proporção de dias com beta acima do limiar é <b>${isFinite(pico) ? f(pico, 1) + ' h' : '—'}</b>. ` +
+                `Isto é o perfil do biomarcador, não do estado clínico — a leitura clínica depende da concordância medida no painel (d).`) +
+            ` ${perfil.note}.`
+        }));
+        node.appendChild(exportRow([
+          { label: '⤓ PNG perfil', fn: () => P.downloadCanvas(bc.canvas, 'F28c_perfil_circadiano') },
+          {
+            label: '⤓ CSV perfil', fn: () => P.downloadText(P.toCSV(perfil.hours.map((h, i) => {
+              const l = { hora: h, n_dias: perfil.nPerBin[i] };
+              ids.forEach(k => { l['pct_' + k] = perfil.props[k] ? perfil.props[k][i] : NaN; });
+              return l;
+            })), 'F28_perfil_circadiano.csv', 'text/csv')
+          }
+        ]));
+      }
+
+      /* ============ (d) diário × LFP na mesma grade ==================== */
+      if (temDiario && hemis.length) {
+        node.appendChild(el('h4', { class: 'qc-title', html: '<b>(d) O diário e o LFP na mesma grade — concordância auditável</b>' }));
+        const p = S.diary.parsed;
+        const hemiA = hemi || hemis[0];
+        const gd = C.diaryGrid(p.rows, { condition: cond || p.conditions[0], binMin: p.binMin });
+        const tl = C.timelineGrid(C.removeOutliersMAD(d.trend[hemiA], 'lfp', 4).kept, offMin(), {
+          binMin: p.binMin, thresholdMethod: metodo, pct: opt('F28', 'pct', 50), threshold: opt('F28', 'lim', 40)
+        });
+        const ag = (gd.ok && tl.ok) ? C.diaryVsLfpAgreement(gd, tl, {}) : { ok: false, reason: 'grades incompletas' };
+        if (!ag.ok) node.appendChild(el('div', { class: 'empty', text: ag.reason }));
+        else {
+          node.appendChild(table(['medida', 'valor', 'o que significa'], [
+            ['bins comparados', `${ag.n}`, `alinhamento ${ag.alignment} · confiança ${ag.alignmentConfidence}`],
+            ['concordância bruta', `${f(ag.agreement, 1)}%`, `esperada só pelo acaso: ${f(ag.expected, 1)}%`],
+            ['kappa de Cohen', `${f(ag.kappa, 3)}`, ag.kappaCI ? `IC 95% ${f(ag.kappaCI[0], 2)} a ${f(ag.kappaCI[1], 2)} — concordância ${ag.strength}` : ag.strength],
+            ['beta alto quando o diário diz OFF', `${f(ag.sensitivity, 1)}%`, `${ag.table.offHigh} de ${ag.table.offHigh + ag.table.offLow} bins de OFF`],
+            ['beta baixo quando o diário diz ON', `${f(ag.specificity, 1)}%`, `${ag.table.onLow} de ${ag.table.onHigh + ag.table.onLow} bins de ON`]
+          ]));
+          node.appendChild(el('div', {
+            class: ag.kappa >= 0.4 ? 'note' : 'warnbox',
+            html: `<b>Veredito: ${ag.verdict}.</b> ${ag.caveat}. Bins de sono ficaram de fora (${ag.nSleepBins}): ` +
+              `o beta cai no sono por razões que não têm a ver com levodopa, e incluí-los infla a concordância.`
+          }));
+        }
+      } else if (temDiario || hemis.length) node.appendChild(el('div', {
+        class: 'note', html: `<b>Sobreposição diário × LFP.</b> Com o diário <i>e</i> o Timeline carregados ao mesmo tempo, esta figura ` +
+          `mede célula a célula, na mesma grade, o quanto o beta acompanha o estado autorreportado — que é a verificação que torna ` +
+          `a concordância auditável em vez de assumida. ` +
+          (temDiario ? 'Falta um arquivo com BrainSense Timeline.' : 'Falta carregar o diário em CSV.')
+      }));
+    }
+  },
+
+  /* ----------------------------------------------------------------- F29 */
+  {
+    id: 'F29', title: 'Resposta à levodopa alinhada às tomadas',
+    sub: 'curva medida com IC por bootstrap · significância por surrogados de deslocamento circular',
+    has: d => Object.keys(d.trend).length && d.snapshots.length,
+    render(node, d) {
+      const hemis = Object.keys(d.trend);
+      const h = opt('F29', 'hemi', hemis[0]);
+      const pre = opt('F29', 'pre', 60), post = opt('F29', 'post', 240);
+      const doseInfo = C.doseMarkers(d.snapshots, offMin(), { pattern: /medica|levodopa|dose/i, eventName: opt('F29', 'ev', null) || undefined });
+      const nomes = Array.from(new Set(d.snapshots.map(s => s.name).filter(Boolean)));
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: 'STN ' + hname(x) })), h, v => setOpt('F29', 'hemi', v)),
+        ctrlSelect('evento de tomada', nomes.length ? nomes : ['—'], opt('F29', 'ev', '') || (doseInfo.ok ? doseInfo.doses[0].name : nomes[0]), v => setOpt('F29', 'ev', v)),
+        ctrlNumber('pré (min)', pre, 20, 180, 10, v => setOpt('F29', 'pre', v)),
+        ctrlNumber('pós (min)', post, 60, 480, 30, v => setOpt('F29', 'post', v))
+      ]));
+      if (!doseInfo.ok) return node.appendChild(el('div', { class: 'empty', html: `${doseInfo.reason}.` }));
+
+      const limpo = C.removeOutliersMAD(d.trend[h], 'lfp', 4).kept;
+      const rl = C.levodopaResponse(limpo, doseInfo.doses.map(x => x.t), offMin(), {
+        preMin: pre, postMin: post, binMin: 10, nSurrogates: 300, nBootstrap: 800
+      });
+      if (!rl.ok) return node.appendChild(el('div', { class: 'empty', text: rl.reason }));
+
+      const box = plotBox(node, 320);
+      const todos = rl.curve.concat(rl.ciLow, rl.ciHigh).filter(isFinite);
+      const ch = new P.Chart(box.canvas, {
+        width: box.width, height: 320, xlim: [-pre, post],
+        ylim: [Math.min.apply(null, todos) * 0.96, Math.max.apply(null, todos) * 1.04],
+        xlabel: 'minutos em relação à tomada marcada', ylabel: '% da linha de base pré-dose',
+        title: `resposta do beta à levodopa — STN ${hname(h)} · ${rl.nTrials} de ${rl.nDoses} tomadas com cobertura`,
+        pad: { l: 72, r: 14, t: 26, b: 46 }
+      });
+      ch.axes();
+      ch.span(-pre, 0, { color: COL.muted, alpha: .07, label: 'linha de base' });
+      ch.area(rl.offsets, rl.ciLow, rl.ciHigh, { color: hcol(h), alpha: .2, label: 'IC 95% (bootstrap)' });
+      ch.line(rl.offsets, rl.curve, { color: hcol(h), width: 2.6, label: 'mediana das tomadas' });
+      ch.hline(100, { color: COL.muted, dash: [2, 2] });
+      if (isFinite(rl.responseThresholdPct)) ch.hline(rl.responseThresholdPct, { color: COL.warn, dash: [5, 3], label: 'limiar de resposta' });
+      ch.vline(0, { color: COL.ink, width: 1.6, dash: null, label: 'tomada' });
+      if (rl.detected) {
+        if (isFinite(rl.latencyMin)) ch.vline(rl.latencyMin, { color: COL.accent, width: 1.2, dash: [3, 3], label: `latência ${rl.latencyMin} min` });
+        ch.marker(rl.timeToNadirMin, rl.nadirPct, { shape: 'o', size: 4, color: COL.accent, label: `nadir ${f(rl.dropPct, 0)}%` });
+      }
+      ch.legend({ x: ch.x1 - 190, y: ch.y1 + 6 });
+
+      node.appendChild(table(['medida', 'valor', 'como foi definida'], [
+        ['tomadas alinhadas', `${rl.nTrials} de ${rl.nDoses}`, `cobertura média de ${f(rl.coverage, 0)}% dos bins na janela −${pre}/+${post} min`],
+        ['queda máxima', `${f(rl.dropPct, 1)}%`, `nadir em ${rl.timeToNadirMin} min após a marca`],
+        ['significância', { html: pHtml(rl.p) }, `${rl.nSurrogates} surrogados por ${rl.surrogateMethod}`],
+        ['queda que o ritmo diurno já explica', isFinite(rl.surrogateDropPct) ? `${f(rl.surrogateDropPct, 1)}%` : '—', 'mediana da queda nos surrogados — é o piso contra o qual a queda observada tem de se destacar'],
+        ['latência', rl.detected && isFinite(rl.latencyMin) ? `${rl.latencyMin} min` : 'não reportada', rl.detected ? 'primeiro bin abaixo do limiar por dois bins seguidos' : 'só é reportada quando a curva se separa do acaso'],
+        ['duração do efeito', rl.detected && isFinite(rl.durationMin) ? `${rl.durationMin} min${rl.censored ? ' (censurado)' : ''}` : 'não reportada', 'trecho contíguo abaixo do limiar que contém o nadir'],
+        ['limiar de resposta', isFinite(rl.responseThresholdPct) ? `${f(rl.responseThresholdPct, 1)}%` : '—', `100 − 2·DP da própria curva antes da dose (DP = ${f(rl.baselineSD, 2)})`]
+      ]));
+      node.appendChild(el('div', {
+        class: rl.detected ? 'note' : 'warnbox',
+        html: `<b>${rl.detected ? 'Resposta detectada' : 'Sem resposta demonstrável'}.</b> ${rl.interpretation}.`
+      }));
+      node.appendChild(el('div', {
+        class: 'warnbox', html: `<b>Hora do dia e efeito da dose são confundíveis.</b> ${rl.confound}.`
+      }));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Por que surrogado por deslocamento circular.</b> O beta é fortemente autocorrelacionado: ` +
+          `sortear horas ao acaso destrói essa estrutura e faz qualquer queda parecer significativa. Deslocar todas as marcas ` +
+          `pelo mesmo intervalo preserva a autocorrelação e mantém o número e o espaçamento das tomadas — o que muda é só a fase. ` +
+          `Semente ${rl.seed}, ${rl.nBootstrap} reamostragens de bootstrap. <b>${rl.caveat}.</b>`
+      }));
+      node.appendChild(el('div', {
+        class: 'seal', text: `${doseInfo.n} tomadas marcadas em ${doseInfo.nDays} dias · mediana de ${f(doseInfo.dosesPerDay, 1)} por dia · ` +
+          (isFinite(doseInfo.medianIntervalH) ? `intervalo mediano de ${f(doseInfo.medianIntervalH, 1)} h · ` : 'sem duas tomadas no mesmo dia para estimar intervalo · ') +
+          doseInfo.note
+      }));
+      node.appendChild(exportRow([
+        { label: '⤓ PNG', fn: () => P.downloadCanvas(box.canvas, 'F29_resposta_levodopa') },
+        {
+          label: '⤓ CSV da curva', fn: () => P.downloadText(P.toCSV(rl.offsets.map((o, i) => ({
+            offset_min: o, mediana_pct: rl.curve[i], ic_baixo: rl.ciLow[i], ic_alto: rl.ciHigh[i],
+            q1: rl.q1[i], q3: rl.q3[i], n_tomadas: rl.nTrials, p: rl.p, limiar_pct: rl.responseThresholdPct,
+            hemisferio: h, semente: rl.seed
+          }))), 'F29_resposta_levodopa.csv', 'text/csv')
+        }
+      ]));
+    }
   }
 ];
 
@@ -3776,6 +4340,27 @@ async function carregaExterno(file) {
   }
   _renderizadas.delete('F24');
   renderFigureAsync('F24');
+}
+
+/* Diário de Hauser (Onda 9). O arquivo é lido no próprio navegador, como todo o
+   resto — e como ele não carrega identificador, nada precisa ser pseudonimizado
+   aqui: o esquema de colunas só tem rótulo de paciente, condição, dia e estado. */
+async function carregaDiario(file) {
+  Prog.begin('Carregando diário').expect(2);
+  try {
+    await Prog.step(`lendo ${file.name}`);
+    const texto = await lerTexto(file);
+    await Prog.step('interpretando colunas, bins e estados');
+    const out = await Trabalhador.chamar('parseDiaryCsv', [texto, {}]);
+    Instrumentacao.registra(`parseDiaryCsv ${file.name}`, out.ms, out.ondeRodou);
+    S.diary = { name: file.name, parsed: out.r };
+    await Prog.finish(out.r && out.r.ok ? `diário pronto — ${out.r.nRows} bins` : 'arquivo não reconhecido');
+  } catch (e) {
+    Prog.fail(e);
+    S.diary = { name: file.name, parsed: { ok: false, reason: String((e && e.message) || e) } };
+  }
+  ['F28', 'F29'].forEach(id => _renderizadas.delete(id));
+  renderFigureAsync('F28');
 }
 
 /* ---------------------------------------------------------- carregamento */
@@ -4527,5 +5112,5 @@ function init() {
 }
 document.addEventListener('DOMContentLoaded', init);
 /* hook de depuração (usado pela suíte de testes; inerte em produção) */
-window.__PLS__ = { FIGURES, buildProvenance, carregaExterno, exportarPacote, gerarPdfNativo, setIdioma, ds, invalidarDs, S, renderRail, renderFigure, renderFigureAsync, renderAllReady, handleFiles, offMin, exportBundle, exportBundleAsync, buildReportCover, Prog, proximoQuadro, setModo, modoAtual, figurasVisiveis, leiturasClinicas, leiturasClinicasAsync, PIPELINES, rodarPipeline, preencherSemaforo, inserirLeituras, Trabalhador, Instrumentacao };
+window.__PLS__ = { FIGURES, buildProvenance, carregaExterno, carregaDiario, painelMatriz, exportarPacote, gerarPdfNativo, setIdioma, ds, invalidarDs, S, renderRail, renderFigure, renderFigureAsync, renderAllReady, handleFiles, offMin, exportBundle, exportBundleAsync, buildReportCover, Prog, proximoQuadro, setModo, modoAtual, figurasVisiveis, leiturasClinicas, leiturasClinicasAsync, PIPELINES, rodarPipeline, preencherSemaforo, inserirLeituras, Trabalhador, Instrumentacao };
 })();

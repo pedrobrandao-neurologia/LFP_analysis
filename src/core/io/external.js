@@ -22,11 +22,11 @@
 
 import { median, quantile } from '../stats/descriptive.js';
 
-const DELIMS = [',', ';', '\t', '|'];
+export const DELIMS = [',', ';', '\t', '|'];
 
 /* Escolhe o delimitador pelo que produz mais colunas de forma CONSISTENTE nas
    primeiras linhas — contar só na primeira linha erra em arquivo com texto. */
-function detectaDelimitador(linhas) {
+export function detectaDelimitador(linhas) {
   let melhor = ',', melhorNota = -1;
   DELIMS.forEach(d => {
     const contas = linhas.slice(0, 12).map(l => l.split(d).length);
@@ -40,7 +40,7 @@ function detectaDelimitador(linhas) {
   return melhor;
 }
 
-const numero = s => {
+export const numero = s => {
   if (s == null) return NaN;
   const t = String(s).trim().replace(/^"|"$/g, '');
   if (!t) return NaN;

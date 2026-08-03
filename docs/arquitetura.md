@@ -31,12 +31,15 @@ src/core/
     distributions.js        logGamma, betacf, ibeta, fPValue, tPValue, normCDF, erf
     circadian.js            cosinor, olsSolve, cosinorBootstrap, circCI, rayleigh,
                             varianceByHour, diurnalProfile
-    events.js               eventAligned, permutationTest
+    events.js               eventAligned, permutationTest, permutationTwoSample
     states.js               detectStates, enforceMinDur, betaEnvelopeSeries, streamOnOff
   metrics/
     acute.js                pickSpectrum, spectralMetrics, burstMetrics, doseResponse, peakInBand
     chronic.js              mergeTrend, collectThresholds, chronicMetrics, thresholdSummary
     extract.js              extractMetrics, daysSince
+    diary.js                parseDiaryCsv, diaryGrid, dailyComposition, compareConditions,
+                            circadianStateProfile, timelineGrid, doseMarkers,
+                            diaryVsLfpAgreement, levodopaResponse, DIARY_STATES, LFP_STATES
 ```
 
 ## Regra de dependência
@@ -62,6 +65,7 @@ Estado atual (verificado):
 | `dsp/coherence.js` | `dsp/fft`, `dsp/nan`, `stats` |
 | `stats/cluster.js`, `stats/icc.js` | `stats` |
 | `metrics/control.js` | `io/parse`, `dsp/spectral`, `stats/cluster` |
+| `metrics/diary.js` | `io/parse`, `io/external` (leitor de CSV), `stats/states`, `stats/events` |
 | `metrics/longitudinal.js` | `stats`, `stats/icc`, `metrics/extract` |
 | `report/reading.js` | `profiles` (só o perfil; nenhuma dependência de DSP) |
 | `stats/optimize.js` | `stats` (Levenberg-Marquardt compartilhado por `dsp` e `adbs`) |
