@@ -57,6 +57,9 @@ Estado atual (verificado):
 | `stats/circadian.js`, `stats/events.js`, `stats/states.js` | `stats`, `dsp`, `io` |
 | `metrics/**` | `dsp`, `stats`, `io` |
 | `metrics/survey.js` | `dsp` (aperiódico), `metrics/acute`, `stats` |
+| `io/external.js` | `stats` (nenhuma dependência de `dsp`) |
+| `io/sync.js` | `dsp/filters`, `stats` |
+| `dsp/coherence.js` | `dsp/fft`, `dsp/nan`, `stats` |
 | `report/reading.js` | `profiles` (só o perfil; nenhuma dependência de DSP) |
 | `stats/optimize.js` | `stats` (Levenberg-Marquardt compartilhado por `dsp` e `adbs`) |
 | `dsp/multitaper.js`, `dsp/specparam.js`, `dsp/wavelet.js`, `dsp/pac.js`, `dsp/gamma.js` | `dsp`, `stats` |

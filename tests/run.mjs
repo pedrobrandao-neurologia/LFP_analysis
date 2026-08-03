@@ -1827,6 +1827,156 @@ sec('trabalho em segundo plano e instrumentação');
   });
 }
 
+/* ------------- sinal externo, sincronização e coerência (Onda 2.3) -------- */
+sec('sinal externo, sincronização e coerência');
+{
+  const FSX = 250, NX = FSX * 40;
+  let semX = 424242;
+  const rndX = () => { semX = (Math.imul(semX, 1664525) + 1013904223) >>> 0; return semX / 4294967296; };
+  const gX = () => { let u = 0, v = 0; while (u === 0) u = rndX(); while (v === 0) v = rndX(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+
+  /* par com fonte comum de 5 Hz e atraso conhecido no sinal externo */
+  const parComAtraso = atrasoMs => {
+    const dN = Math.round(atrasoMs * FSX / 1000);
+    const comum = new Float64Array(NX + dN);
+    let fase = 0;
+    for (let i = 0; i < comum.length; i++) {
+      fase += 2 * Math.PI * (5 + 0.3 * Math.sin(2 * Math.PI * 0.07 * i / FSX)) / FSX;
+      comum[i] = Math.sin(fase) * (1 + 0.5 * Math.sin(2 * Math.PI * 0.05 * i / FSX));
+    }
+    const lfp = new Float64Array(NX), ext = new Float64Array(NX);
+    for (let i = 0; i < NX; i++) { lfp[i] = 2 * comum[i + dN] + gX(); ext[i] = 1.5 * comum[i] + gX(); }
+    return { lfp, ext };
+  };
+
+  t('lê CSV genérico e declara delimitador, tempo, fs e irregularidade', () => {
+    const { ext } = parComAtraso(0);
+    const linhas = ['Time (s);Acc_X (g);EMG1 (mV)'];
+    for (let i = 0; i < 2000; i++) linhas.push([(i / FSX).toFixed(5), ext[i].toFixed(5), (0.2 * gX()).toFixed(5)].join(';'));
+    const p = C.parseExternalCsv(linhas.join('\n'));
+    assert(p.ok, 'não leu: ' + p.reason);
+    assert(p.delimiter === ';', 'delimitador: ' + p.delimiter);
+    assert(Math.abs(p.fs - FSX) < 0.5, 'fs: ' + p.fs);
+    assert(p.channels.length === 2, 'canais: ' + p.channels.length);
+    assert(p.channels[0].kind === 'imu' && p.channels[1].kind === 'emg', 'tipos: ' + p.channels.map(c => c.kind).join(','));
+    assert(p.channels[0].unit === 'g', 'unidade: ' + p.channels[0].unit);
+    assert(!p.absoluteTime && /relativo/.test(p.timeInterpretation), 'tempo: ' + p.timeInterpretation);
+    assert(p.warnings.some(w => /RELATIVA/.test(w)), 'não avisou sobre tempo relativo');
+    return `delim "${p.delimiter}" · ${p.fs} Hz · ${p.channels.map(c => c.name + '[' + c.kind + ']').join(', ')}`;
+  });
+
+  t('CSV com timestamp ISO e vírgula decimal também é lido', () => {
+    const linhas = ['timestamp,valor'];
+    const t0 = Date.parse('2026-03-01T10:00:00Z');
+    for (let i = 0; i < 500; i++) linhas.push(new Date(t0 + i * 4).toISOString() + ',' + String(Math.sin(i / 9).toFixed(4)).replace('.', ','));
+    const p = C.parseExternalCsv(linhas.join('\n'));
+    assert(p.ok, 'não leu: ' + p.reason);
+    assert(p.absoluteTime, 'não reconheceu tempo absoluto');
+    assert(Math.abs(p.fs - 250) < 1, 'fs: ' + p.fs);
+    assert(p.channels[0].nValid === 500, 'valores com vírgula decimal não foram lidos: ' + p.channels[0].nValid);
+    return `${p.timeInterpretation} · ${p.fs} Hz · ${p.channels[0].nValid} valores`;
+  });
+
+  t('linhas malformadas são descartadas com contagem, nunca remendadas', () => {
+    const linhas = ['t,v'];
+    for (let i = 0; i < 300; i++) linhas.push(i % 50 === 7 ? `${i / 250},1,2,3` : `${i / 250},${Math.sin(i / 7).toFixed(4)}`);
+    const p = C.parseExternalCsv(linhas.join('\n'));
+    assert(p.ok, 'não leu');
+    assert(p.nRowsDropped === 6, 'descartadas: ' + p.nRowsDropped);
+    assert(p.warnings.some(w => /descartada/.test(w)), 'não avisou sobre o descarte');
+    return `${p.nRowsDropped} linhas descartadas de 300`;
+  });
+
+  t('reamostragem não preenche lacuna: buraco vira NaN', () => {
+    const tMs = [], y = [];
+    for (let i = 0; i < 1000; i++) { const t = i * 4; if (t > 1200 && t < 2400) continue; tMs.push(t); y.push(Math.sin(i / 5)); }
+    const r = C.resampleUniform(tMs, y, 250, {});
+    assert(r, 'reamostragem falhou');
+    assert(r.nNaN > 200, 'a lacuna de 1,2 s não virou NaN: ' + r.nNaN);
+    return `${r.nNaN} amostras NaN (${r.pctNaN}%) na lacuna de 1,2 s`;
+  });
+
+  t('coerência declara o limiar da nula e não confunde ruído com acoplamento', () => {
+    const a = new Float64Array(NX), b = new Float64Array(NX);
+    for (let i = 0; i < NX; i++) { a[i] = gX(); b[i] = gX(); }
+    const coh = C.coherence(a, b, FSX, { nperseg: 512 });
+    const r = C.coherenceBand(coh, 3, 8);
+    assert(coh.expectedNullCoherence > 0, 'não declarou a coerência esperada sob a nula');
+    assert(!r.significant, `ruído independente deu significativo: pico ${r.peakCoherence} vs limiar ${r.thresholdBandCorrected}`);
+    assert(r.thresholdBandCorrected > r.threshold, 'o limiar da banda não é mais exigente que o por bin');
+    return `pico ${r.peakCoherence} < limiar corrigido ${r.thresholdBandCorrected} (por bin ${r.threshold}, nula ${coh.expectedNullCoherence})`;
+  });
+
+  t('coerência recupera o atraso conhecido entre os dois sinais', () => {
+    const erros = [20, 40, 60].map(atraso => {
+      const { lfp, ext } = parComAtraso(atraso);
+      const r = C.coherenceBand(C.coherence(lfp, ext, FSX, { nperseg: 512 }), 3, 8);
+      assert(r.significant, `atraso ${atraso} ms: coerência não significativa`);
+      return { atraso, medido: r.preferredLagMs, erro: Math.abs(r.preferredLagMs - atraso) };
+    });
+    const pior = Math.max.apply(null, erros.map(e => e.erro));
+    assert(pior < 5, 'erro de atraso: ' + pior.toFixed(1) + ' ms');
+    return erros.map(e => `${e.atraso}→${e.medido.toFixed(1)}`).join(' · ') + ` ms (pior erro ${pior.toFixed(1)} ms)`;
+  });
+
+  t('parte imaginária separa acoplamento com atraso de mistura instantânea', () => {
+    /* mistura instantânea: o mesmo sinal nos dois canais, sem atraso nenhum —
+       coerência alta e parte imaginária nula, que é a assinatura de condução
+       de volume ou referência comum */
+    const fonte = new Float64Array(NX);
+    let fase = 0;
+    for (let i = 0; i < NX; i++) { fase += 2 * Math.PI * 5 / FSX; fonte[i] = Math.sin(fase); }
+    const a = new Float64Array(NX), b = new Float64Array(NX);
+    for (let i = 0; i < NX; i++) { a[i] = fonte[i] + 0.5 * gX(); b[i] = 0.8 * fonte[i] + 0.5 * gX(); }
+    const inst = C.coherenceBand(C.coherence(a, b, FSX, { nperseg: 512 }), 3, 8);
+    const comAtraso = parComAtraso(40);
+    const atrasado = C.coherenceBand(C.coherence(comAtraso.lfp, comAtraso.ext, FSX, { nperseg: 512 }), 3, 8);
+    assert(inst.significant && atrasado.significant, 'os dois casos deveriam ser coerentes');
+    assert(inst.volumeConductionSuspected, 'mistura instantânea não foi sinalizada: fase ' + inst.phaseAtPeakDeg + '°, imag no pico ' + inst.imagAtPeak);
+    assert(!atrasado.volumeConductionSuspected, 'acoplamento com atraso foi confundido com condução de volume');
+    return `instantâneo: fase ${inst.phaseAtPeakDeg}°, imag ${inst.imagAtPeak} (sinalizado) · com atraso: fase ${atrasado.phaseAtPeakDeg}°, imag ${atrasado.imagAtPeak}`;
+  });
+
+  t('sincronização por artefato de estimulação casa os eventos', () => {
+    const la = new Float64Array(NX), ea = new Float64Array(NX);
+    const desl = Math.round(0.4 * FSX);
+    for (let i = 0; i < NX; i++) {
+      const onL = i > FSX * 10 && i < FSX * 25.2;
+      const onE = i > FSX * 10 + desl && i < FSX * 25.2 + desl;
+      la[i] = gX() * (onL ? 6 : 1);
+      ea[i] = gX() * (onE ? 5 : 1);
+    }
+    const st = C.alignByStimArtifact(la, ea, FSX, {});
+    assert(st.ok, 'não alinhou: ' + st.reason);
+    assert(Math.abs(st.lagMs - 400) < 300, 'deslocamento: ' + st.lagMs + ' ms (esperado ~400)');
+    assert(st.nEvents >= 2, 'eventos casados: ' + st.nEvents);
+    return `${st.nEvents} eventos, deslocamento ${st.lagMs} ms, dispersão ${st.spreadMs} ms, confiança ${st.confidence}`;
+  });
+
+  t('sincronização mal determinada é declarada mal determinada', () => {
+    const { lfp, ext } = parComAtraso(0);
+    const al = C.alignByCrossCorrelation(lfp, ext, FSX, { band: [3, 8], maxLagSec: 2, nSurrogates: 60 });
+    assert(al.ok, 'falhou: ' + al.reason);
+    assert(isFinite(al.peakHalfWidthMs), 'não reportou a largura do pico');
+    /* o envelope de um ritmo estreito dá pico largo — a incerteza precisa
+       aparecer, e a confiança não pode ser "alta" nessa situação */
+    if (al.peakHalfWidthMs > 100) assert(al.confidence !== 'alta',
+      `pico de ±${al.peakHalfWidthMs} ms declarado com confiança alta`);
+    assert(/incerteza/.test(al.caveat), 'a ressalva não menciona a incerteza');
+    return `lag ${al.lagMs} ms ± ${al.peakHalfWidthMs} ms · r ${al.correlation} · confiança ${al.confidence}`;
+  });
+
+  t('timestamp declarado é aceito, mas marcado como não verificado', () => {
+    const a = C.alignByTimestamp(1000, 1500);
+    assert(a.ok && a.lagMs === 500, 'deslocamento: ' + a.lagMs);
+    assert(a.confidence === 'não verificado', 'confiança: ' + a.confidence);
+    assert(/não são sincronizados/.test(a.caveat), 'a ressalva não explica o risco');
+    const b = C.alignByTimestamp(NaN, 1500);
+    assert(!b.ok, 'aceitou alinhar sem hora absoluta');
+    return 'aceito com ressalva; recusado quando falta hora absoluta';
+  });
+}
+
 /* ------------------------------------------------------------- resultado -- */
 console.log(`\n${'='.repeat(58)}`);
 console.log(`  ${ok} passaram   ${falhas} falharam   ${pulados} sem dados`);

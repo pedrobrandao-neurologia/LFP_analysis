@@ -300,6 +300,7 @@ const S = {
   opts: {},             // opções por figura
   profile: null,        // id do perfil de doença; null = sugerir pelo JSON
   symptomSeries: null,  // série clínica importada (distonia): [{t, v}]
+  external: null,       // sinal externo importado (Onda 2.3): {name, parsed}
   mode: 'clinico',      // 'clinico' | 'pesquisa' (Onda 8.1)
 };
 
@@ -2710,6 +2711,222 @@ const FIGURES = [
         }))), 'F22_gama.csv', 'text/csv') }
       ]));
     }
+  },
+
+  /* ----------------------------------------------------------------- F24 */
+  {
+    id: 'F24', title: 'Sinal externo — IMU, EMG ou ECG: alinhamento e coerência',
+    sub: 'importa CSV/TSV, sincroniza com o LFP e mede acoplamento com limiar corrigido',
+    has: d => d.bsTimeDomain.length || d.montageTD.length,
+    render(node, d) {
+      const tds = d.bsTimeDomain.concat(d.montageTD);
+      if (!tds.length) return node.appendChild(el('div', { class: 'empty', text: 'Sem sinal bruto de LFP para comparar.' }));
+
+      /* ---- importação ------------------------------------------------- */
+      const barra = el('div', { class: 'ctrls' });
+      const entrada = el('input', {
+        type: 'file', accept: '.csv,.tsv,.txt,text/csv', id: 'extFile',
+        style: 'display:none',
+        onchange: e => {
+          const f = e.target.files && e.target.files[0];
+          e.target.value = '';
+          if (f) carregaExterno(f);
+        }
+      });
+      barra.appendChild(entrada);
+      barra.appendChild(el('button', {
+        class: 'btn' + (S.external ? '' : ' primary'),
+        text: S.external ? '↻ trocar arquivo externo' : '+ carregar sinal externo (CSV/TSV)',
+        onclick: () => { const i = document.getElementById('extFile'); if (i) i.click(); }
+      }));
+      if (S.external) barra.appendChild(el('button', {
+        class: 'btn', text: '× remover',
+        onclick: () => { S.external = null; renderFigureAsync('F24'); }
+      }));
+      node.appendChild(barra);
+
+      if (!S.external) {
+        node.appendChild(el('div', {
+          class: 'empty', html:
+            `Carregue um arquivo <b>CSV ou TSV</b> com uma coluna de tempo e um ou mais canais numéricos — ` +
+            `acelerômetro/giroscópio (IMU), EMG de superfície, ECG ou qualquer sinal contínuo gravado em paralelo.<br><br>` +
+            `<b>Por que isto responde perguntas que o LFP sozinho não responde:</b> em tremor, saber se a oscilação do ` +
+            `STN é do cérebro ou é o próprio tremor entrando pelo eletrodo; em distonia cervical, se o pico teta-alfa do ` +
+            `GPi é biomarcador ou é o tremor cefálico de 1–6 Hz batendo em cima dele.<br><br>` +
+            `<span style="color:var(--ink-3)">O arquivo é lido no próprio navegador e não sai deste dispositivo, ` +
+            `como todo o resto.</span>`
+        }));
+        return;
+      }
+
+      const ext = S.external;
+      if (!ext.parsed.ok) return node.appendChild(el('div', {
+        class: 'warnbox', html: `<b>Não foi possível ler "${ext.name}".</b> ${ext.parsed.reason}.`
+      }));
+
+      const p = ext.parsed;
+      node.appendChild(table(['propriedade', 'valor', 'observação'], [
+        ['arquivo', ext.name, `${p.nSamples.toLocaleString('pt-BR')} amostras · ${f(p.durationSec, 1)} s`],
+        ['delimitador / cabeçalho', `"${p.delimiter}" · linha ${p.headerRow + 1}`, p.nRowsDropped ? `${p.nRowsDropped} linha(s) descartada(s)` : 'todas as linhas consistentes'],
+        ['coluna de tempo', `${p.timeColumnName || '#' + (p.timeColumn + 1)}`, p.timeInterpretation],
+        ['frequência de amostragem', `${f(p.fs, 2)} Hz`, `passo típico ${f(p.sampleIntervalMs, 3)} ms · irregularidade ${f(p.jitterPct, 1)}%`],
+        ['canais numéricos', String(p.channels.length), p.channels.map(c => `${c.name} (${c.kind})`).join(' · ')],
+        ['lacunas', String(p.gaps.length), p.gaps.length ? 'nada foi interpolado' : 'amostragem contínua']
+      ]));
+      p.warnings.forEach(w => node.appendChild(el('div', { class: 'warnbox', html: `<b>Atenção.</b> ${w}.` })));
+
+      /* ---- seleção e alinhamento -------------------------------------- */
+      const iLfp = opt('F24', 'lfp', 0);
+      const iExt = opt('F24', 'ch', 0);
+      const metodo = opt('F24', 'sync', p.absoluteTime ? 'timestamp' : 'xcorr');
+      const manualMs = opt('F24', 'manual', 0);
+      const cbLo = opt('F24', 'clo', 2), cbHi = opt('F24', 'chi', 12);
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('canal de LFP', tds.map((t, i) => ({ value: i, label: `${t.label} (${hname(t.hemisphere)})` })), iLfp, v => setOpt('F24', 'lfp', +v)),
+        ctrlSelect('canal externo', p.channels.map((c, i) => ({ value: i, label: `${c.name} [${c.kind}]` })), iExt, v => setOpt('F24', 'ch', +v)),
+        ctrlSelect('sincronização', [
+          { value: 'timestamp', label: 'timestamp declarado' },
+          { value: 'xcorr', label: 'correlação cruzada' },
+          { value: 'stim', label: 'artefato de estimulação' },
+          { value: 'manual', label: 'deslocamento manual' }
+        ], metodo, v => setOpt('F24', 'sync', v)),
+        ctrlNumber('deslocamento manual (ms)', manualMs, -60000, 60000, 50, v => setOpt('F24', 'manual', v)),
+        ctrlNumber('coerência de (Hz)', cbLo, 1, 60, 1, v => setOpt('F24', 'clo', v)),
+        ctrlNumber('coerência até (Hz)', cbHi, 2, 90, 1, v => setOpt('F24', 'chi', v))
+      ]));
+
+      const td = tds[Math.min(iLfp, tds.length - 1)];
+      const canal = p.channels[Math.min(iExt, p.channels.length - 1)];
+      const fsL = td.fsEff || td.fs;
+      qualitySeal(node, td);
+
+      /* o externo vai para a MESMA grade do LFP; sem isso, coerência não existe */
+      const re = C.resampleUniform(p.tMs, canal.data, fsL, {});
+      if (!re) return node.appendChild(el('div', { class: 'empty', text: 'Não foi possível reamostrar o canal externo para a frequência do LFP.' }));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Reamostragem.</b> O canal externo foi levado de ${f(p.fs, 1)} Hz para ` +
+          `${f(fsL, 1)} Hz (a do LFP), porque coerência exige a mesma grade temporal. ${re.note}; ` +
+          `${f(re.pctNaN, 2)}% das amostras ficaram NaN.`
+      }));
+
+      /* alinhamento */
+      let al = null;
+      const lfpDados = td.data;
+      if (metodo === 'timestamp') {
+        const t0L = td.firstPacketMs != null ? td.firstPacketMs : (td.t0 != null ? td.t0 : NaN);
+        al = C.alignByTimestamp(t0L, p.absoluteTime ? p.tMs[0] : NaN);
+      } else if (metodo === 'xcorr') {
+        al = C.alignByCrossCorrelation(lfpDados, re.data, fsL, { band: [cbLo, cbHi], maxLagSec: 5, nSurrogates: 150 });
+      } else if (metodo === 'stim') {
+        al = C.alignByStimArtifact(lfpDados, re.data, fsL, {});
+      } else {
+        al = { ok: true, method: 'deslocamento manual', lagMs: manualMs, confidence: 'informado pelo usuário', caveat: 'valor digitado; nenhuma verificação foi feita contra o sinal' };
+      }
+
+      node.appendChild(el('h4', { class: 'qc-title', html: '<b>Sincronização</b>' }));
+      if (!al.ok) node.appendChild(el('div', { class: 'warnbox', html: `<b>${al.method}: não foi possível alinhar.</b> ${al.reason}.` }));
+      else {
+        node.appendChild(table(['item', 'valor', 'o que sustenta'], [
+          ['método', al.method, al.confidence ? `confiança: ${al.confidence}` : '—'],
+          ['deslocamento', `${f(al.lagMs, 1)} ms`, isFinite(al.peakHalfWidthMs) ? `incerteza ±${f(al.peakHalfWidthMs, 0)} ms` : (al.nEvents ? `${al.nEvents} evento(s) em comum` : '—')],
+          ...(isFinite(al.correlation) ? [['correlação no pico', f(al.correlation, 3), `z = ${f(al.z, 2)} contra ${al.nSurrogates} surrogados, p = ${f(al.pEmpirical, 4)}`]] : []),
+          ...(isFinite(al.spreadMs) ? [['dispersão entre eventos', `${f(al.spreadMs, 0)} ms`, al.nEvents > 1 ? 'concordância entre eventos' : 'um único evento']] : [])
+        ]));
+        node.appendChild(el('div', {
+          class: (al.confidence === 'alta') ? 'note' : 'warnbox',
+          html: `<b>Ressalva do alinhamento.</b> ${al.caveat}`
+        }));
+      }
+
+      /* aplica o deslocamento e recorta a sobreposição */
+      const desloc = al.ok && isFinite(al.lagMs) ? Math.round(al.lagMs * fsL / 1000) : 0;
+      const n = Math.min(lfpDados.length, re.data.length);
+      const ini = Math.max(0, desloc), fim = Math.min(n, re.data.length - Math.max(0, -desloc));
+      const nComum = Math.max(0, fim - ini);
+      if (nComum < 4 * fsL) return node.appendChild(el('div', {
+        class: 'empty', text: `Depois do deslocamento de ${f(al.lagMs || 0, 0)} ms sobram menos de 4 s em comum entre os dois sinais — insuficiente para coerência.`
+      }));
+      const a = new Float64Array(nComum), b = new Float64Array(nComum);
+      for (let i = 0; i < nComum; i++) { a[i] = lfpDados[ini + i]; b[i] = re.data[ini + i - desloc]; }
+
+      /* ---- gráficos ---------------------------------------------------- */
+      const passo = Math.max(1, Math.floor(nComum / 1400));
+      const tx = [], ya = [], yb = [];
+      const na = C.nanStats(a), nb = C.nanStats(b);
+      const escA = na.n ? 1 : 1;
+      let maxA = 0, maxB = 0;
+      for (let i = 0; i < nComum; i++) { if (isFinite(a[i])) maxA = Math.max(maxA, Math.abs(a[i])); if (isFinite(b[i])) maxB = Math.max(maxB, Math.abs(b[i])); }
+      for (let i = 0; i < nComum; i += passo) { tx.push(i / fsL); ya.push(a[i] / (maxA || 1)); yb.push(b[i] / (maxB || 1)); }
+      const box = plotBox(node, 220);
+      const ch = new P.Chart(box.canvas, {
+        width: box.width, height: box.height, xlim: [0, nComum / fsL], ylim: [-2.4, 1.2],
+        xlabel: 'tempo (s)', ylabel: 'amplitude normalizada',
+        title: `(a) LFP e ${canal.name} depois do alinhamento (${f(al.lagMs || 0, 0)} ms)`,
+        pad: { l: 68, r: 14, t: 24, b: 42 }
+      });
+      ch.axes();
+      ch.line(tx, ya, { color: hcol(td.hemisphere), width: .9, label: `LFP ${td.label}` });
+      ch.line(tx, yb.map(v => v - 1.4), { color: COL.accent, width: .9, label: canal.name });
+      ch.legend({ x: ch.x1 - 150, y: ch.y1 + 6 });
+
+      /* coerência */
+      const coh = C.coherence(a, b, fsL, { nperseg: Math.min(1024, Math.pow(2, Math.floor(Math.log2(nComum / 4)))), overlap: .5 });
+      if (!coh.cxy) return node.appendChild(el('div', { class: 'empty', text: coh.reason }));
+      const resumo = C.coherenceBand(coh, cbLo, cbHi);
+
+      const fmaxG = Math.min(60, fsL / 2);
+      const idx = []; for (let i = 0; i < coh.f.length; i++) if (coh.f[i] <= fmaxG) idx.push(i);
+      const b2 = plotBox(node, 250);
+      const ch2 = new P.Chart(b2.canvas, {
+        width: b2.width, height: b2.height, xlim: [0, fmaxG], ylim: [0, 1],
+        xlabel: 'frequência (Hz)', ylabel: 'coerência (Cxy)',
+        title: `(b) coerência LFP × ${canal.name} — ${coh.nSegments} segmentos (${coh.nSegmentsEffective} efetivos)`,
+        pad: { l: 62, r: 14, t: 24, b: 42 }
+      });
+      ch2.axes();
+      ch2.span(cbLo, Math.min(cbHi, fmaxG), { color: COL.accent, alpha: .08, label: 'banda avaliada' });
+      ch2.line(idx.map(i => coh.f[i]), idx.map(i => coh.cxy[i]), { color: COL.ink, width: 1.5, label: 'coerência' });
+      ch2.line(idx.map(i => coh.f[i]), idx.map(i => Math.abs(coh.imagCoherency[i])), { color: COL.warn, width: 1.2, dash: [4, 3], label: '|parte imaginária|' });
+      ch2.hline(coh.significanceThreshold, { color: COL.muted, dash: [3, 3], label: 'limiar por bin' });
+      if (resumo) ch2.hline(resumo.thresholdBandCorrected, { color: COL.right, dash: [5, 3], label: 'limiar corrigido' });
+      ch2.legend({ x: ch2.x1 - 160, y: ch2.y1 + 6 });
+
+      if (resumo) {
+        node.appendChild(table(['métrica', 'valor', 'o que significa'], [
+          ['coerência de pico', `${f(resumo.peakCoherence, 3)} em ${f(resumo.peakHz, 2)} Hz`, resumo.significant ? 'acima do limiar corrigido' : 'abaixo do limiar corrigido'],
+          ['coerência média na banda', f(resumo.meanCoherence, 3), `mediana ${f(resumo.medianCoherence, 3)}`],
+          ['limiar por bin', f(resumo.threshold, 3), `sob a nula, ${coh.nSegmentsEffective} segmentos efetivos dão ${f(coh.expectedNullCoherence, 3)} em média`],
+          ['limiar corrigido para a banda', f(resumo.thresholdBandCorrected, 3), `correção de Šidák sobre os ${resumo.nBins} bins da banda`],
+          ['fase e parte imaginária no pico', `${f(resumo.phaseAtPeakDeg, 0)}° · imag ${f(resumo.imagAtPeak, 3)}`, resumo.volumeConductionSuspected ? 'fase praticamente zero — compatível com condução de volume ou referência comum' : 'há defasagem real, incompatível com mistura instantânea'],
+          ['atraso estimado', isFinite(resumo.preferredLagMs) ? `${f(resumo.preferredLagMs, 1)} ms` : '—', `${resumo.preferredLagSource}; ambíguo a cada ${f(resumo.lagAmbiguityMs, 0)} ms`]
+        ]));
+        node.appendChild(el('div', {
+          class: resumo.significant && !resumo.volumeConductionSuspected ? 'note' : 'warnbox',
+          html: `<b>Leitura.</b> ${resumo.interpretation}.`
+        }));
+      }
+
+      node.appendChild(exportRow([
+        { label: '⤓ PNG alinhamento', fn: () => P.downloadCanvas(box.canvas, 'F24a_alinhamento') },
+        { label: '⤓ PNG coerência', fn: () => P.downloadCanvas(b2.canvas, 'F24b_coerencia') },
+        {
+          label: '⤓ CSV coerência', fn: () => P.downloadText(P.toCSV(idx.map(i => ({
+            hz: +coh.f[i].toFixed(4), coerencia: +coh.cxy[i].toFixed(6),
+            fase_rad: +coh.phaseRad[i].toFixed(6), imaginaria: +coh.imagCoherency[i].toFixed(6),
+            limiar_bin: coh.significanceThreshold, n_segmentos: coh.nSegments,
+            metodo_sync: al.method, deslocamento_ms: al.lagMs
+          }))), 'F24_coerencia.csv', 'text/csv')
+        }
+      ]));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Três armadilhas tratadas aqui.</b> ` +
+          `(1) Coerência é <b>inflada por poucos segmentos</b>: sob a nula ela vale 1/L, não zero — com ` +
+          `${coh.nSegmentsEffective} segmentos efetivos, dois ruídos independentes dariam ${f(coh.expectedNullCoherence, 3)}. ` +
+          `(2) Tomar o máximo sobre os bins da banda é comparação múltipla; o limiar corrigido acima já leva isso em conta. ` +
+          `(3) <b>Condução de volume e referência comum</b> produzem coerência de fase zero sem interação nenhuma — ` +
+          `por isso a parte imaginária vem sempre junto, porque só sobrevive nela o que teve atraso de propagação.`
+      }));
+    }
   }
 ];
 
@@ -3162,6 +3379,25 @@ async function renderAll(titulo) {
     if (proprio) Prog.fail(e);
     throw e;
   }
+}
+
+/* Carrega o CSV/TSV de um sinal externo (IMU, EMG, ECG) e reabre a F24. */
+async function carregaExterno(file) {
+  Prog.begin('Carregando sinal externo').expect(2);
+  try {
+    await Prog.step(`lendo ${file.name}`);
+    const texto = await lerTexto(file);
+    await Prog.step('interpretando colunas, tempo e frequência de amostragem');
+    const out = await Trabalhador.chamar('parseExternalCsv', [texto, {}]);
+    Instrumentacao.registra(`parseExternalCsv ${file.name}`, out.ms, out.ondeRodou);
+    S.external = { name: file.name, parsed: out.r };
+    await Prog.finish(out.r && out.r.ok ? 'sinal externo pronto' : 'arquivo não reconhecido');
+  } catch (e) {
+    Prog.fail(e);
+    S.external = { name: file.name, parsed: { ok: false, reason: String((e && e.message) || e) } };
+  }
+  _renderizadas.delete('F24');
+  renderFigureAsync('F24');
 }
 
 /* ---------------------------------------------------------- carregamento */
@@ -3663,5 +3899,5 @@ function init() {
 }
 document.addEventListener('DOMContentLoaded', init);
 /* hook de depuração (usado pela suíte de testes; inerte em produção) */
-window.__PLS__ = { FIGURES, buildProvenance, ds, invalidarDs, S, renderRail, renderFigure, renderFigureAsync, renderAllReady, handleFiles, offMin, exportBundle, exportBundleAsync, buildReportCover, Prog, proximoQuadro, setModo, modoAtual, figurasVisiveis, leiturasClinicas, leiturasClinicasAsync, PIPELINES, rodarPipeline, preencherSemaforo, inserirLeituras, Trabalhador, Instrumentacao };
+window.__PLS__ = { FIGURES, buildProvenance, carregaExterno, ds, invalidarDs, S, renderRail, renderFigure, renderFigureAsync, renderAllReady, handleFiles, offMin, exportBundle, exportBundleAsync, buildReportCover, Prog, proximoQuadro, setModo, modoAtual, figurasVisiveis, leiturasClinicas, leiturasClinicasAsync, PIPELINES, rodarPipeline, preencherSemaforo, inserirLeituras, Trabalhador, Instrumentacao };
 })();

@@ -155,6 +155,7 @@ A coluna **Leitura clínica** resume, em uma frase, o que cada figura diz ao mé
 | **F20** | **Wavelet de Morlet — escalograma e bursts delimitados** | `BrainSenseTimeDomain` | As rajadas **onde começam e onde terminam**, e se a duração medida é do cérebro ou da escolha de resolução. |
 | **F21** | **PAC — acoplamento fase-amplitude e comodulograma** | `BrainSenseTimeDomain` (fs ≥ 250 Hz) | Se a **amplitude do gama acompanha a fase do beta** — marcador de interação entre ritmos, elevado no OFF. |
 | **F22** | **Gama finamente sintonizada vs. entrained em f_stim/2** | qualquer espectro que chegue a 95 Hz | Se um pico de gama é **endógeno** (associado a ON/discinesia) ou **eco da própria estimulação**. |
+| **F24** | **Sinal externo (IMU/EMG/ECG) — alinhamento e coerência** | `BrainSenseTimeDomain` + CSV/TSV externo | Se a oscilação do LFP é **do cérebro** ou é o próprio movimento entrando pelo eletrodo. |
 
 Cada figura exporta PNG e os dados subjacentes em CSV.
 
@@ -375,6 +376,43 @@ fixa, reprodutível) e o p empírico. Junto roda a **checagem de forma de onda**
 de Cole & Voytek), porque uma onda não senoidal gera harmônicos que se acoplam à própria
 fundamental — PAC espúrio, sem nenhuma interação entre redes. Validação: z = 24 em sinal acoplado
 simulado, z ≈ 0 no controle sem acoplamento.
+
+**Sinal externo, sincronização e coerência (F24)** — várias perguntas de LFP só se respondem com
+um segundo sinal. Em tremor: a oscilação do STN é do cérebro ou é o próprio tremor entrando pelo
+eletrodo? Em distonia cervical: o pico teta-alfa do GPi é biomarcador ou é o tremor cefálico de
+1–6 Hz batendo em cima dele? O importador lê CSV/TSV de qualquer origem (Delsys, APDM/Opal,
+planilha, gravador genérico), descobre delimitador, cabeçalho, coluna de tempo e canais, e declara
+a **frequência de amostragem inferida e a irregularidade dela**. Nada é interpolado: lacuna vira
+NaN, linha malformada é descartada com contagem, unidade não declarada fica desconhecida.
+
+*Sincronização* — três caminhos, do mais confiável ao menos, e o escolhido sai sempre declarado
+com a evidência que o sustenta:
+
+| método | como | quando confiar |
+| --- | --- | --- |
+| artefato de estimulação | liga/desliga produz um degrau nos **dois** sinais — é o mesmo evento físico | com ≥ 2 eventos concordando dentro de dezenas de ms |
+| correlação cruzada de envelopes | procura o deslocamento que maximiza a correlação, testado contra surrogados | só quando o pico se destaca do nulo **e** é estreito |
+| timestamp declarado | diferença entre as horas dos arquivos | nunca, sem confirmação — os relógios não são sincronizados entre si |
+
+A correlação cruzada reporta a **largura do pico** como incerteza do alinhamento: o envelope de um
+ritmo estreito é liso, então o máximo é raso e o deslocamento fica mal determinado mesmo com
+correlação de 0,9. Reportar só o máximo esconderia isso.
+
+*Coerência* — três armadilhas, todas tratadas:
+
+1. **Coerência é inflada por poucos segmentos.** Sob a hipótese nula ela vale 1/L, não zero: com 4
+   segmentos, dois ruídos independentes dão Cxy ≈ 0,25, que parece "coerência moderada". O limiar
+   `1 − α^(1/(L−1))` sai sempre junto, com L corrigido para a sobreposição das janelas.
+2. **Tomar o máximo sobre os bins da banda é comparação múltipla.** Há um segundo limiar, corrigido
+   por Šidák sobre o número de bins — sem ele, ruído puro passa quase metade das vezes.
+3. **Condução de volume e referência comum** produzem coerência com fase zero sem interação
+   nenhuma. A **parte imaginária** da coerência (Nolte et al.) só sobrevive onde houve atraso de
+   propagação, e é avaliada **na frequência em que há coerência**, não no seu próprio máximo ao
+   longo da banda — onde a coerência é ruído, a parte imaginária também é.
+
+Validado contra ground truth: atraso conhecido de 20, 40 e 60 ms recuperado com erro máximo de
+**2,8 ms**; mistura instantânea sinalizada (fase 0,7°, imaginária 0,011) e acoplamento com atraso
+não confundido com ela (fase 71°, imaginária 0,94); ruído independente **não** dá significativo.
 
 **Gama endógena vs. entrained (F22)** — dois fenômenos na mesma faixa com leituras clínicas
 **opostas**: a gama finamente sintonizada (60–90 Hz) acompanha o estado ON e discinesia; a gama
