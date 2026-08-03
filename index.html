@@ -324,9 +324,21 @@ footer.foot{padding:24px 20px 40px;text-align:center;font:11px/1.7 var(--mono);c
   font:10.5px/1.5 var(--mono);max-width:270px;box-shadow:0 5px 16px rgba(14,26,36,.28)}
 .svtip b{font-weight:600;color:#fff}
 .svtip i{font-style:normal;color:#A9BCC9}
+
+/* ---------- acessibilidade (Onda 8.2) ---------- */
+.skip{position:absolute;left:-9999px;top:0;z-index:100;background:var(--ink);color:#fff;
+  padding:9px 14px;border-radius:0 0 4px 0;font:12px/1 var(--mono);text-decoration:none}
+.skip:focus{left:0}
+main:focus{outline:none}
+canvas:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.svbox canvas{outline-offset:-2px}
+/* contraste mínimo do texto auxiliar: --ink-3 sobre --panel dá 4,6:1 */
+.exphint,.legendrow,.proc-log{color:var(--ink-2)}
 </style>
 </head>
 <body>
+
+<a class="skip" href="#figs">ir para as figuras</a>
 
 <div class="spine" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
 
@@ -342,7 +354,13 @@ footer.foot{padding:24px 20px 40px;text-align:center;font:11px/1.7 var(--mono);c
       <button type="button" id="modoClinico" data-modo="clinico">clínico</button>
       <button type="button" id="modoPesquisa" data-modo="pesquisa">pesquisa</button>
     </div>
-    <label class="field">fuso
+    <label class="field" id="labIdioma">idioma
+      <select id="idioma" aria-label="idioma da interface">
+        <option value="pt">português</option>
+        <option value="en">English</option>
+      </select>
+    </label>
+    <label class="field" id="labFuso">fuso
       <select id="tz">
         <option value="auto">do arquivo</option>
         <option value="-120">UTC−02 (BRT verão)</option>
@@ -364,8 +382,8 @@ footer.foot{padding:24px 20px 40px;text-align:center;font:11px/1.7 var(--mono);c
 </header>
 
 <div class="wrap">
-  <aside class="rail" id="rail"></aside>
-  <main id="figs"></main>
+  <aside class="rail" id="rail" aria-label="painel do registro"></aside>
+  <main id="figs" tabindex="-1" aria-label="figuras da análise"></main>
 </div>
 
 <!-- Painel de processamento: anuncia cada etapa ANTES de executá-la e registra
@@ -4837,6 +4855,442 @@ function writeEdf(signals, opts) {
   };
 }
 
+/* ---------- core/export/pdf.js ---------- */
+/* export/pdf.js — escritor de PDF do zero.
+
+   POR QUE. Até aqui o relatório saía por `window.print()`: o resultado dependia
+   do navegador, da impressora virtual e das margens que o usuário tinha
+   configurado, e num mesmo computador dois cliques podiam produzir arquivos
+   diferentes. Um relatório que vai para prontuário ou para material suplementar
+   precisa ser o MESMO arquivo sempre. Aqui o PDF é escrito byte a byte.
+
+   O QUE ESTÁ IMPLEMENTADO: PDF 1.4, páginas A4, texto em Helvetica e
+   Helvetica-Bold (fontes base-14, que não precisam ser embutidas), quebra de
+   linha com as LARGURAS REAIS dos glifos, tabelas simples, e figuras embutidas
+   como JPEG via filtro DCTDecode — o canvas já entrega JPEG, então a imagem
+   entra sem recodificação e sem precisar de deflate.
+
+   CODIFICAÇÃO. O texto sai em WinAnsiEncoding, que cobre o Latin-1 inteiro e
+   portanto todo o português. Os poucos sinais tipográficos fora do Latin-1 que
+   este software usa (travessão, aspas curvas, reticências, ≥, ≤, ×, ·) são
+   mapeados para o equivalente WinAnsi ou para um substituto ASCII — e o que
+   ainda assim não couber vira '?', em vez de corromper o deslocamento do
+   arquivo.
+
+   O QUE NÃO ESTÁ: compressão de fluxo (exigiria deflate, e a dependência zero
+   vale aqui também), fontes embutidas, PDF/A. O arquivo é maior do que
+   precisaria ser; em troca, é escrito sem nenhuma biblioteca.
+
+   Referência: ISO 32000-1 (PDF 1.7), seções 7 (sintaxe) e 9 (texto).        */
+
+/* Larguras da Helvetica em milésimos de em, ASCII 32–126. */
+const W_REG = [278,278,355,556,556,889,667,191,333,333,389,584,278,333,278,278,556,556,556,556,556,556,556,556,556,556,278,278,584,584,584,556,1015,667,667,722,722,667,611,778,722,278,500,667,556,833,722,778,667,778,722,667,611,722,667,944,667,667,611,278,278,278,469,556,333,556,556,500,556,556,278,556,556,222,222,500,222,833,556,556,556,556,333,500,278,556,500,722,500,500,500,334,260,334,584];
+const W_BOLD = [278,333,474,556,556,889,722,238,333,333,389,584,278,333,278,278,556,556,556,556,556,556,556,556,556,556,333,333,584,584,584,611,975,722,722,722,722,667,611,778,722,278,556,722,611,833,722,778,667,778,722,667,611,722,667,944,667,667,611,333,278,333,584,556,333,556,611,556,611,556,333,611,611,278,278,556,278,889,611,611,611,611,389,556,333,611,556,778,556,556,500,389,280,389,584];
+
+/* Fora do Latin-1: mapeia para o byte WinAnsi correspondente, ou para ASCII. */
+const MAPA = {
+  '—': '\x97', '–': '\x96', '‘': '\x91', '’': '\x92',
+  '“': '\x93', '”': '\x94', '…': '\x85', '•': '\x95',
+  '≥': '>=', '≤': '<=', '≈': '~', '·': '\xB7',
+  '→': '->', '←': '<-', '×': '\xD7', 'χ': 'chi',
+  'β': 'beta', 'α': 'alfa', 'θ': 'teta', 'δ': 'delta',
+  'γ': 'gama', 'μ': '\xB5', '²': '\xB2', '³': '\xB3',
+  '⁰': '0', '°': '\xB0', '−': '-', ' ': ' ',
+  '●': '*', '✓': 'v', '✗': 'x', '↧': '', '⤓': '', '▸': '>', '▶': '>',
+  '↔': '<->', '↑': '^', '↓': 'v', '≠': '!=', '∈': 'em', '∞': 'inf',
+  'ρ': 'rho', 'η': 'eta', 'τ': 'tau', 'σ': 'sigma', 'λ': 'lambda', 'ω': 'omega',
+  'φ': 'phi', 'Δ': 'delta', 'Σ': 'soma', 'π': 'pi', 'ψ': 'psi', 'ε': 'epsilon',
+  '½': '\xBD', '¼': '\xBC', '¾': '\xBE', '‰': '\x89', '†': '\x86', '‡': '\x87',
+  '\u2212': '-', '\u2009': ' ', '\u200B': '', '\u00AD': ''
+};
+
+/* Diagnóstico: quais caracteres de um texto NÃO têm representação e virariam
+   '?'. Existe para que a lacuna do mapa seja mensurável em teste, e não
+   descoberta por alguém lendo o PDF. */
+function unmappedChars(txt) {
+  const fora = new Set();
+  for (const ch of String(txt == null ? '' : txt)) {
+    if (ch.codePointAt(0) < 256) continue;
+    if (MAPA[ch] != null) continue;
+    fora.add(ch);
+  }
+  return Array.from(fora);
+}
+
+/* Converte para bytes WinAnsi. Devolve string cujos códigos são todos < 256. */
+function winAnsi(txt) {
+  let out = '';
+  for (const ch of String(txt == null ? '' : txt)) {
+    const c = ch.codePointAt(0);
+    if (c < 256) { out += ch; continue; }
+    out += (MAPA[ch] != null) ? MAPA[ch] : '?';
+  }
+  return out;
+}
+const escapa = s => s.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+
+/* Largura de um texto, em pontos. */
+function textWidth(txt, size, bold) {
+  const tab = bold ? W_BOLD : W_REG;
+  let w = 0;
+  const s = winAnsi(txt);
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    w += (c >= 32 && c <= 126) ? tab[c - 32] : 556;   /* acentuadas ≈ base */
+  }
+  return w * size / 1000;
+}
+
+/* Quebra o texto em linhas que cabem em `larg`. */
+function quebra(txt, size, bold, larg) {
+  const palavras = String(txt).split(/\s+/).filter(Boolean);
+  const linhas = [];
+  let atual = '';
+  palavras.forEach(p => {
+    const teste = atual ? atual + ' ' + p : p;
+    if (textWidth(teste, size, bold) <= larg) atual = teste;
+    else {
+      if (atual) linhas.push(atual);
+      /* palavra sozinha maior que a linha: corta */
+      let resto = p;
+      while (textWidth(resto, size, bold) > larg && resto.length > 1) {
+        let n = resto.length;
+        while (n > 1 && textWidth(resto.slice(0, n), size, bold) > larg) n--;
+        linhas.push(resto.slice(0, n)); resto = resto.slice(n);
+      }
+      atual = resto;
+    }
+  });
+  if (atual) linhas.push(atual);
+  return linhas.length ? linhas : [''];
+}
+
+/* Decodifica um data URL de JPEG para bytes. */
+function jpegDeDataUrl(url) {
+  const i = String(url).indexOf(',');
+  if (i < 0) return null;
+  const bin = (typeof atob === 'function') ? atob(url.slice(i + 1))
+    : Buffer.from(url.slice(i + 1), 'base64').toString('binary');
+  const b = new Uint8Array(bin.length);
+  for (let k = 0; k < bin.length; k++) b[k] = bin.charCodeAt(k);
+  return b;
+}
+
+/* buildPdf(doc) → Uint8Array
+   doc: {
+     title, subtitle, footer,
+     blocks: [ {type:'h1'|'h2'|'p'|'kv'|'table'|'note'|'pagebreak', ...} ],
+     figures: [ {id, title, dataUrl, width, height, caption} ]
+   }                                                                          */
+function buildPdf(doc) {
+  doc = doc || {};
+  const A4 = { w: 595.28, h: 841.89 };
+  const M = { l: 48, r: 48, t: 54, b: 52 };
+  const larguraUtil = A4.w - M.l - M.r;
+
+  const paginas = [];           /* cada uma: { ops: [], imagens: [refIdx] } */
+  let ops = [], imagensDaPagina = [];
+  let y = A4.h - M.t;
+  const imagens = [];           /* {bytes, w, h} */
+
+  const novaPagina = () => {
+    paginas.push({ ops, imagens: imagensDaPagina });
+    ops = []; imagensDaPagina = []; y = A4.h - M.t;
+  };
+  const espaco = h => { if (y - h < M.b) novaPagina(); };
+  const texto = (s, size, bold, cor, x) => {
+    const t = escapa(winAnsi(s));
+    ops.push(`BT /${bold ? 'F2' : 'F1'} ${size} Tf ${cor || '0 0 0'} rg ${(x == null ? M.l : x).toFixed(2)} ${y.toFixed(2)} Td (${t}) Tj ET`);
+  };
+  const paragrafo = (s, opt) => {
+    opt = opt || {};
+    const size = opt.size || 9.5, bold = !!opt.bold, lh = size * 1.38;
+    const larg = larguraUtil - (opt.indent || 0);
+    quebra(s, size, bold, larg).forEach(l => {
+      espaco(lh);
+      texto(l, size, bold, opt.color, M.l + (opt.indent || 0));
+      y -= lh;
+    });
+  };
+  const regra = () => {
+    espaco(8);
+    ops.push(`0.78 0.83 0.86 RG 0.7 w ${M.l} ${y.toFixed(2)} m ${(A4.w - M.r).toFixed(2)} ${y.toFixed(2)} l S`);
+    y -= 8;
+  };
+
+  /* capa */
+  texto(doc.title || 'Relatório', 17, true); y -= 22;
+  if (doc.subtitle) { texto(doc.subtitle, 9.5, false, '0.35 0.42 0.48'); y -= 16; }
+  regra();
+
+  (doc.blocks || []).forEach(b => {
+    if (b.type === 'pagebreak') { novaPagina(); return; }
+    if (b.type === 'h1') { espaco(26); y -= 8; texto(b.text, 13, true); y -= 17; regra(); return; }
+    if (b.type === 'h2') { espaco(20); y -= 5; texto(b.text, 10.5, true, '0.05 0.20 0.30'); y -= 15; return; }
+    if (b.type === 'p') { paragrafo(b.text, { size: b.size || 9.5 }); y -= 4; return; }
+    if (b.type === 'note') {
+      paragrafo(b.text, { size: 8.4, color: '0.30 0.38 0.44', indent: 8 });
+      y -= 5; return;
+    }
+    if (b.type === 'kv') {
+      (b.rows || []).forEach(([k, v]) => {
+        const lh = 12.6;
+        const larguraChave = 132;
+        const linhas = quebra(String(v == null ? '—' : v), 9, false, larguraUtil - larguraChave);
+        espaco(lh * linhas.length);
+        texto(String(k), 9, false, '0.42 0.50 0.56');
+        linhas.forEach((l, i) => {
+          if (i > 0) y -= lh;
+          texto(l, 9, false, '0 0 0', M.l + larguraChave);
+        });
+        y -= lh;
+      });
+      y -= 5; return;
+    }
+    if (b.type === 'table') {
+      const cols = b.cols || [], linhas = b.rows || [];
+      const n = cols.length || 1;
+      const larguras = b.widths && b.widths.length === n
+        ? b.widths.map(w => w * larguraUtil)
+        : new Array(n).fill(larguraUtil / n);
+      const lh = 12;
+      espaco(lh * 2);
+      let x = M.l;
+      cols.forEach((c, i) => { texto(String(c), 8.2, true, '0.28 0.36 0.42', x); x += larguras[i]; });
+      y -= 4;
+      ops.push(`0.78 0.83 0.86 RG 0.6 w ${M.l} ${y.toFixed(2)} m ${(A4.w - M.r).toFixed(2)} ${y.toFixed(2)} l S`);
+      y -= lh - 2;
+      linhas.forEach(linha => {
+        /* altura da linha = maior número de linhas quebradas entre as células */
+        const celulas = linha.map((c, i) => quebra(String(c == null ? '' : c), 8.2, false, larguras[i] - 6));
+        const alt = lh * Math.max.apply(null, celulas.map(c => c.length));
+        espaco(alt);
+        let xx = M.l;
+        celulas.forEach((cel, i) => {
+          cel.forEach((l, j) => texto(l, 8.2, false, '0 0 0', xx, y - j * lh));
+          /* o texto acima usa o y corrente; desenha manualmente cada linha */
+          xx += larguras[i];
+        });
+        /* redesenha corretamente cada sublinha (o helper `texto` usa `y` global) */
+        ops.length = ops.length - celulas.reduce((a, c) => a + c.length, 0);
+        xx = M.l;
+        celulas.forEach((cel, i) => {
+          cel.forEach((l, j) => {
+            const t = escapa(winAnsi(l));
+            ops.push(`BT /F1 8.2 Tf 0 0 0 rg ${xx.toFixed(2)} ${(y - j * lh).toFixed(2)} Td (${t}) Tj ET`);
+          });
+          xx += larguras[i];
+        });
+        y -= alt;
+      });
+      y -= 8; return;
+    }
+  });
+
+  /* figuras: uma por página, escalada para caber */
+  (doc.figures || []).forEach(fig => {
+    const bytes = jpegDeDataUrl(fig.dataUrl);
+    if (!bytes) return;
+    novaPagina();
+    texto(`${fig.id} — ${fig.title || ''}`, 11.5, true); y -= 18;
+    if (fig.caption) { paragrafo(fig.caption, { size: 8.6, color: '0.30 0.38 0.44' }); y -= 4; }
+    const dispW = larguraUtil;
+    const escala = Math.min(dispW / fig.width, (y - M.b) / fig.height);
+    const w = fig.width * escala, h = fig.height * escala;
+    const idx = imagens.length;
+    imagens.push({ bytes, w: fig.width, h: fig.height });
+    imagensDaPagina.push(idx);
+    ops.push(`q ${w.toFixed(2)} 0 0 ${h.toFixed(2)} ${M.l.toFixed(2)} ${(y - h).toFixed(2)} cm /Im${idx} Do Q`);
+    y -= h + 10;
+  });
+  novaPagina();
+
+  /* rodapé com número de página em todas */
+  paginas.forEach((pg, i) => {
+    const t = escapa(winAnsi(`${doc.footer || 'Percept LFP Studio'}  ·  página ${i + 1} de ${paginas.length}`));
+    pg.ops.push(`BT /F1 7.6 Tf 0.45 0.52 0.58 rg ${M.l} ${(M.b - 22).toFixed(2)} Td (${t}) Tj ET`);
+  });
+
+  /* ---------------- montagem do arquivo ---------------------------------- */
+  const objetos = [];                        /* strings ou {bin: Uint8Array} */
+  const add = o => { objetos.push(o); return objetos.length; };   /* 1-based */
+
+  const idCatalogo = add(null);              /* reservado */
+  const idPaginas = add(null);
+  const idF1 = add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
+  const idF2 = add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>');
+
+  const idImagens = imagens.map(im => add({
+    dict: `<< /Type /XObject /Subtype /Image /Width ${im.w} /Height ${im.h} ` +
+      `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${im.bytes.length} >>`,
+    bin: im.bytes
+  }));
+
+  const idsPagina = [];
+  paginas.forEach(pg => {
+    const conteudo = pg.ops.join('\n');
+    const idConteudo = add({ dict: `<< /Length ${winAnsi(conteudo).length} >>`, texto: conteudo });
+    const xobj = pg.imagens.length
+      ? ' /XObject << ' + pg.imagens.map(i => `/Im${i} ${idImagens[i]} 0 R`).join(' ') + ' >>'
+      : '';
+    idsPagina.push(add(
+      `<< /Type /Page /Parent ${idPaginas} 0 R /MediaBox [0 0 ${A4.w.toFixed(2)} ${A4.h.toFixed(2)}] ` +
+      `/Resources << /Font << /F1 ${idF1} 0 R /F2 ${idF2} 0 R >>${xobj} >> /Contents ${idConteudo} 0 R >>`));
+  });
+
+  objetos[idCatalogo - 1] = `<< /Type /Catalog /Pages ${idPaginas} 0 R >>`;
+  objetos[idPaginas - 1] = `<< /Type /Pages /Count ${idsPagina.length} /Kids [${idsPagina.map(i => i + ' 0 R').join(' ')}] >>`;
+
+  /* serializa */
+  const partes = [];
+  let tamanho = 0;
+  const empurra = s => {
+    if (typeof s === 'string') {
+      const b = new Uint8Array(s.length);
+      for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i) & 0xff;
+      partes.push(b); tamanho += b.length;
+    } else { partes.push(s); tamanho += s.length; }
+  };
+
+  empurra('%PDF-1.4\n%\xE2\xE3\xCF\xD3\n');
+  const offsets = new Array(objetos.length + 1).fill(0);
+  objetos.forEach((o, i) => {
+    offsets[i + 1] = tamanho;
+    empurra(`${i + 1} 0 obj\n`);
+    if (o && o.bin) { empurra(o.dict + '\nstream\n'); empurra(o.bin); empurra('\nendstream\n'); }
+    else if (o && o.texto != null) { empurra(o.dict + '\nstream\n' + winAnsi(o.texto) + '\nendstream\n'); }
+    else empurra(String(o) + '\n');
+    empurra('endobj\n');
+  });
+  const inicioXref = tamanho;
+  let xref = `xref\n0 ${objetos.length + 1}\n0000000000 65535 f \n`;
+  for (let i = 1; i <= objetos.length; i++) xref += String(offsets[i]).padStart(10, '0') + ' 00000 n \n';
+  empurra(xref);
+  empurra(`trailer\n<< /Size ${objetos.length + 1} /Root ${idCatalogo} 0 R >>\nstartxref\n${inicioXref}\n%%EOF\n`);
+
+  const out = new Uint8Array(tamanho);
+  let off = 0;
+  partes.forEach(p => { out.set(p, off); off += p.length; });
+  return {
+    bytes: out,
+    meta: {
+      pages: paginas.length, objects: objetos.length, images: imagens.length,
+      bytes: out.length, pageSize: 'A4', fonts: ['Helvetica', 'Helvetica-Bold'],
+      note: 'PDF 1.4 sem compressão de fluxo; imagens embutidas como JPEG (DCTDecode). ' +
+        'Texto em WinAnsiEncoding, que cobre todo o português.'
+    }
+  };
+}
+
+/* ---------- core/i18n/index.js ---------- */
+/* i18n/index.js — dois idiomas na interface.
+
+   ESCOPO, DECLARADO. Estão traduzidos: a moldura da interface (cabeçalho,
+   painéis, botões, painel de processo, primeiros passos), os TÍTULOS e
+   subtítulos das figuras, os rótulos de exportação e as mensagens de estado.
+   NÃO estão traduzidos: os textos metodológicos dentro de cada figura, as
+   leituras em linguagem clínica e as ressalvas — são centenas de parágrafos com
+   terminologia que muda de sentido em tradução apressada, e uma tradução ruim
+   num texto que explica limitação metodológica é pior do que texto em outro
+   idioma. A interface avisa isso ao trocar de idioma, em vez de deixar o
+   usuário descobrir sozinho.
+
+   `t(chave)` devolve a própria chave quando não há tradução — sumir em silêncio
+   é como dicionário incompleto vira tela em branco.                          */
+
+const IDIOMAS = [
+  { id: 'pt', label: 'português' },
+  { id: 'en', label: 'English' }
+];
+
+const DIC = {
+  pt: {},
+  en: {
+    'STN · potenciais de campo local · análise local': 'STN · local field potentials · local analysis',
+    'fuso': 'time zone', 'do arquivo': 'from file',
+    '⤓ CSV para R': '⤓ CSV for R', 'imprimir / PDF': 'print / PDF',
+    '+ carregar JSON': '+ load JSON', '+ pasta': '+ folder',
+    'clínico': 'clinical', 'pesquisa': 'research',
+    'Arquivos': 'Files', 'Registro em análise': 'Record under analysis',
+    'Matriz de dados': 'Data matrix', 'Registro': 'Record',
+    'Perfil de doença': 'Disease profile', 'Exportar': 'Export',
+    'Qualidade do sinal': 'Signal quality', 'Pipelines de um clique': 'One-click pipelines',
+    'modalidade': 'modality', 'presente (n)': 'present (n)', 'ausente': 'absent',
+    'identificador': 'identifier', 'diagnóstico': 'diagnosis', 'dispositivo': 'device',
+    'implante': 'implant', 'alvos': 'targets', 'bateria': 'battery',
+    'perfil de doença': 'disease profile', 'fuso aplicado': 'time zone applied',
+    'Soltar arquivos JSON aqui': 'Drop JSON files here',
+    'ou clicar para escolher · vários de uma vez': 'or click to choose · several at once',
+    'dados presentes': 'data present', 'sem dados': 'no data',
+    'remover': 'remove', 'Primeiros passos': 'Getting started', 'entendi': 'got it',
+    'Processando': 'Processing', 'preparando…': 'preparing…', 'concluído': 'done',
+    'pronto': 'ready', 'no total': 'total', 'falhou': 'failed',
+    'ocultar': 'hide', 'ocultar painel de processamento': 'hide processing panel',
+    'Espectro de potência anotado e varredura do Survey': 'Annotated power spectrum and Survey sweep',
+    'Decomposição periódico / aperiódico': 'Periodic / aperiodic decomposition',
+    'Integridade de eletrodos': 'Electrode integrity',
+    'Linha do tempo da sessão e parâmetros': 'Session timeline and parameters',
+    'Mapa da montagem — canal × frequência': 'Montage map — channel × frequency',
+    'Domínio do tempo — traçado, espectrograma e bursts': 'Time domain — trace, spectrogram and bursts',
+    'Streaming com estimulação — potência × amplitude': 'Streaming with stimulation — power × amplitude',
+    'Timeline crônico — série temporal multi-dia': 'Chronic Timeline — multi-day time series',
+    'Ritmo circadiano — heatmap, perfil polar e cosinor': 'Circadian rhythm — heatmap, polar profile and cosinor',
+    'Resposta alinhada a evento': 'Event-aligned response',
+    'Distribuição da potência e limiares de aDBS': 'Power distribution and aDBS thresholds',
+    'Espectros por tipo de evento': 'Spectra by event type',
+    'Estados ON/OFF pela amplitude do beta': 'ON/OFF states from beta amplitude',
+    'Limpeza de artefato cardíaco — três métodos e validação': 'Cardiac artifact removal — three methods and validation',
+    'QC — reprodutibilidade do pico entre registros': 'QC — peak reproducibility across recordings',
+    'Painel de controle de qualidade': 'Quality control panel',
+    'Espectro multitaper com intervalo de confiança': 'Multitaper spectrum with confidence interval',
+    'specparam completo — reta ou joelho, largura dos picos, R²': 'Full specparam — fixed or knee, peak width, R²',
+    'Wavelet de Morlet — escalograma e bursts delimitados': 'Morlet wavelet — scalogram and bracketed bursts',
+    'Acoplamento fase-amplitude (PAC) e comodulograma': 'Phase-amplitude coupling (PAC) and comodulogram',
+    'Gama finamente sintonizada vs. gama entrained em f_stim/2': 'Finely-tuned gamma vs. entrained gamma at f_stim/2',
+    'aDBS — elegibilidade e simulador de limiar': 'aDBS — eligibility and threshold simulator',
+    'Sinal externo — IMU, EMG ou ECG: alinhamento e coerência': 'External signal — IMU, EMG or ECG: alignment and coherence',
+    'Actograma e banda-controle — o ritmo é específico?': 'Actogram and control band — is the rhythm specific?',
+    'Longitudinal — impedância, confiabilidade e uso do aparelho': 'Longitudinal — impedance, reliability and device usage',
+    'Coorte — todos os registros carregados lado a lado': 'Cohort — all loaded records side by side',
+    '⤓ Relatório PDF': '⤓ PDF report', '⤓ Relatório clínico (PDF)': '⤓ Clinical report (PDF)',
+    '⤓ JSON para estatística': '⤓ JSON for statistics',
+    '⤓ CSV — métricas agudas': '⤓ CSV — acute metrics',
+    '⤓ CSV — métricas crônicas': '⤓ CSV — chronic metrics',
+    '⤓ CSV — Timeline bruto': '⤓ CSV — raw Timeline',
+    '⤓ Todas as figuras (PNG)': '⤓ All figures (PNG)',
+    '⤓ Manifesto de proveniência': '⤓ Provenance manifest',
+    '⤓ Pacote completo (.zip)': '⤓ Complete package (.zip)',
+    'escopo da tradução': 'translation scope'
+  }
+};
+
+let atual = 'pt';
+function setLanguage(id) { atual = DIC[id] ? id : 'pt'; return atual; }
+function getLanguage() { return atual; }
+function t(chave) {
+  if (chave == null) return '';
+  const d = DIC[atual];
+  if (!d) return String(chave);
+  const v = d[chave];
+  return v == null ? String(chave) : v;
+}
+function translationCoverage() {
+  return {
+    languages: IDIOMAS.map(l => l.id),
+    nKeys: Object.keys(DIC.en).length,
+    scope: 'moldura da interface, títulos e subtítulos de figura, rótulos de exportação e mensagens de estado',
+    outOfScope: 'textos metodológicos dentro das figuras, leituras em linguagem clínica e ressalvas',
+    reason: 'uma tradução apressada de texto que explica limitação metodológica é pior do que texto em outro idioma',
+    notice: {
+      pt: 'A moldura da interface e os títulos das figuras mudam de idioma. Os textos metodológicos dentro de cada ' +
+        'figura, as leituras em linguagem clínica e as ressalvas permanecem em português.',
+      en: 'The interface frame and figure titles change language. The methodological text inside each figure, the ' +
+        'plain-language readings and the caveats remain in Portuguese — translating them badly would be worse than ' +
+        'leaving them in the original language.'
+    }
+  };
+}
+
 /* ---------- core/export/bids.js ---------- */
 /* export/bids.js — exportação em estrutura BIDS-like (iEEG).
 
@@ -8922,6 +9376,8 @@ function fitDoseResponse(ma, power, opts) {
 
 
 
+
+
 const API = {
   parsePercept, parsePerceptText, MODALITIES, BANDS, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId,
   fft, nextPow2, welchPSD, spectrogram, bandpassFFT, hilbertEnvelope, detectBursts, fitAperiodic,
@@ -8948,7 +9404,9 @@ const API = {
   generateChecklist, checklistDocx, CHECKLIST_ITEMS,
   /* leituras em linguagem clínica e semáforo de QC (Onda 8.1) */
   clinicalReadings, qcTrafficLight,
-  makeZip, makeDocx, crc32, writeEdf, buildBidsLike,
+  makeZip, makeDocx, crc32, writeEdf, buildBidsLike, buildPdf, textWidth, unmappedChars,
+  /* idiomas (Onda 8.2) */
+  t, setLanguage, getLanguage, IDIOMAS, translationCoverage,
   /* fidelidade e QC (Ondas 1.3 e 2.2 — L03, L04, L06, L13–L17, L19) */
   inferDeviceState, statesComparable,
   dstTransitions, detectOffsetBreaks, resolveOffsets, segmentByOffset,
@@ -9050,6 +9508,14 @@ class Chart {
     this.ctx.fillStyle = this.theme.panel;
     this.ctx.fillRect(0, 0, this.w, this.h);
     this._legend = [];
+    /* Acessibilidade: um <canvas> é opaco para leitor de tela. O título do
+       gráfico e os eixos viram o texto alternativo — não substitui a figura,
+       mas diz o que ela é, e é o que o WCAG pede como mínimo. */
+    try {
+      canvas.setAttribute('role', 'img');
+      const partes = [this.title, this.xlabel ? 'eixo x: ' + this.xlabel : '', this.ylabel ? 'eixo y: ' + this.ylabel : ''];
+      canvas.setAttribute('aria-label', partes.filter(Boolean).join(' — ') || 'gráfico');
+    } catch (e) { /* ambiente sem DOM (testes) */ }
   }
   get x0() { return this.pad.l; }
   get x1() { return this.w - this.pad.r; }
@@ -9324,6 +9790,13 @@ class Chart {
 /* ====================================================== GRÁFICO POLAR ==== */
 function polarBars(canvas, values, o) {
   o = o || {};
+  /* mesma acessibilidade dos gráficos cartesianos: o polar também é um canvas
+     opaco para leitor de tela */
+  try {
+    canvas.setAttribute('role', 'img');
+    canvas.setAttribute('aria-label', (o.title || 'gráfico polar') +
+      (isFinite(o.acrophaseHours) ? ` — acrofase em ${(+o.acrophaseHours).toFixed(1)} h` : ''));
+  } catch (e) { }
   const dpr = Math.min(root.devicePixelRatio || 1, 2);
   const W = o.width || canvas.getBoundingClientRect().width || 320;
   const H = o.height || W;
@@ -9712,7 +10185,12 @@ const S = {
   symptomSeries: null,  // série clínica importada (distonia): [{t, v}]
   external: null,       // sinal externo importado (Onda 2.3): {name, parsed}
   mode: 'clinico',      // 'clinico' | 'pesquisa' (Onda 8.1)
+  lang: 'pt',           // 'pt' | 'en' (Onda 8.2)
 };
+
+/* Atalho de tradução. Devolve a própria chave quando não há tradução — o texto
+   em português é preferível a um espaço em branco. */
+const t = k => C.t(k);
 
 /* ============================================= preferências de interface ==
    APENAS preferências de interface — o modo de uso e a dispensa do tutorial.
@@ -9745,6 +10223,33 @@ function setModo(m) {
   marcarModo();
   renderAll(m === 'clinico' ? 'Modo clínico' : 'Modo pesquisa');
 }
+function setIdioma(id) {
+  S.lang = C.setLanguage(id);
+  salvarPref('idioma', S.lang);
+  aplicarIdiomaMoldura();
+  renderAll(S.lang === 'en' ? 'Switching language' : 'Trocando de idioma');
+}
+/* A moldura fora de #rail e #figs não é redesenhada pelo renderAll: é aqui. */
+function aplicarIdiomaMoldura() {
+  const set = (sel, txt) => { const n = document.querySelector(sel); if (n) n.textContent = txt; };
+  set('.brand span', t('STN · potenciais de campo local · análise local'));
+  set('#btnExport', t('⤓ CSV para R'));
+  set('#btnPrint', t('imprimir / PDF'));
+  set('#btnPasta', t('+ pasta'));
+  const carregar = document.querySelector('.tools .btn.primary');
+  if (carregar) carregar.textContent = t('+ carregar JSON');
+  const lf = document.getElementById('labFuso');
+  if (lf && lf.firstChild) lf.firstChild.nodeValue = t('fuso') + ' ';
+  const auto = document.querySelector('#tz option[value="auto"]');
+  if (auto) auto.textContent = t('do arquivo');
+  ['clinico', 'pesquisa'].forEach(m => {
+    const b = document.getElementById('modo' + m[0].toUpperCase() + m.slice(1));
+    if (b) b.textContent = t(m === 'clinico' ? 'clínico' : 'pesquisa');
+  });
+  const sel = document.getElementById('idioma');
+  if (sel) sel.value = S.lang;
+}
+
 function marcarModo() {
   ['clinico', 'pesquisa'].forEach(m => {
     const b = document.getElementById('modo' + m[0].toUpperCase() + m.slice(1));
@@ -12825,7 +13330,7 @@ function renderRail() {
          ressalvas — é o que sai da consulta. */
       const grid1 = el('div', { class: 'exportgrid' });
       grid1.appendChild(el('div', { class: 'exportitem' }, [
-        el('button', { class: 'btn primary', text: '⤓ Relatório clínico (PDF)', onclick: generateReport }),
+        el('button', { class: 'btn primary', text: t('⤓ Relatório clínico (PDF)'), onclick: gerarPdfNativo }),
         el('span', { class: 'exphint', text: 'capa com as leituras em linguagem simples, as seis figuras e as ressalvas de cada número' })
       ]));
       be.appendChild(grid1);
@@ -12839,7 +13344,8 @@ function renderRail() {
     }
     const grid = el('div', { class: 'exportgrid' });
     [
-      ['⤓ Relatório PDF', 'todas as figuras + resumo de métricas', generateReport, 'primary'],
+      ['⤓ Relatório PDF', 'arquivo escrito pelo próprio software — igual em qualquer navegador', gerarPdfNativo, 'primary'],
+      ['⤓ Relatório pela impressora', 'usa a caixa de impressão do navegador (layout depende dela)', generateReport],
       ['⤓ JSON para estatística', 'variáveis-chave por sessão · paciente · implante', exportJSON],
       ['⤓ CSV — métricas agudas', 'pico β, aperiódico, bursts (sessão × hemisfério)', exportAcuteCSV],
       ['⤓ CSV — métricas crônicas', 'circadiano e limiares de aDBS (Timeline)', exportChronicCSV],
@@ -12990,8 +13496,8 @@ async function renderFigures() {
     det.appendChild(el('summary', {}, [el('header', {}, [
       el('span', { class: 'chev', text: '▸' }),
       el('span', { class: 'id', text: fig.id }),
-      el('span', { class: 'ttl' }, [el('b', { text: fig.title }), el('span', { text: fig.sub })]),
-      el('span', { class: 'state', text: ok ? 'dados presentes' : 'sem dados' })
+      el('span', { class: 'ttl' }, [el('b', { text: t(fig.title) }), el('span', { text: fig.sub })]),
+      el('span', { class: 'state', text: ok ? t('dados presentes') : t('sem dados') })
     ])]));
     det.appendChild(el('div', { class: 'content', id: 'content-' + fig.id }));
     /* cálculo sob demanda: abrir uma figura pesada mostra o aviso antes de
@@ -13711,6 +14217,114 @@ function buildReportCover(b) {
   wrap.appendChild(el('div', { class: 'rc-figtitle', text: 'Figuras' }));
   return wrap;
 }
+/* ------------------------------------- relatório em PDF NATIVO (Onda 8.2) --
+   O `window.print()` produzia um arquivo diferente conforme o navegador, a
+   impressora virtual e as margens configuradas. Aqui o PDF é escrito byte a
+   byte pelo próprio software: o mesmo registro gera o mesmo arquivo sempre. */
+async function gerarPdfNativo() {
+  if (!S.files.length) return alert('Carregue ao menos um Session Report antes de gerar o relatório.');
+  Prog.begin('Gerando PDF');
+  try {
+    await renderAllReady();
+    Prog.expect(3);
+    await Prog.step('calculando as métricas e as leituras');
+    const b = await exportBundleAsync();
+    let leituras = null;
+    try { leituras = await leiturasClinicasAsync(); } catch (e) { Prog.falhaEtapa(String(e && e.message || e)); }
+
+    await Prog.step('montando o documento');
+    const perfil = activeProfile();
+    const s0 = b ? b.subject : {};
+    const off = offMin();
+    const blocos = [];
+    blocos.push({
+      type: 'kv', rows: [
+        ['identificador', s0.id], ['diagnóstico', s0.diagnosis],
+        ['dispositivo', `${s0.device_model || '—'} · fw ${s0.firmware || '—'}`],
+        ['data de implante', s0.implant_date],
+        ['alvos', (s0.targets || []).map(x => `${(x.hemisphere || '')[0]}:${x.target}`).join('  ')],
+        ['perfil de doença', `${perfil.label} · banda primária ${perfil.primaryBand.label} (${perfil.primaryBand.lo}–${perfil.primaryBand.hi} Hz)`],
+        ['fuso aplicado', `UTC${off >= 0 ? '+' : '-'}${String(Math.floor(Math.abs(off) / 60)).padStart(2, '0')}:${String(Math.abs(off) % 60).padStart(2, '0')}`],
+        ['sessões', String((b && b.sessions.length) || 0)]
+      ]
+    });
+    if (leituras) {
+      blocos.push({ type: 'h1', text: 'Leitura em linguagem clínica' });
+      const sf = leituras.semaforo;
+      blocos.push({ type: 'p', text: `Qualidade do sinal — ${sf.rotulo}. ${sf.frase}` });
+      leituras.readings.forEach(l => {
+        blocos.push({ type: 'h2', text: l.titulo });
+        blocos.push({ type: 'p', text: l.frase });
+        if (l.numeros) blocos.push({ type: 'note', text: l.numeros });
+        if (l.parametro) blocos.push({ type: 'note', text: 'parâmetros usados: ' + l.parametro });
+        if (l.ressalva) blocos.push({ type: 'note', text: 'Ressalva. ' + l.ressalva });
+      });
+      blocos.push({ type: 'note', text: leituras.disclaimer });
+    }
+    if (b && b.acute.length) {
+      blocos.push({ type: 'h1', text: 'Métricas agudas — por sessão e hemisfério' });
+      blocos.push({
+        type: 'table',
+        cols: ['hemisfério', 'sessão', 'd. impl.', 'pico (Hz)', 'pico?', 'aperiódico', 'burst/s', 'dur. (ms)'],
+        widths: [0.13, 0.16, 0.09, 0.12, 0.09, 0.14, 0.12, 0.15],
+        rows: b.acute.map(r => [hname(r.hemisphere), r.session_date_local || '—', r.days_since_implant,
+          r.beta_peak_hz, r.has_beta_peak ? 'sim' : 'não', r.aperiodic_exponent, r.burst_rate_hz, r.burst_mean_ms])
+      });
+    }
+    if (b && b.chronic.length) {
+      blocos.push({ type: 'h1', text: 'Métricas crônicas (Timeline) — por hemisfério' });
+      blocos.push({
+        type: 'table',
+        cols: ['hemisfério', 'dias (n)', 'MESOR', 'amp. 24 h', 'acrofase', 'p*', '<lim %', 'entre %', '>lim %'],
+        widths: [0.13, 0.13, 0.11, 0.12, 0.11, 0.12, 0.09, 0.1, 0.09],
+        rows: b.chronic.map(r => [hname(r.hemisphere), `${r.n_days} (${r.n_points})`, r.mesor, r.amp_24h,
+          isFinite(r.acrophase_24h) ? r.acrophase_24h + ' h' : '—',
+          isFinite(r.cosinor_p_adj_ar1) ? (r.cosinor_p_adj_ar1 < 0.001 ? '<0,001' : r.cosinor_p_adj_ar1.toFixed(3)) : '—',
+          r.pct_below, r.pct_between, r.pct_above])
+      });
+    }
+    blocos.push({
+      type: 'note',
+      text: 'Ferramenta de pesquisa e apoio à decisão. Não substitui o julgamento clínico nem o software regulado ' +
+        'do fabricante. Todos os parâmetros efetivos desta análise estão no manifesto de proveniência.'
+    });
+
+    /* figuras: o canvas já entrega JPEG, que entra no PDF sem recodificação */
+    const d2 = ds();
+    const figs = [];
+    figurasVisiveis().forEach(fig => {
+      if (!fig.has(d2)) return;
+      const no = document.getElementById('content-' + fig.id);
+      const cvs = no ? Array.from(no.querySelectorAll('canvas')) : [];
+      cvs.forEach((cv, j) => {
+        try {
+          figs.push({
+            id: fig.id + (cvs.length > 1 ? ` (${j + 1}/${cvs.length})` : ''),
+            title: fig.title, dataUrl: cv.toDataURL('image/jpeg', 0.9),
+            width: cv.width, height: cv.height,
+            caption: j === 0 ? fig.sub : ''
+          });
+        } catch (e) { /* canvas vazio: segue */ }
+      });
+    });
+
+    await Prog.step(`escrevendo o PDF (${figs.length} figuras)`);
+    const pdf = C.buildPdf({
+      title: 'Relatório de análise de LFP subtalâmico',
+      subtitle: `Percept LFP Studio · registro ${s0.id || '—'} · gerado em ${new Date().toLocaleString('pt-BR')}`,
+      footer: 'Percept LFP Studio — ferramenta de pesquisa e apoio à decisão',
+      blocks: blocos, figures: figs
+    });
+    const blob = new Blob([pdf.bytes], { type: 'application/pdf' });
+    const a = document.createElement('a');
+    a.download = `relatorio_${s0.id || 'analise'}.pdf`;
+    a.href = URL.createObjectURL(blob); a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 8000);
+    await Prog.finish(`PDF com ${pdf.meta.pages} páginas`);
+    return pdf.meta;
+  } catch (e) { Prog.fail(e); }
+}
+
 async function generateReport() {
   if (!S.files.length) return alert('Carregue ao menos um Session Report antes de gerar o relatório.');
   Prog.begin('Gerando relatório PDF');
@@ -13738,7 +14352,27 @@ async function generateReport() {
 function init() {
   const prefs = lerPrefs();
   if (prefs.modo === 'clinico' || prefs.modo === 'pesquisa') S.mode = prefs.modo;
+  if (prefs.idioma) S.lang = C.setLanguage(prefs.idioma);
   marcarModo();
+  aplicarIdiomaMoldura();
+  const si = document.getElementById('idioma');
+  if (si) si.addEventListener('change', e => setIdioma(e.target.value));
+
+  /* Robustez: erro não tratado em qualquer lugar aparece no painel de processo
+     em vez de sumir no console. Falha visível é corrigível; falha silenciosa
+     vira "o programa não fez nada". */
+  window.addEventListener('error', ev => {
+    if (!ev || !ev.message) return;
+    Prog.begin('Erro inesperado').expect(1);
+    Prog.rotulo = String(ev.message);
+    Prog.fail(new Error(`${ev.message}${ev.filename ? ' (' + String(ev.filename).split('/').pop() + ':' + ev.lineno + ')' : ''}`));
+  });
+  window.addEventListener('unhandledrejection', ev => {
+    const m = ev && ev.reason ? (ev.reason.message || String(ev.reason)) : 'promessa rejeitada';
+    Prog.begin('Erro inesperado').expect(1);
+    Prog.rotulo = m;
+    Prog.fail(new Error(m));
+  });
   $('#fileInput').addEventListener('change', e => { handleFiles(e.target.files); e.target.value = ''; });
   $('#btnExport').addEventListener('click', exportSession);
   $('#btnPrint').addEventListener('click', generateReport);
@@ -13776,7 +14410,7 @@ function init() {
 }
 document.addEventListener('DOMContentLoaded', init);
 /* hook de depuração (usado pela suíte de testes; inerte em produção) */
-window.__PLS__ = { FIGURES, buildProvenance, carregaExterno, exportarPacote, ds, invalidarDs, S, renderRail, renderFigure, renderFigureAsync, renderAllReady, handleFiles, offMin, exportBundle, exportBundleAsync, buildReportCover, Prog, proximoQuadro, setModo, modoAtual, figurasVisiveis, leiturasClinicas, leiturasClinicasAsync, PIPELINES, rodarPipeline, preencherSemaforo, inserirLeituras, Trabalhador, Instrumentacao };
+window.__PLS__ = { FIGURES, buildProvenance, carregaExterno, exportarPacote, gerarPdfNativo, setIdioma, ds, invalidarDs, S, renderRail, renderFigure, renderFigureAsync, renderAllReady, handleFiles, offMin, exportBundle, exportBundleAsync, buildReportCover, Prog, proximoQuadro, setModo, modoAtual, figurasVisiveis, leiturasClinicas, leiturasClinicasAsync, PIPELINES, rodarPipeline, preencherSemaforo, inserirLeituras, Trabalhador, Instrumentacao };
 })();
 </script>
 </body>

@@ -12,6 +12,8 @@
 </head>
 <body>
 
+<a class="skip" href="#figs">ir para as figuras</a>
+
 <div class="spine" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
 
 <header class="top">
@@ -26,7 +28,13 @@
       <button type="button" id="modoClinico" data-modo="clinico">clínico</button>
       <button type="button" id="modoPesquisa" data-modo="pesquisa">pesquisa</button>
     </div>
-    <label class="field">fuso
+    <label class="field" id="labIdioma">idioma
+      <select id="idioma" aria-label="idioma da interface">
+        <option value="pt">português</option>
+        <option value="en">English</option>
+      </select>
+    </label>
+    <label class="field" id="labFuso">fuso
       <select id="tz">
         <option value="auto">do arquivo</option>
         <option value="-120">UTC−02 (BRT verão)</option>
@@ -48,8 +56,8 @@
 </header>
 
 <div class="wrap">
-  <aside class="rail" id="rail"></aside>
-  <main id="figs"></main>
+  <aside class="rail" id="rail" aria-label="painel do registro"></aside>
+  <main id="figs" tabindex="-1" aria-label="figuras da análise"></main>
 </div>
 
 <!-- Painel de processamento: anuncia cada etapa ANTES de executá-la e registra

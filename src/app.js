@@ -302,7 +302,12 @@ const S = {
   symptomSeries: null,  // série clínica importada (distonia): [{t, v}]
   external: null,       // sinal externo importado (Onda 2.3): {name, parsed}
   mode: 'clinico',      // 'clinico' | 'pesquisa' (Onda 8.1)
+  lang: 'pt',           // 'pt' | 'en' (Onda 8.2)
 };
+
+/* Atalho de tradução. Devolve a própria chave quando não há tradução — o texto
+   em português é preferível a um espaço em branco. */
+const t = k => C.t(k);
 
 /* ============================================= preferências de interface ==
    APENAS preferências de interface — o modo de uso e a dispensa do tutorial.
@@ -335,6 +340,33 @@ function setModo(m) {
   marcarModo();
   renderAll(m === 'clinico' ? 'Modo clínico' : 'Modo pesquisa');
 }
+function setIdioma(id) {
+  S.lang = C.setLanguage(id);
+  salvarPref('idioma', S.lang);
+  aplicarIdiomaMoldura();
+  renderAll(S.lang === 'en' ? 'Switching language' : 'Trocando de idioma');
+}
+/* A moldura fora de #rail e #figs não é redesenhada pelo renderAll: é aqui. */
+function aplicarIdiomaMoldura() {
+  const set = (sel, txt) => { const n = document.querySelector(sel); if (n) n.textContent = txt; };
+  set('.brand span', t('STN · potenciais de campo local · análise local'));
+  set('#btnExport', t('⤓ CSV para R'));
+  set('#btnPrint', t('imprimir / PDF'));
+  set('#btnPasta', t('+ pasta'));
+  const carregar = document.querySelector('.tools .btn.primary');
+  if (carregar) carregar.textContent = t('+ carregar JSON');
+  const lf = document.getElementById('labFuso');
+  if (lf && lf.firstChild) lf.firstChild.nodeValue = t('fuso') + ' ';
+  const auto = document.querySelector('#tz option[value="auto"]');
+  if (auto) auto.textContent = t('do arquivo');
+  ['clinico', 'pesquisa'].forEach(m => {
+    const b = document.getElementById('modo' + m[0].toUpperCase() + m.slice(1));
+    if (b) b.textContent = t(m === 'clinico' ? 'clínico' : 'pesquisa');
+  });
+  const sel = document.getElementById('idioma');
+  if (sel) sel.value = S.lang;
+}
+
 function marcarModo() {
   ['clinico', 'pesquisa'].forEach(m => {
     const b = document.getElementById('modo' + m[0].toUpperCase() + m.slice(1));
@@ -3415,7 +3447,7 @@ function renderRail() {
          ressalvas — é o que sai da consulta. */
       const grid1 = el('div', { class: 'exportgrid' });
       grid1.appendChild(el('div', { class: 'exportitem' }, [
-        el('button', { class: 'btn primary', text: '⤓ Relatório clínico (PDF)', onclick: generateReport }),
+        el('button', { class: 'btn primary', text: t('⤓ Relatório clínico (PDF)'), onclick: gerarPdfNativo }),
         el('span', { class: 'exphint', text: 'capa com as leituras em linguagem simples, as seis figuras e as ressalvas de cada número' })
       ]));
       be.appendChild(grid1);
@@ -3429,7 +3461,8 @@ function renderRail() {
     }
     const grid = el('div', { class: 'exportgrid' });
     [
-      ['⤓ Relatório PDF', 'todas as figuras + resumo de métricas', generateReport, 'primary'],
+      ['⤓ Relatório PDF', 'arquivo escrito pelo próprio software — igual em qualquer navegador', gerarPdfNativo, 'primary'],
+      ['⤓ Relatório pela impressora', 'usa a caixa de impressão do navegador (layout depende dela)', generateReport],
       ['⤓ JSON para estatística', 'variáveis-chave por sessão · paciente · implante', exportJSON],
       ['⤓ CSV — métricas agudas', 'pico β, aperiódico, bursts (sessão × hemisfério)', exportAcuteCSV],
       ['⤓ CSV — métricas crônicas', 'circadiano e limiares de aDBS (Timeline)', exportChronicCSV],
@@ -3580,8 +3613,8 @@ async function renderFigures() {
     det.appendChild(el('summary', {}, [el('header', {}, [
       el('span', { class: 'chev', text: '▸' }),
       el('span', { class: 'id', text: fig.id }),
-      el('span', { class: 'ttl' }, [el('b', { text: fig.title }), el('span', { text: fig.sub })]),
-      el('span', { class: 'state', text: ok ? 'dados presentes' : 'sem dados' })
+      el('span', { class: 'ttl' }, [el('b', { text: t(fig.title) }), el('span', { text: fig.sub })]),
+      el('span', { class: 'state', text: ok ? t('dados presentes') : t('sem dados') })
     ])]));
     det.appendChild(el('div', { class: 'content', id: 'content-' + fig.id }));
     /* cálculo sob demanda: abrir uma figura pesada mostra o aviso antes de
@@ -4301,6 +4334,114 @@ function buildReportCover(b) {
   wrap.appendChild(el('div', { class: 'rc-figtitle', text: 'Figuras' }));
   return wrap;
 }
+/* ------------------------------------- relatório em PDF NATIVO (Onda 8.2) --
+   O `window.print()` produzia um arquivo diferente conforme o navegador, a
+   impressora virtual e as margens configuradas. Aqui o PDF é escrito byte a
+   byte pelo próprio software: o mesmo registro gera o mesmo arquivo sempre. */
+async function gerarPdfNativo() {
+  if (!S.files.length) return alert('Carregue ao menos um Session Report antes de gerar o relatório.');
+  Prog.begin('Gerando PDF');
+  try {
+    await renderAllReady();
+    Prog.expect(3);
+    await Prog.step('calculando as métricas e as leituras');
+    const b = await exportBundleAsync();
+    let leituras = null;
+    try { leituras = await leiturasClinicasAsync(); } catch (e) { Prog.falhaEtapa(String(e && e.message || e)); }
+
+    await Prog.step('montando o documento');
+    const perfil = activeProfile();
+    const s0 = b ? b.subject : {};
+    const off = offMin();
+    const blocos = [];
+    blocos.push({
+      type: 'kv', rows: [
+        ['identificador', s0.id], ['diagnóstico', s0.diagnosis],
+        ['dispositivo', `${s0.device_model || '—'} · fw ${s0.firmware || '—'}`],
+        ['data de implante', s0.implant_date],
+        ['alvos', (s0.targets || []).map(x => `${(x.hemisphere || '')[0]}:${x.target}`).join('  ')],
+        ['perfil de doença', `${perfil.label} · banda primária ${perfil.primaryBand.label} (${perfil.primaryBand.lo}–${perfil.primaryBand.hi} Hz)`],
+        ['fuso aplicado', `UTC${off >= 0 ? '+' : '-'}${String(Math.floor(Math.abs(off) / 60)).padStart(2, '0')}:${String(Math.abs(off) % 60).padStart(2, '0')}`],
+        ['sessões', String((b && b.sessions.length) || 0)]
+      ]
+    });
+    if (leituras) {
+      blocos.push({ type: 'h1', text: 'Leitura em linguagem clínica' });
+      const sf = leituras.semaforo;
+      blocos.push({ type: 'p', text: `Qualidade do sinal — ${sf.rotulo}. ${sf.frase}` });
+      leituras.readings.forEach(l => {
+        blocos.push({ type: 'h2', text: l.titulo });
+        blocos.push({ type: 'p', text: l.frase });
+        if (l.numeros) blocos.push({ type: 'note', text: l.numeros });
+        if (l.parametro) blocos.push({ type: 'note', text: 'parâmetros usados: ' + l.parametro });
+        if (l.ressalva) blocos.push({ type: 'note', text: 'Ressalva. ' + l.ressalva });
+      });
+      blocos.push({ type: 'note', text: leituras.disclaimer });
+    }
+    if (b && b.acute.length) {
+      blocos.push({ type: 'h1', text: 'Métricas agudas — por sessão e hemisfério' });
+      blocos.push({
+        type: 'table',
+        cols: ['hemisfério', 'sessão', 'd. impl.', 'pico (Hz)', 'pico?', 'aperiódico', 'burst/s', 'dur. (ms)'],
+        widths: [0.13, 0.16, 0.09, 0.12, 0.09, 0.14, 0.12, 0.15],
+        rows: b.acute.map(r => [hname(r.hemisphere), r.session_date_local || '—', r.days_since_implant,
+          r.beta_peak_hz, r.has_beta_peak ? 'sim' : 'não', r.aperiodic_exponent, r.burst_rate_hz, r.burst_mean_ms])
+      });
+    }
+    if (b && b.chronic.length) {
+      blocos.push({ type: 'h1', text: 'Métricas crônicas (Timeline) — por hemisfério' });
+      blocos.push({
+        type: 'table',
+        cols: ['hemisfério', 'dias (n)', 'MESOR', 'amp. 24 h', 'acrofase', 'p*', '<lim %', 'entre %', '>lim %'],
+        widths: [0.13, 0.13, 0.11, 0.12, 0.11, 0.12, 0.09, 0.1, 0.09],
+        rows: b.chronic.map(r => [hname(r.hemisphere), `${r.n_days} (${r.n_points})`, r.mesor, r.amp_24h,
+          isFinite(r.acrophase_24h) ? r.acrophase_24h + ' h' : '—',
+          isFinite(r.cosinor_p_adj_ar1) ? (r.cosinor_p_adj_ar1 < 0.001 ? '<0,001' : r.cosinor_p_adj_ar1.toFixed(3)) : '—',
+          r.pct_below, r.pct_between, r.pct_above])
+      });
+    }
+    blocos.push({
+      type: 'note',
+      text: 'Ferramenta de pesquisa e apoio à decisão. Não substitui o julgamento clínico nem o software regulado ' +
+        'do fabricante. Todos os parâmetros efetivos desta análise estão no manifesto de proveniência.'
+    });
+
+    /* figuras: o canvas já entrega JPEG, que entra no PDF sem recodificação */
+    const d2 = ds();
+    const figs = [];
+    figurasVisiveis().forEach(fig => {
+      if (!fig.has(d2)) return;
+      const no = document.getElementById('content-' + fig.id);
+      const cvs = no ? Array.from(no.querySelectorAll('canvas')) : [];
+      cvs.forEach((cv, j) => {
+        try {
+          figs.push({
+            id: fig.id + (cvs.length > 1 ? ` (${j + 1}/${cvs.length})` : ''),
+            title: fig.title, dataUrl: cv.toDataURL('image/jpeg', 0.9),
+            width: cv.width, height: cv.height,
+            caption: j === 0 ? fig.sub : ''
+          });
+        } catch (e) { /* canvas vazio: segue */ }
+      });
+    });
+
+    await Prog.step(`escrevendo o PDF (${figs.length} figuras)`);
+    const pdf = C.buildPdf({
+      title: 'Relatório de análise de LFP subtalâmico',
+      subtitle: `Percept LFP Studio · registro ${s0.id || '—'} · gerado em ${new Date().toLocaleString('pt-BR')}`,
+      footer: 'Percept LFP Studio — ferramenta de pesquisa e apoio à decisão',
+      blocks: blocos, figures: figs
+    });
+    const blob = new Blob([pdf.bytes], { type: 'application/pdf' });
+    const a = document.createElement('a');
+    a.download = `relatorio_${s0.id || 'analise'}.pdf`;
+    a.href = URL.createObjectURL(blob); a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 8000);
+    await Prog.finish(`PDF com ${pdf.meta.pages} páginas`);
+    return pdf.meta;
+  } catch (e) { Prog.fail(e); }
+}
+
 async function generateReport() {
   if (!S.files.length) return alert('Carregue ao menos um Session Report antes de gerar o relatório.');
   Prog.begin('Gerando relatório PDF');
@@ -4328,7 +4469,27 @@ async function generateReport() {
 function init() {
   const prefs = lerPrefs();
   if (prefs.modo === 'clinico' || prefs.modo === 'pesquisa') S.mode = prefs.modo;
+  if (prefs.idioma) S.lang = C.setLanguage(prefs.idioma);
   marcarModo();
+  aplicarIdiomaMoldura();
+  const si = document.getElementById('idioma');
+  if (si) si.addEventListener('change', e => setIdioma(e.target.value));
+
+  /* Robustez: erro não tratado em qualquer lugar aparece no painel de processo
+     em vez de sumir no console. Falha visível é corrigível; falha silenciosa
+     vira "o programa não fez nada". */
+  window.addEventListener('error', ev => {
+    if (!ev || !ev.message) return;
+    Prog.begin('Erro inesperado').expect(1);
+    Prog.rotulo = String(ev.message);
+    Prog.fail(new Error(`${ev.message}${ev.filename ? ' (' + String(ev.filename).split('/').pop() + ':' + ev.lineno + ')' : ''}`));
+  });
+  window.addEventListener('unhandledrejection', ev => {
+    const m = ev && ev.reason ? (ev.reason.message || String(ev.reason)) : 'promessa rejeitada';
+    Prog.begin('Erro inesperado').expect(1);
+    Prog.rotulo = m;
+    Prog.fail(new Error(m));
+  });
   $('#fileInput').addEventListener('change', e => { handleFiles(e.target.files); e.target.value = ''; });
   $('#btnExport').addEventListener('click', exportSession);
   $('#btnPrint').addEventListener('click', generateReport);
@@ -4366,5 +4527,5 @@ function init() {
 }
 document.addEventListener('DOMContentLoaded', init);
 /* hook de depuração (usado pela suíte de testes; inerte em produção) */
-window.__PLS__ = { FIGURES, buildProvenance, carregaExterno, exportarPacote, ds, invalidarDs, S, renderRail, renderFigure, renderFigureAsync, renderAllReady, handleFiles, offMin, exportBundle, exportBundleAsync, buildReportCover, Prog, proximoQuadro, setModo, modoAtual, figurasVisiveis, leiturasClinicas, leiturasClinicasAsync, PIPELINES, rodarPipeline, preencherSemaforo, inserirLeituras, Trabalhador, Instrumentacao };
+window.__PLS__ = { FIGURES, buildProvenance, carregaExterno, exportarPacote, gerarPdfNativo, setIdioma, ds, invalidarDs, S, renderRail, renderFigure, renderFigureAsync, renderAllReady, handleFiles, offMin, exportBundle, exportBundleAsync, buildReportCover, Prog, proximoQuadro, setModo, modoAtual, figurasVisiveis, leiturasClinicas, leiturasClinicasAsync, PIPELINES, rodarPipeline, preencherSemaforo, inserirLeituras, Trabalhador, Instrumentacao };
 })();

@@ -31,6 +31,8 @@ import { generateChecklist, checklistDocx, CHECKLIST_ITEMS } from './report/chec
 import { clinicalReadings, qcTrafficLight } from './report/reading.js';
 import { makeZip, makeDocx, crc32 } from './export/zip.js';
 import { writeEdf } from './export/edf.js';
+import { buildPdf, textWidth, unmappedChars } from './export/pdf.js';
+import { t, setLanguage, getLanguage, IDIOMAS, translationCoverage } from './i18n/index.js';
 import { buildBidsLike } from './export/bids.js';
 import { inferDeviceState, statesComparable } from './io/devicestate.js';
 import { dstTransitions, detectOffsetBreaks, resolveOffsets, segmentByOffset } from './io/timezone.js';
@@ -82,7 +84,9 @@ const API = {
   generateChecklist, checklistDocx, CHECKLIST_ITEMS,
   /* leituras em linguagem clínica e semáforo de QC (Onda 8.1) */
   clinicalReadings, qcTrafficLight,
-  makeZip, makeDocx, crc32, writeEdf, buildBidsLike,
+  makeZip, makeDocx, crc32, writeEdf, buildBidsLike, buildPdf, textWidth, unmappedChars,
+  /* idiomas (Onda 8.2) */
+  t, setLanguage, getLanguage, IDIOMAS, translationCoverage,
   /* fidelidade e QC (Ondas 1.3 e 2.2 — L03, L04, L06, L13–L17, L19) */
   inferDeviceState, statesComparable,
   dstTransitions, detectOffsetBreaks, resolveOffsets, segmentByOffset,

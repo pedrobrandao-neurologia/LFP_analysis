@@ -2239,6 +2239,166 @@ sec('coorte, EDF, BIDS-like e linha de comando');
   });
 }
 
+/* -------- PDF nativo, idiomas, acessibilidade e robustez (Onda 8.2) ------- */
+sec('PDF nativo, idiomas, acessibilidade e robustez');
+{
+  const doc82 = {
+    title: 'Relatório de análise de LFP subtalâmico',
+    subtitle: 'registro sub-teste · perfil Doença de Parkinson',
+    footer: 'Percept LFP Studio',
+    blocks: [
+      { type: 'kv', rows: [['identificador', 'sub-teste'], ['implante', '2024-09-12']] },
+      { type: 'h1', text: 'Leitura em linguagem clínica' },
+      { type: 'p', text: 'Frase longa com acentuação para exercitar a quebra de linha: ação, coração, número, três, ângulo, ambiguidade, ' + 'palavra '.repeat(40) },
+      { type: 'note', text: 'Ressalva — o p usado é o corrigido para autocorrelação.' },
+      { type: 'table', cols: ['hemisfério', 'pico (Hz)', 'χ'], widths: [0.4, 0.3, 0.3], rows: [['esquerdo', '17,6', '0,91'], ['direito', '15,6', '0,89']] }
+    ],
+    figures: []
+  };
+  const pdf82 = C.buildPdf(doc82);
+
+  t('PDF: estrutura do arquivo é válida e o xref aponta para os objetos certos', () => {
+    assert(pdf82 && pdf82.bytes.length > 500, 'não gerou');
+    let txt = '';
+    for (let i = 0; i < pdf82.bytes.length; i++) txt += String.fromCharCode(pdf82.bytes[i]);
+    assert(txt.startsWith('%PDF-1.4'), 'sem cabeçalho PDF');
+    assert(txt.trim().endsWith('%%EOF'), 'sem marca de fim');
+    const m = txt.match(/\nxref\n0 (\d+)\n([\s\S]*?)\ntrailer/);
+    assert(m, 'sem tabela xref');
+    const n = +m[1], linhas = m[2].split('\n');
+    let erros = 0;
+    for (let i = 1; i < n; i++) {
+      const off = parseInt(linhas[i].slice(0, 10), 10);
+      if (!txt.startsWith(i + ' 0 obj', off)) erros++;
+    }
+    assert(erros === 0, `${erros} de ${n - 1} deslocamentos do xref apontam para o lugar errado`);
+    const sx = +(txt.match(/startxref\n(\d+)/) || [])[1];
+    assert(txt.startsWith('xref', sx), 'startxref não aponta para a tabela');
+    return `${n - 1} objetos, ${pdf82.meta.pages} página(s), ${(pdf82.meta.bytes / 1024).toFixed(1)} KB, xref íntegro`;
+  });
+
+  t('PDF: texto sai em WinAnsi e nenhum byte estoura o formato', () => {
+    let txt = '';
+    for (let i = 0; i < pdf82.bytes.length; i++) txt += String.fromCharCode(pdf82.bytes[i]);
+    /* acentos do português precisam sobreviver como bytes Latin-1 */
+    assert(/a\xE7\xE3o/.test(txt), 'a palavra "ação" não saiu em Latin-1');
+    assert(/cora\xE7\xE3o/.test(txt), '"coração" não saiu em Latin-1');
+    /* travessão vira o byte WinAnsi 0x97, não some nem vira "?" */
+    assert(txt.indexOf('\x97') >= 0, 'travessão não foi mapeado para WinAnsi');
+    assert(pdf82.bytes.every(b => b <= 255), 'byte fora de 0–255');
+    /* parênteses dentro de string precisam estar escapados */
+    const strings = txt.match(/\(([^\\)]|\\.)*\)/g) || [];
+    assert(strings.length > 5, 'poucas strings de texto no conteúdo');
+    return `${strings.length} strings de texto · acentos e travessão preservados`;
+  });
+
+  t('PDF: quebra de linha usa as larguras reais dos glifos', () => {
+    /* "MMMM" é muito mais largo que "iiii" na Helvetica; se a quebra usasse
+       contagem de caracteres, os dois dariam a mesma largura */
+    const largo = C.textWidth('MMMM', 10, false), estreito = C.textWidth('iiii', 10, false);
+    assert(largo > 2.5 * estreito, `larguras iguais demais: ${largo} vs ${estreito}`);
+    assert(C.textWidth('ABC', 10, true) > C.textWidth('ABC', 10, false), 'negrito não é mais largo');
+    /* um parágrafo longo tem de gerar mais de uma página de conteúdo ou várias linhas */
+    const curto = C.buildPdf({ title: 'x', blocks: [{ type: 'p', text: 'curto' }], figures: [] });
+    const longo = C.buildPdf({ title: 'x', blocks: [{ type: 'p', text: 'palavra '.repeat(2500) }], figures: [] });
+    assert(longo.meta.bytes > curto.meta.bytes * 2, 'texto longo não gerou mais conteúdo');
+    assert(longo.meta.pages > curto.meta.pages, 'texto longo não paginou');
+    return `M/i = ${(largo / estreito).toFixed(1)}× · texto longo em ${longo.meta.pages} páginas`;
+  });
+
+  t('PDF: nenhum caractere do software fica sem representação e vira "?"', () => {
+    /* varre tudo o que pode ir para o PDF: títulos, subtítulos, leituras
+       clínicas com parâmetros e ressalvas, e os rótulos das métricas */
+    const b = C.extractMetrics(parsed, -180, { profileId: 'pd' });
+    const painel = C.qcPanel(parsed, { band: [13, 35] });
+    const r = C.clinicalReadings(b, { profileId: 'pd', qcPanel: painel });
+    const textos = []
+      .concat(H.FIGURES.map(f => f.title + ' ' + f.sub))
+      .concat(r.readings.map(l => [l.titulo, l.frase, l.numeros, l.parametro, l.ressalva].join(' ')))
+      .concat([r.disclaimer, r.semaforo.frase, r.semaforo.rotulo])
+      .concat(C.PROFILE_IDS.map(id => {
+        const p = C.PROFILES[id];
+        return [p.label, p.glossary.intuicao, p.glossary.picoTexto, p.glossary.elegibilidade].join(' ');
+      }));
+    const fora = new Set();
+    textos.forEach(x => C.unmappedChars(x).forEach(c => fora.add(c)));
+    assert(!fora.size, 'sem representação no PDF: ' + Array.from(fora).map(c => `"${c}" (U+${c.codePointAt(0).toString(16).toUpperCase()})`).join(', '));
+    return `${textos.length} textos varridos, nenhum caractere sem representação`;
+  });
+
+  t('idiomas: dicionário traduz o que promete e devolve a chave quando não tem', () => {
+    const antes = C.getLanguage();
+    C.setLanguage('en');
+    assert(C.t('Exportar') === 'Export', 'não traduziu: ' + C.t('Exportar'));
+    assert(C.t('Ritmo circadiano — heatmap, perfil polar e cosinor').indexOf('Circadian') === 0, 'título de figura não traduzido');
+    const inexistente = 'chave que não existe no dicionário';
+    assert(C.t(inexistente) === inexistente, 'chave ausente não voltou como ela mesma');
+    C.setLanguage('pt');
+    assert(C.t('Exportar') === 'Exportar', 'pt-BR deveria devolver a própria chave');
+    C.setLanguage(antes);
+    const cov = C.translationCoverage();
+    assert(cov.nKeys > 40, 'dicionário pequeno demais: ' + cov.nKeys);
+    assert(/metodológicos/.test(cov.outOfScope), 'o escopo não declara o que fica de fora');
+    assert(cov.notice && cov.notice.en && cov.notice.pt, 'sem aviso de escopo nos dois idiomas');
+    return `${cov.nKeys} chaves · escopo declarado, fora de escopo declarado`;
+  });
+
+  t('todo título de figura tem tradução — senão o modo inglês fica pela metade', () => {
+    const antes = C.getLanguage();
+    C.setLanguage('en');
+    const semTraducao = H.FIGURES.filter(f => C.t(f.title) === f.title);
+    C.setLanguage(antes);
+    assert(!semTraducao.length, 'sem tradução: ' + semTraducao.map(f => f.id).join(', '));
+    return `${H.FIGURES.length} figuras, todas traduzidas`;
+  });
+
+  t('acessibilidade: todo gráfico ganha papel e rótulo para leitor de tela', () => {
+    const cv = document.createElement('canvas');
+    new P.Chart(cv, { width: 300, height: 200, title: 'espectro de potência', xlabel: 'frequência (Hz)', ylabel: 'µV²/Hz' });
+    assert(cv.attrs && cv.attrs.role === 'img', 'canvas sem role="img"');
+    const rot = cv.attrs['aria-label'] || '';
+    assert(/espectro de potência/.test(rot), 'rótulo não traz o título: ' + rot);
+    assert(/eixo x/.test(rot) && /eixo y/.test(rot), 'rótulo não descreve os eixos: ' + rot);
+    return `aria-label: "${rot.slice(0, 70)}…"`;
+  });
+
+  t('robustez: JSON malformado é recusado com motivo, não derruba a leitura', () => {
+    const casos = [
+      ['vazio', ''],
+      ['não é JSON', 'isto não é json'],
+      ['JSON truncado', '{"PatientInformation": {'],
+      ['JSON válido mas sem nada do Percept', '{"foo": 1}'],
+      ['modalidade com tipo errado', JSON.stringify({ LFPMontage: 'não é lista', BrainSenseTimeDomain: 42 })]
+    ];
+    const resultados = casos.map(([nome, txt]) => {
+      try {
+        const p = C.parsePerceptText(txt, nome + '.json');
+        /* aceitar é legítimo desde que o resultado seja honesto sobre o vazio */
+        const n = Object.keys(p.availability || {}).filter(k => p.availability[k] > 0).length;
+        return `${nome}: lido com ${n} modalidade(s)`;
+      } catch (e) {
+        assert(e && e.message, nome + ': erro sem mensagem');
+        return `${nome}: recusado (${e.message.slice(0, 30)})`;
+      }
+    });
+    /* o que não pode acontecer é travar ou devolver estrutura inconsistente */
+    const p = C.parsePerceptText('{"foo":1}', 'vazio.json');
+    assert(p && p.patient && p.availability, 'estrutura incompleta para arquivo vazio');
+    assert(Object.keys(p.availability).every(k => p.availability[k] === 0), 'declarou modalidade que não existe');
+    return resultados.join(' · ');
+  });
+
+  t('robustez: métricas sobre arquivo sem dados não inventam número', () => {
+    const p = C.parsePerceptText('{"foo":1}', 'vazio.json');
+    const b = C.extractMetrics([p], -180, { profileId: 'pd' });
+    assert(b, 'extractMetrics devolveu null');
+    assert(b.acute.length === 0 && b.chronic.length === 0, 'produziu linhas sem dado de origem');
+    const r = C.clinicalReadings(b, { profileId: 'pd' });
+    assert(r.readings.every(l => l.nivel === 'insuficiente' || !l.numeros), 'leitura com número sobre nada');
+    return `${b.acute.length} agudas, ${b.chronic.length} crônicas, ${r.readings.length} leitura(s) — todas declaram dado insuficiente`;
+  });
+}
+
 /* ------------------------------------------------------------- resultado -- */
 console.log(`\n${'='.repeat(58)}`);
 console.log(`  ${ok} passaram   ${falhas} falharam   ${pulados} sem dados`);
