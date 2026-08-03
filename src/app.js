@@ -3192,6 +3192,85 @@ const FIGURES = [
           `E antes de tudo isso: se a métrica não for reprodutível, a diferença observada pode ser só ruído de medida.`
       }));
     }
+  },
+
+  /* ----------------------------------------------------------------- F27 */
+  {
+    id: 'F27', title: 'Coorte — todos os registros carregados lado a lado',
+    sub: 'tabela por sujeito, estatísticas de grupo e prevalência com IC de Wilson',
+    has: () => S.files.length > 0,
+    render(node, d) {
+      const subs = subjects();
+      const pacotes = subs.map(s => {
+        try { return C.extractMetrics(s.files.map(x => x.parsed), offMin(), { profileId: activeProfileId() }); }
+        catch (e) { return null; }
+      }).filter(Boolean);
+      const co = C.cohortSummary(pacotes, {});
+      if (!co) return node.appendChild(el('div', { class: 'empty', text: 'Nenhum registro com métricas extraíveis.' }));
+
+      node.appendChild(el('div', {
+        class: co.descriptiveOnly ? 'warnbox' : 'note',
+        html: `<b>${co.nSubjects} sujeito(s), ${co.nHemispheres} hemisfério(s).</b> ${co.note}. ${co.caveat}`
+      }));
+
+      /* prevalência de pico */
+      const pv = co.prevalence;
+      node.appendChild(el('h4', { class: 'qc-title', html: '<b>Prevalência de pico na banda primária</b> — a estatística que muda o cálculo amostral de um estudo' }));
+      node.appendChild(table(['recorte', 'k / n', 'proporção', 'IC 95% (Wilson)', 'referência'], [
+        ['por hemisfério', `${pv.byHemisphere.k} / ${pv.byHemisphere.n}`, isFinite(pv.byHemisphere.pct) ? f(pv.byHemisphere.pct, 1) + ' %' : '—',
+          `${f(100 * pv.byHemisphere.ci95[0], 1)}–${f(100 * pv.byHemisphere.ci95[1], 1)} %`, pv.reference],
+        ['bilateral', `${pv.bilateral.k} / ${pv.bilateral.n}`, isFinite(pv.bilateral.pct) ? f(pv.bilateral.pct, 1) + ' %' : '—',
+          `${f(100 * pv.bilateral.ci95[0], 1)}–${f(100 * pv.bilateral.ci95[1], 1)} %`, pv.ciMethod]
+      ]));
+
+      /* tabela por sujeito */
+      node.appendChild(el('h4', { class: 'qc-title', html: '<b>Por sujeito e hemisfério</b>' }));
+      node.appendChild(table(
+        ['sujeito', 'hemi.', 'pico?', 'pico (Hz)', 'rel. (%)', 'χ aperiód.', 'burst/s', 'MESOR', 'amp. 24 h', 'acrofase', '% beta alto', 'dias'],
+        co.rows.map(r => [
+          r.subjectId,
+          { html: `<span class="hemi-${String(r.hemisphere)[0]}">${hname(r.hemisphere)}</span>` },
+          { html: r.hasPeak === null ? '—' : r.hasPeak ? '<span class="sig">sim</span>' : '<span class="ns">não</span>' },
+          f(r.peakHz, 1), f(r.betaRelPct, 1), f(r.aperiodicExponent, 2), f(r.burstRate, 2),
+          f(r.mesor, 1), f(r.amp24, 2), isFinite(r.acrophase) ? f(r.acrophase, 1) + ' h' : '—',
+          isFinite(r.offPct) ? f(r.offPct, 1) + ' %' : '—', isFinite(r.nDays) ? String(r.nDays) : '—'
+        ])));
+
+      /* estatísticas de grupo */
+      node.appendChild(el('h4', { class: 'qc-title', html: '<b>Estatísticas de grupo</b> — mediana [IQR], por hemisfério' }));
+      node.appendChild(table(['métrica', 'todos', 'esquerdo', 'direito'],
+        co.stats.map(e => {
+          const fmt = r => !r ? '—' : r.circular
+            ? `${f(r.mean, 1)} h (R = ${f(r.concentration, 2)}, n = ${r.n})`
+            : `${f(r.median, 2)} [${f(r.q1, 2)}; ${f(r.q3, 2)}] (n = ${r.n})`;
+          return [e.label, fmt(e.all), fmt(e.left), fmt(e.right)];
+        })));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Acrofase é grandeza circular.</b> Média aritmética de horários é incorreta — 23 h e 1 h ` +
+          `não têm média 12 h. As linhas de acrofase trazem a média circular e a concentração R (0 = espalhado por todo o ` +
+          `ciclo, 1 = todos no mesmo horário).`
+      }));
+
+      node.appendChild(exportRow([
+        {
+          label: '⤓ CSV da coorte', fn: () => P.downloadText(P.toCSV(co.rows.map(r => ({
+            sujeito: r.subjectId, hemisferio: r.hemisphere,
+            tem_pico: r.hasPeak === null ? '' : (r.hasPeak ? 1 : 0),
+            pico_hz: r.peakHz, relativa_pct: r.betaRelPct, expoente_aperiodico: r.aperiodicExponent,
+            burst_taxa_hz: r.burstRate, burst_duracao_ms: r.burstMeanMs,
+            mesor: r.mesor, amplitude_24h: r.amp24, acrofase_h: r.acrophase,
+            pct_beta_alto: r.offPct, dias_timeline: r.nDays
+          }))), 'coorte_por_hemisferio.csv', 'text/csv')
+        },
+        {
+          label: '⤓ JSON da coorte', fn: () => P.downloadText(JSON.stringify({
+            generated_at: new Date().toISOString(), n_subjects: co.nSubjects,
+            descriptive_only: co.descriptiveOnly, note: co.note,
+            prevalence: co.prevalence, subjects: co.subjects, stats: co.stats
+          }, null, 2), 'coorte.json', 'application/json')
+        }
+      ]));
+    }
   }
 ];
 
@@ -3358,7 +3437,8 @@ function renderRail() {
       ['⤓ Todas as figuras (PNG)', 'baixa cada gráfico individualmente', downloadAllFigures],
       ['⤓ Checklist PERCEPT-REPORT (.md)', 'itens mínimos de reporte, preenchidos automaticamente', () => exportChecklist('md')],
       ['⤓ Checklist PERCEPT-REPORT (.docx)', 'mesmo conteúdo, pronto para material suplementar', () => exportChecklist('docx')],
-      ['⤓ Manifesto de proveniência', 'todos os parâmetros efetivos + hash citável da análise', exportManifest]
+      ['⤓ Manifesto de proveniência', 'todos os parâmetros efetivos + hash citável da análise', exportManifest],
+      ['⤓ Pacote completo (.zip)', 'métricas, EDF, BIDS-like, manifesto, checklist e todas as figuras', exportarPacote, 'primary']
     ].forEach(([label, desc, fn, cls]) => {
       grid.appendChild(el('div', { class: 'exportitem' }, [
         el('button', { class: 'btn' + (cls ? ' ' + cls : ''), text: label, onclick: fn }),
@@ -3844,6 +3924,122 @@ async function exportChronicCSV() {
   P.downloadText(P.toCSV(b.chronic, unionKeys(b.chronic)), `percept_${b.subject.id}_metricas_cronicas.csv`, 'text/csv');
 }
 
+/* ------------------------------------------ pacote único (Onda 6) --------
+   Um ZIP com tudo o que a análise produziu: métricas, sinal em EDF, estrutura
+   BIDS-like, manifesto de proveniência com hash, checklist e as figuras em PNG.
+   O ZIP é escrito sem compressão (método "store"), porque comprimir exigiria
+   deflate — e a dependência zero vale também aqui. */
+async function exportarPacote() {
+  if (!S.files.length) return alert('Carregue ao menos um arquivo antes de exportar o pacote.');
+  const ps = activeFiles().map(x => x.parsed);
+  Prog.begin('Montando o pacote completo').expect(7);
+  const arquivos = [];
+  const texto = (nome, conteudo) => arquivos.push({ name: nome, data: conteudo });
+  try {
+    await Prog.step('calculando as métricas');
+    const b = await exportBundleAsync();
+    if (b) {
+      texto('metricas/percept_metricas.json', JSON.stringify({
+        export: { tool: 'Percept LFP Studio', generated_at: new Date().toISOString(), timezone_offset_min: offMin() },
+        subject: b.subject, sessions: b.sessions, acute: b.acute, chronic: b.chronic
+      }, null, 2));
+      if (b.acute.length) texto('metricas/metricas_agudas.csv', P.toCSV(b.acute, unionKeys(b.acute)));
+      if (b.chronic.length) texto('metricas/metricas_cronicas.csv', P.toCSV(b.chronic, unionKeys(b.chronic)));
+    }
+
+    await Prog.step('escrevendo o Timeline em formato longo');
+    const dd = ds();
+    const linhas = [];
+    Object.keys(dd.trend).forEach(h => dd.trend[h].forEach(r => linhas.push({
+      hemisferio: h, utc: new Date(r.t).toISOString(),
+      hora_local_decimal: +C.localHour(r.t, offMin()).toFixed(4),
+      dia_local: C.localDayKey(r.t, offMin()), lfp: r.lfp, mA: r.ma
+    })));
+    if (linhas.length) texto('metricas/timeline_longo.csv', P.toCSV(linhas));
+
+    await Prog.step('convertendo o sinal bruto para EDF');
+    const tds = dd.bsTimeDomain.concat(dd.montageTD);
+    if (tds.length) {
+      const sinais = tds.map(td => ({
+        label: td.label, data: td.data, fs: td.fsEff || td.fs, unit: 'uV',
+        prefilter: 'passa-alta do dispositivo (nao exposta no Session Report)'
+      }));
+      const edf = C.writeEdf(sinais, {
+        startMs: isFinite(td0Ms(tds[0])) ? td0Ms(tds[0]) : Date.now(),
+        patientId: (b && b.subject.id) || 'sub-x'
+      });
+      if (edf) {
+        arquivos.push({ name: 'sinal/percept.edf', data: edf.bytes });
+        texto('sinal/percept_edf_metadados.json', JSON.stringify(edf.meta, null, 2));
+      }
+    }
+
+    await Prog.step('montando a estrutura BIDS-like');
+    const bids = C.buildBidsLike(ps, { includeSignalTsv: false, appVersion: '0.6.0' });
+    (bids || []).forEach(a => texto('bids/' + a.path, a.content));
+
+    await Prog.step('reunindo a proveniência e o hash citável');
+    const prov = await buildProvenance();
+    const man = prov.manifest();
+    man.manifestHash = await prov.hash();
+    texto('proveniencia/manifesto.json', JSON.stringify(man, null, 2));
+    try {
+      const ck = C.generateChecklist(man, b, activeProfile());
+      texto('proveniencia/PERCEPT-REPORT.md', ck.markdown);
+    } catch (e) { Prog.falhaEtapa(String(e && e.message || e)); }
+
+    await Prog.step('desenhando e exportando as figuras');
+    await renderAllReady();
+    const d2 = ds();
+    figurasVisiveis().forEach(fig => {
+      if (!fig.has(d2)) return;
+      const no = document.getElementById('content-' + fig.id);
+      const cvs = no ? Array.from(no.querySelectorAll('canvas')) : [];
+      cvs.forEach((cv, j) => {
+        try {
+          const url = cv.toDataURL('image/png');
+          const bin = atob(url.split(',')[1]);
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          arquivos.push({ name: `figuras/${fig.id}${cvs.length > 1 ? '_' + (j + 1) : ''}.png`, data: bytes });
+        } catch (e) { /* canvas vazio ou bloqueado: segue sem essa figura */ }
+      });
+    });
+
+    await Prog.step('fechando o ZIP');
+    texto('LEIA-ME.txt',
+      'PACOTE DE ANÁLISE — Percept LFP Studio\n' +
+      '=====================================\n\n' +
+      `Gerado em ${new Date().toISOString()}\n` +
+      `Registro: ${(b && b.subject.id) || '—'} · perfil: ${activeProfile().label}\n` +
+      `Fuso aplicado: UTC${offMin() >= 0 ? '+' : '−'}${String(Math.floor(Math.abs(offMin()) / 60)).padStart(2, '0')}:${String(Math.abs(offMin()) % 60).padStart(2, '0')}\n\n` +
+      'metricas/     métricas por sessão e por hemisfério, em CSV e JSON\n' +
+      'sinal/        sinal bruto em EDF+ e os metadados da conversão\n' +
+      'bids/         estrutura BIDS-like (NÃO é um dataset BIDS conforme — ver dataset_description.json)\n' +
+      'proveniencia/ manifesto com todos os parâmetros efetivos, hash citável e checklist PERCEPT-REPORT\n' +
+      'figuras/      cada gráfico em PNG\n\n' +
+      'AMOSTRAS AUSENTES: a perda de pacote é preservada como NaN em todo o pipeline. No EDF, que não tem\n' +
+      'representação para dado ausente, essas amostras foram escritas no mínimo digital e a lista de lacunas\n' +
+      'está em sinal/percept_edf_metadados.json. Remascare antes de qualquer análise.\n\n' +
+      'Ferramenta de pesquisa e apoio à decisão. Não substitui o julgamento clínico nem o software regulado\n' +
+      'do fabricante.\n');
+    const zip = C.makeZip(arquivos);
+    const blob = new Blob([zip], { type: 'application/zip' });
+    const a = document.createElement('a');
+    a.download = `percept_pacote_${(b && b.subject.id) || 'analise'}.zip`;
+    a.href = URL.createObjectURL(blob); a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 8000);
+    await Prog.finish(`pacote com ${arquivos.length} arquivos`);
+  } catch (e) { Prog.fail(e); }
+}
+function td0Ms(td) {
+  if (!td) return NaN;
+  if (isFinite(td.firstPacketMs)) return td.firstPacketMs;
+  if (td.firstPacketDateTime) return Date.parse(td.firstPacketDateTime);
+  if (isFinite(td.t0)) return td.t0;
+  return NaN;
+}
+
 /* Abre e renderiza TODAS as figuras com dados (usado por relatório e PNG).
    É a operação mais cara do aplicativo — em registros de meses passa de dez
    segundos — e por isso é a que mais precisa anunciar cada etapa. Figuras já
@@ -4140,6 +4336,12 @@ function init() {
     S.tzOverride = e.target.value === 'auto' ? null : parseInt(e.target.value, 10);
     renderAll('Aplicando fuso horário');
   });
+  const bp = document.getElementById('btnPasta');
+  const di = document.getElementById('dirInput');
+  if (bp && di) {
+    bp.addEventListener('click', () => di.click());
+    di.addEventListener('change', e => { const fs = Array.from(e.target.files || []); e.target.value = ''; handleFiles(fs); });
+  }
   const px = document.getElementById('procX');
   if (px) px.addEventListener('click', () => { const p = document.getElementById('proc'); if (p) p.hidden = true; });
   ['clinico', 'pesquisa'].forEach(m => {
@@ -4164,5 +4366,5 @@ function init() {
 }
 document.addEventListener('DOMContentLoaded', init);
 /* hook de depuração (usado pela suíte de testes; inerte em produção) */
-window.__PLS__ = { FIGURES, buildProvenance, carregaExterno, ds, invalidarDs, S, renderRail, renderFigure, renderFigureAsync, renderAllReady, handleFiles, offMin, exportBundle, exportBundleAsync, buildReportCover, Prog, proximoQuadro, setModo, modoAtual, figurasVisiveis, leiturasClinicas, leiturasClinicasAsync, PIPELINES, rodarPipeline, preencherSemaforo, inserirLeituras, Trabalhador, Instrumentacao };
+window.__PLS__ = { FIGURES, buildProvenance, carregaExterno, exportarPacote, ds, invalidarDs, S, renderRail, renderFigure, renderFigureAsync, renderAllReady, handleFiles, offMin, exportBundle, exportBundleAsync, buildReportCover, Prog, proximoQuadro, setModo, modoAtual, figurasVisiveis, leiturasClinicas, leiturasClinicasAsync, PIPELINES, rodarPipeline, preencherSemaforo, inserirLeituras, Trabalhador, Instrumentacao };
 })();

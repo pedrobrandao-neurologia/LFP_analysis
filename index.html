@@ -358,6 +358,8 @@ footer.foot{padding:24px 20px 40px;text-align:center;font:11px/1.7 var(--mono);c
     <button class="btn" id="btnPrint">imprimir / PDF</button>
     <button class="btn primary" onclick="document.getElementById('fileInput').click()">+ carregar JSON</button>
     <input type="file" id="fileInput" accept=".json,application/json" multiple hidden>
+    <button class="btn" id="btnPasta" title="carrega todos os JSON de uma pasta, incluindo subpastas">+ pasta</button>
+    <input type="file" id="dirInput" webkitdirectory directory multiple hidden>
   </div>
 </header>
 
@@ -3780,6 +3782,160 @@ function rankSurveyChannels(montage, opts) {
   };
 }
 
+/* ---------- core/metrics/cohort.js ---------- */
+/* metrics/cohort.js — resumo de coorte.
+
+   O QUE FAZ. Recebe um pacote de métricas por SUJEITO e devolve a tabela da
+   coorte mais as estatísticas de grupo. É o passo que transforma "analisei este
+   paciente" em "tenho uma amostra".
+
+   O QUE ELE SE RECUSA A FAZER. Com poucos sujeitos, média e desvio-padrão de
+   grupo são números que parecem uma medida e não são. Abaixo de `minN` (padrão
+   5) o resumo sai marcado como DESCRITIVO e sem qualquer teste; a mediana e o
+   intervalo continuam, porque descrevem o que se tem, mas o IC normal-teórico
+   não aparece. Prevalência de pico beta e proporções trazem IC de Wilson, que
+   se comporta bem com n pequeno — ao contrário do IC de Wald, que produz
+   intervalos fora de [0,1] justamente quando a proporção é extrema.
+
+   Unidades: as das métricas de origem.
+
+   Referências: Brown LD, et al. Stat Sci 2001;16:101-133 (IC de proporção);
+   Cascino et al., npj Parkinsons Dis 2026 (prevalência de elegibilidade).    */
+
+/* IC de Wilson para uma proporção — o correto com n pequeno. */
+function wilsonCI(k, n, z) {
+  z = z || 1.959964;
+  if (!(n > 0)) return [NaN, NaN];
+  const p = k / n, z2 = z * z;
+  const den = 1 + z2 / n;
+  const centro = (p + z2 / (2 * n)) / den;
+  const meia = (z / den) * Math.sqrt(p * (1 - p) / n + z2 / (4 * n * n));
+  return [Math.max(0, +(centro - meia).toFixed(4)), Math.min(1, +(centro + meia).toFixed(4))];
+}
+
+const CAMPOS_AGUDOS = [
+  { key: 'primary_peak_hz', label: 'frequência do pico primário (Hz)' },
+  { key: 'beta_rel_pct', label: 'potência relativa da banda (%)' },
+  { key: 'aperiodic_exponent', label: 'expoente aperiódico' },
+  { key: 'burst_rate_hz', label: 'taxa de bursts (/s)' },
+  { key: 'burst_mean_ms', label: 'duração média de burst (ms)' }
+];
+const CAMPOS_CRONICOS = [
+  { key: 'mesor', label: 'MESOR' },
+  { key: 'amp_24h', label: 'amplitude de 24 h' },
+  { key: 'acrophase_24h', label: 'acrofase (h)', circular: true },
+  { key: 'off_pct', label: '% do tempo em beta alto' },
+  { key: 'n_days', label: 'dias de Timeline' }
+];
+
+function resume(valores, circular) {
+  const v = valores.filter(isFinite);
+  if (!v.length) return null;
+  if (circular) {
+    /* acrofase é grandeza circular: média aritmética de horários é errada */
+    const ang = v.map(h => 2 * Math.PI * h / 24);
+    const c = mean(ang.map(Math.cos)), s = mean(ang.map(Math.sin));
+    let m = Math.atan2(s, c); if (m < 0) m += 2 * Math.PI;
+    const R = Math.hypot(c, s);
+    return {
+      n: v.length, circular: true,
+      mean: +(m / (2 * Math.PI) * 24).toFixed(3),
+      concentration: +R.toFixed(4),
+      dispersionHours: +(24 / (2 * Math.PI) * Math.sqrt(-2 * Math.log(Math.max(1e-12, R)))).toFixed(3),
+      min: +Math.min.apply(null, v).toFixed(3), max: +Math.max.apply(null, v).toFixed(3)
+    };
+  }
+  return {
+    n: v.length, circular: false,
+    median: +median(v).toFixed(4),
+    q1: +quantile(v, 0.25).toFixed(4), q3: +quantile(v, 0.75).toFixed(4),
+    mean: +mean(v).toFixed(4), sd: v.length > 1 ? +sd(v).toFixed(4) : NaN,
+    min: +Math.min.apply(null, v).toFixed(4), max: +Math.max.apply(null, v).toFixed(4)
+  };
+}
+
+/* cohortSummary(bundles, opts) — `bundles`: uma saída de extractMetrics por sujeito. */
+function cohortSummary(bundles, opts) {
+  opts = opts || {};
+  const minN = isFinite(opts.minN) ? opts.minN : 5;
+  const lista = (bundles || []).filter(b => b && b.subject);
+  if (!lista.length) return null;
+
+  const sujeitos = lista.map(b => {
+    const ag = b.acute || [], cr = b.chronic || [];
+    const porHemi = {};
+    ['Left', 'Right'].forEach(h => {
+      const a = ag.filter(r => r.hemisphere === h);
+      const c = cr.find(r => r.hemisphere === h);
+      if (!a.length && !c) return;
+      const ultima = a.length ? a[a.length - 1] : null;
+      porHemi[h] = {
+        hasPeak: ultima ? !!(ultima.has_beta_peak || ultima.has_theta_alpha_peak) : null,
+        peakHz: ultima ? ultima.primary_peak_hz : NaN,
+        aperiodicExponent: ultima ? ultima.aperiodic_exponent : NaN,
+        burstRate: ultima ? ultima.burst_rate_hz : NaN,
+        burstMeanMs: ultima ? ultima.burst_mean_ms : NaN,
+        betaRelPct: ultima ? ultima.beta_rel_pct : NaN,
+        mesor: c ? c.mesor : NaN, amp24: c ? c.amp_24h : NaN,
+        acrophase: c ? c.acrophase_24h : NaN, offPct: c ? c.off_pct : NaN,
+        nDays: c ? c.n_days : NaN
+      };
+    });
+    return {
+      subjectId: b.subject.id, diagnosis: b.subject.diagnosis, profile: b.subject.profile_id,
+      implantDate: b.subject.implant_date, nSessions: (b.sessions || []).length,
+      targets: (b.subject.targets || []).map(t => `${t.hemisphere}:${t.target}`).join(' '),
+      hemispheres: porHemi,
+      nHemisWithPeak: Object.values(porHemi).filter(x => x.hasPeak === true).length,
+      nHemisEvaluated: Object.values(porHemi).filter(x => x.hasPeak !== null).length
+    };
+  });
+
+  /* estatísticas por hemisfério, agrupando todos os sujeitos */
+  const linhas = [];
+  sujeitos.forEach(s => Object.keys(s.hemispheres).forEach(h => linhas.push(Object.assign({ subjectId: s.subjectId, hemisphere: h }, s.hemispheres[h]))));
+
+  const mapa = {
+    primary_peak_hz: 'peakHz', beta_rel_pct: 'betaRelPct', aperiodic_exponent: 'aperiodicExponent',
+    burst_rate_hz: 'burstRate', burst_mean_ms: 'burstMeanMs',
+    mesor: 'mesor', amp_24h: 'amp24', acrophase_24h: 'acrophase', off_pct: 'offPct', n_days: 'nDays'
+  };
+  const estat = CAMPOS_AGUDOS.concat(CAMPOS_CRONICOS).map(c => ({
+    field: c.key, label: c.label,
+    all: resume(linhas.map(l => l[mapa[c.key]]), c.circular),
+    left: resume(linhas.filter(l => l.hemisphere === 'Left').map(l => l[mapa[c.key]]), c.circular),
+    right: resume(linhas.filter(l => l.hemisphere === 'Right').map(l => l[mapa[c.key]]), c.circular)
+  })).filter(e => e.all);
+
+  /* prevalência de pico — a estatística que muda o cálculo amostral de um
+     estudo, e que quase nunca é reportada */
+  const avaliados = linhas.filter(l => l.hasPeak !== null);
+  const comPico = avaliados.filter(l => l.hasPeak).length;
+  const bilaterais = sujeitos.filter(s => s.nHemisEvaluated === 2 && s.nHemisWithPeak === 2).length;
+  const comDoisAvaliados = sujeitos.filter(s => s.nHemisEvaluated === 2).length;
+
+  const n = sujeitos.length;
+  return {
+    nSubjects: n, nHemispheres: linhas.length,
+    subjects: sujeitos, rows: linhas, stats: estat,
+    prevalence: {
+      byHemisphere: { k: comPico, n: avaliados.length, pct: avaliados.length ? +(100 * comPico / avaliados.length).toFixed(1) : NaN, ci95: wilsonCI(comPico, avaliados.length) },
+      bilateral: { k: bilaterais, n: comDoisAvaliados, pct: comDoisAvaliados ? +(100 * bilaterais / comDoisAvaliados).toFixed(1) : NaN, ci95: wilsonCI(bilaterais, comDoisAvaliados) },
+      reference: 'ADAPT-PD: 84,8% por hemisfério e 64,2% bilateral (n = 51); registro BrainSense: 89,0% e 69,4% (n = 113)',
+      ciMethod: 'IC de Wilson — o de Wald produz intervalos fora de [0,1] justamente quando a proporção é extrema'
+    },
+    descriptiveOnly: n < minN,
+    minN,
+    note: n < minN
+      ? `com ${n} sujeito(s), este resumo é DESCRITIVO: mediana e intervalo descrevem o que se tem, mas não ` +
+        'sustentam inferência sobre a população. Nenhum teste de grupo é aplicado abaixo de ' + minN + ' sujeitos'
+      : `${n} sujeitos — mediana e IQR por métrica; a prevalência traz IC de Wilson`,
+    caveat: 'sujeitos com números diferentes de sessões contribuem com pesos diferentes para qualquer média entre ' +
+      'sessões. As estatísticas acima usam a ÚLTIMA sessão de cada sujeito para as métricas agudas, para que cada ' +
+      'pessoa entre uma vez.'
+  };
+}
+
 /* ---------- core/provenance/index.js ---------- */
 /* provenance/index.js — manifesto de proveniência auditável e verificável.
 
@@ -4508,6 +4664,330 @@ function clinicalReadings(bundle, opts) {
       'São apoio à decisão e material de pesquisa — não substituem o julgamento clínico nem o ' +
       'software regulado do fabricante, e não constituem diagnóstico.'
   };
+}
+
+/* ---------- core/export/edf.js ---------- */
+/* export/edf.js — escritor de EDF/EDF+ do zero.
+
+   POR QUE. EDF é o formato que qualquer software de eletrofisiologia abre —
+   EEGLAB, FieldTrip, MNE, Brainstorm, os visualizadores clínicos. Exportar o
+   sinal bruto do Percept em EDF é o que permite levar o registro para outra
+   ferramenta sem passar por CSV gigante nem por formato proprietário.
+
+   O PROBLEMA QUE O EDF NÃO RESOLVE, E QUE AQUI NÃO É ESCONDIDO: o formato
+   armazena inteiros de 16 bits e NÃO TEM representação para dado ausente. A
+   perda de pacote do Percept, que este software preserva como NaN em todo o
+   pipeline, precisa virar algum número na hora de escrever. A política aqui:
+     • as amostras faltantes recebem o MÍNIMO DIGITAL, valor que fica fora da
+       faixa física dos dados reais por construção (a faixa física é calculada
+       só sobre amostras válidas, com margem);
+     • a posição de cada lacuna vai para o campo de anotações do EDF+ e para um
+       JSON acompanhante;
+     • o campo de pré-filtragem de cada canal declara a política em texto.
+   Quem abrir o EDF em outro programa consegue, com isso, remascarar as lacunas.
+   Escrever NaN como zero — o que a maioria dos conversores faz — seria criar
+   sinal onde não há.
+
+   Referências: Kemp B, Olivan J. Clin Neurophysiol 2003;114:1755-1761 (EDF+);
+   especificação original em Kemp B, et al. Electroencephalogr Clin
+   Neurophysiol 1992;82:391-393.                                              */
+
+/* Preenche à direita com espaços até `n` — toda a cabeçalho do EDF é ASCII de
+   largura fixa, e um campo curto demais desloca o arquivo inteiro. */
+function campo(v, n) {
+  let s = String(v == null ? '' : v);
+  /* remove acento e qualquer coisa fora do ASCII imprimível: o EDF exige
+     US-ASCII, e um caractere fora disso corrompe o deslocamento em bytes */
+  s = s.normalize ? s.normalize('NFD').replace(/[̀-ͯ]/g, '') : s;
+  s = s.replace(/[^\x20-\x7E]/g, ' ');
+  if (s.length > n) s = s.slice(0, n);
+  return s + ' '.repeat(n - s.length);
+}
+function numeroCampo(v, n) {
+  if (!isFinite(v)) return campo('0', n);
+  let s = String(v);
+  if (s.length > n) {
+    /* encurta mantendo o máximo de precisão que couber */
+    for (let d = n - 2; d >= 0; d--) { s = Number(v).toFixed(d); if (s.length <= n) break; }
+    if (s.length > n) s = Number(v).toExponential(Math.max(0, n - 7));
+    if (s.length > n) s = s.slice(0, n);
+  }
+  return campo(s, n);
+}
+const dois = v => String(Math.floor(v)).padStart(2, '0');
+
+/* writeEdf(signals, opts) → { bytes: Uint8Array, meta }
+   signals: [{ label, data (Float64Array|Array), fs, unit, prefilter, transducer }]
+   opts: { startMs, patientId, recordingId, recordSeconds }                   */
+function writeEdf(signals, opts) {
+  opts = opts || {};
+  const sinais = (signals || []).filter(s => s && s.data && s.data.length && s.fs > 0);
+  if (!sinais.length) return null;
+  const durRegistro = isFinite(opts.recordSeconds) && opts.recordSeconds > 0 ? opts.recordSeconds : 1;
+
+  /* amostras por registro de cada canal; a duração total é ditada pelo canal
+     mais curto, porque o EDF exige registros completos */
+  const porRegistro = sinais.map(s => Math.max(1, Math.round(s.fs * durRegistro)));
+  const nRegistros = Math.min.apply(null, sinais.map((s, i) => Math.floor(s.data.length / porRegistro[i])));
+  if (!(nRegistros > 0)) return null;
+
+  /* faixa física por canal, calculada SÓ sobre amostras válidas, com margem —
+     é o que garante que o valor atribuído às lacunas fique fora dos dados */
+  const faixas = sinais.map(s => {
+    let mn = Infinity, mx = -Infinity, nNaN = 0;
+    for (let i = 0; i < s.data.length; i++) {
+      const v = s.data[i];
+      if (!isFinite(v)) { nNaN++; continue; }
+      if (v < mn) mn = v; if (v > mx) mx = v;
+    }
+    if (!isFinite(mn) || !isFinite(mx)) { mn = -1; mx = 1; }
+    if (mx - mn < 1e-12) { mn -= 1; mx += 1; }
+    const margem = 0.05 * (mx - mn);
+    return { physMin: mn - margem, physMax: mx + margem, nNaN };
+  });
+
+  const digMin = -32768, digMax = 32767;
+  const lacunas = [];
+  sinais.forEach((s, k) => {
+    let ini = -1;
+    const n = nRegistros * porRegistro[k];
+    for (let i = 0; i <= n; i++) {
+      const falta = i < n && !isFinite(s.data[i]);
+      if (falta && ini < 0) ini = i;
+      else if (!falta && ini >= 0) {
+        lacunas.push({ channel: s.label, startSec: +(ini / s.fs).toFixed(4), durationSec: +((i - ini) / s.fs).toFixed(4), nSamples: i - ini });
+        ini = -1;
+      }
+    }
+  });
+
+  const ns = sinais.length;
+  const bytesCabecalho = 256 * (ns + 1);
+  const bytesDados = nRegistros * porRegistro.reduce((a, b) => a + b, 0) * 2;
+  const buf = new Uint8Array(bytesCabecalho + bytesDados);
+  let off = 0;
+  const escreve = txt => { for (let i = 0; i < txt.length; i++) buf[off++] = txt.charCodeAt(i) & 0xff; };
+
+  const inicio = new Date(isFinite(opts.startMs) ? opts.startMs : Date.now());
+  const politica = 'lacunas=minimo digital';
+
+  escreve(campo('0', 8));
+  escreve(campo(opts.patientId || 'X X X X', 80));
+  escreve(campo(opts.recordingId || `Startdate X X X Percept-LFP-Studio (${politica})`, 80));
+  escreve(campo(`${dois(inicio.getUTCDate())}.${dois(inicio.getUTCMonth() + 1)}.${dois(inicio.getUTCFullYear() % 100)}`, 8));
+  escreve(campo(`${dois(inicio.getUTCHours())}.${dois(inicio.getUTCMinutes())}.${dois(inicio.getUTCSeconds())}`, 8));
+  escreve(campo(String(bytesCabecalho), 8));
+  escreve(campo('EDF+C', 44));
+  escreve(campo(String(nRegistros), 8));
+  escreve(numeroCampo(durRegistro, 8));
+  escreve(campo(String(ns), 4));
+
+  sinais.forEach(s => escreve(campo(s.label || 'LFP', 16)));
+  sinais.forEach(s => escreve(campo(s.transducer || 'DBS lead (Medtronic Percept)', 80)));
+  sinais.forEach(s => escreve(campo(s.unit || 'uV', 8)));
+  faixas.forEach(r => escreve(numeroCampo(+r.physMin.toPrecision(6), 8)));
+  faixas.forEach(r => escreve(numeroCampo(+r.physMax.toPrecision(6), 8)));
+  sinais.forEach(() => escreve(campo(String(digMin), 8)));
+  sinais.forEach(() => escreve(campo(String(digMax), 8)));
+  sinais.forEach((s, k) => escreve(campo(
+    (s.prefilter || 'HP: hardware do dispositivo') + '; ' +
+    (faixas[k].nNaN ? `${faixas[k].nNaN} amostras ausentes escritas no minimo digital` : 'sem amostras ausentes'), 80)));
+  porRegistro.forEach(n => escreve(campo(String(n), 8)));
+  sinais.forEach(() => escreve(campo('', 32)));
+
+  /* dados: registro a registro, canal a canal */
+  const vista = new DataView(buf.buffer);
+  let pos = bytesCabecalho;
+  for (let r = 0; r < nRegistros; r++) {
+    for (let k = 0; k < ns; k++) {
+      const s = sinais[k], fx = faixas[k], n = porRegistro[k];
+      const escala = (digMax - digMin) / (fx.physMax - fx.physMin);
+      for (let i = 0; i < n; i++) {
+        const v = s.data[r * n + i];
+        let d;
+        if (!isFinite(v)) d = digMin;
+        else {
+          d = Math.round(digMin + (v - fx.physMin) * escala);
+          if (d < digMin + 1) d = digMin + 1;      /* nunca colide com a marca de ausente */
+          if (d > digMax) d = digMax;
+        }
+        vista.setInt16(pos, d, true);
+        pos += 2;
+      }
+    }
+  }
+
+  return {
+    bytes: buf,
+    meta: {
+      format: 'EDF+C', nSignals: ns, nRecords: nRegistros, recordSeconds: durRegistro,
+      durationSec: +(nRegistros * durRegistro).toFixed(3),
+      headerBytes: bytesCabecalho, totalBytes: buf.length,
+      channels: sinais.map((s, k) => ({
+        label: s.label, fs: s.fs, unit: s.unit || 'uV',
+        physicalMin: +faixas[k].physMin.toPrecision(6), physicalMax: +faixas[k].physMax.toPrecision(6),
+        samplesPerRecord: porRegistro[k], nMissing: faixas[k].nNaN
+      })),
+      missingSamplePolicy: 'amostras ausentes (perda de pacote) foram escritas como o MÍNIMO DIGITAL (-32768), ' +
+        'valor fora da faixa física por construção. A lista de lacunas acompanha este arquivo em JSON, e o campo ' +
+        'de pré-filtragem de cada canal declara a política. Remascare essas amostras antes de qualquer análise.',
+      gaps: lacunas,
+      truncatedSamples: sinais.map((s, k) => s.data.length - nRegistros * porRegistro[k])
+    }
+  };
+}
+
+/* ---------- core/export/bids.js ---------- */
+/* export/bids.js — exportação em estrutura BIDS-like (iEEG).
+
+   HONESTIDADE DE NOME. Isto NÃO é um dataset BIDS certificado: o BIDS-iEEG
+   exige campos que o Session Report do Percept simplesmente não traz
+   (coordenadas dos eletrodos, referência do sistema, tipo de eletrodo por
+   contato, protocolo de tarefa). O que este módulo produz é a ESTRUTURA de
+   diretórios, a nomenclatura e os arquivos de metadados no formato do BIDS, com
+   os campos disponíveis preenchidos e os ausentes marcados como `n/a` — que é
+   exatamente o que o BIDS manda fazer com o que não se sabe. É o suficiente
+   para o dado entrar em ferramentas que leem BIDS, e insuficiente para chamar
+   de conforme. O `dataset_description.json` diz isso explicitamente.
+
+   Referência: Holdgraf C, et al. Sci Data 2019;6:102 (BIDS-iEEG).            */
+
+const na = v => (v == null || v === '' || (typeof v === 'number' && !isFinite(v))) ? 'n/a' : v;
+const tsv = (colunas, linhas) =>
+  [colunas.join('\t')].concat(linhas.map(l => colunas.map(c => String(na(l[c]))).join('\t'))).join('\n') + '\n';
+
+/* buildBidsLike(parsedList, opts) → [{ path, content }] */
+function buildBidsLike(parsedList, opts) {
+  opts = opts || {};
+  const lista = (parsedList || []).filter(Boolean);
+  if (!lista.length) return null;
+  const arquivos = [];
+
+  arquivos.push({
+    path: 'dataset_description.json',
+    content: JSON.stringify({
+      Name: opts.name || 'Percept LFP — exportação do Percept LFP Studio',
+      BIDSVersion: '1.9.0',
+      DatasetType: 'raw',
+      GeneratedBy: [{ Name: 'Percept LFP Studio', Version: opts.appVersion || '0.6.0' }],
+      Acknowledgements: 'Dados pseudonimizados na origem: nome, data de nascimento, PatientId e número de série ' +
+        'do neuroestimulador não saem do leitor de arquivo.',
+      HowToAcknowledge: 'n/a',
+      ConformanceNote: 'ESTRUTURA BIDS-like, NÃO um dataset BIDS conforme. O Session Report do Percept não traz ' +
+        'coordenadas de eletrodo, sistema de referência nem protocolo de tarefa; esses campos estão marcados como ' +
+        '"n/a". Valide com o bids-validator antes de qualquer uso que exija conformidade.'
+    }, null, 2)
+  });
+
+  /* participants.tsv — um por sujeito pseudonimizado */
+  const porSujeito = new Map();
+  lista.forEach(p => {
+    const id = (p.patient && p.patient.idHash) || hashId(p.fileName || 'x');
+    if (!porSujeito.has(id)) porSujeito.set(id, []);
+    porSujeito.get(id).push(p);
+  });
+  const participantes = [];
+  porSujeito.forEach((ps, id) => {
+    const p0 = ps[0];
+    participantes.push({
+      participant_id: 'sub-' + id.replace(/^sub-/, ''),
+      diagnosis: na(p0.patient && p0.patient.diagnosis),
+      sex: na(p0.patient && p0.patient.sex),
+      implant_date: na(p0.device && String(p0.device.implantDate || '').slice(0, 10)),
+      device_model: na(p0.device && p0.device.model),
+      firmware: na(p0.device && p0.device.firmware),
+      targets: (p0.leads || []).map(l => `${l.hemisphere}:${l.target}`).join(',') || 'n/a',
+      n_sessions: ps.length
+    });
+  });
+  arquivos.push({
+    path: 'participants.tsv',
+    content: tsv(['participant_id', 'diagnosis', 'sex', 'implant_date', 'device_model', 'firmware', 'targets', 'n_sessions'], participantes)
+  });
+  arquivos.push({
+    path: 'participants.json',
+    content: JSON.stringify({
+      participant_id: { Description: 'identificador pseudonimizado, derivado por hash na borda do leitor' },
+      diagnosis: { Description: 'diagnóstico registrado no Session Report' },
+      implant_date: { Description: 'data de implante do neuroestimulador', Units: 'YYYY-MM-DD' },
+      targets: { Description: 'alvo por hemisfério, como registrado no arquivo' }
+    }, null, 2)
+  });
+
+  /* por sessão: channels.tsv, ieeg.json, events.tsv e o sinal em TSV */
+  porSujeito.forEach((ps, id) => {
+    const sub = 'sub-' + id.replace(/^sub-/, '');
+    ps.slice().sort((a, b) => String(a.meta.sessionStart || '').localeCompare(String(b.meta.sessionStart || '')))
+      .forEach((p, iSes) => {
+        const ses = 'ses-' + String(iSes + 1).padStart(2, '0');
+        const base = `${sub}/${ses}/ieeg/${sub}_${ses}_task-rest_`;
+        const tds = (p.bsTimeDomain || []).concat(p.montageTD || []);
+
+        const canais = tds.map(td => ({
+          name: td.label, type: 'DBS', units: 'uV',
+          low_cutoff: 'n/a', high_cutoff: 'n/a',
+          reference: 'bipolar entre os contatos indicados no nome do canal',
+          sampling_frequency: isFinite(td.fsEff) ? +td.fsEff.toFixed(4) : td.fs,
+          notch: 'n/a',
+          status: (td.packets && td.packets.pctMissing > 10) ? 'bad' : 'good',
+          status_description: td.packets && isFinite(td.packets.pctMissing)
+            ? `${td.packets.pctMissing.toFixed(2)}% de amostras perdidas (preservadas como NaN)` : 'n/a'
+        }));
+        if (canais.length) arquivos.push({
+          path: base + 'channels.tsv',
+          content: tsv(['name', 'type', 'units', 'low_cutoff', 'high_cutoff', 'reference', 'sampling_frequency', 'notch', 'status', 'status_description'], canais)
+        });
+
+        const fs0 = tds.length ? (tds[0].fsEff || tds[0].fs) : null;
+        arquivos.push({
+          path: base + 'ieeg.json',
+          content: JSON.stringify({
+            TaskName: 'rest',
+            InstitutionName: 'n/a',
+            Manufacturer: 'Medtronic',
+            ManufacturersModelName: na(p.device && p.device.model),
+            SoftwareVersions: na(p.meta && p.meta.programmerVersion),
+            SamplingFrequency: na(fs0),
+            PowerLineFrequency: na(opts.powerLineHz),
+            SoftwareFilters: 'n/a',
+            HardwareFilters: { note: 'passa-alta do dispositivo, não exposta no Session Report' },
+            RecordingDuration: tds.length && fs0 ? +(tds[0].data.length / fs0).toFixed(3) : 'n/a',
+            RecordingType: 'continuous',
+            iEEGReference: 'bipolar entre contatos do próprio eletrodo de DBS',
+            ElectrodeManufacturer: 'Medtronic',
+            iEEGElectrodeGroups: (p.leads || []).map(l => `${l.hemisphere}:${l.target}:${l.model || 'n/a'}`).join('; ') || 'n/a',
+            DBSParameters: {
+              note: 'parâmetros de estimulação vigentes no momento do registro, quando declarados no arquivo'
+            },
+            MissingDataPolicy: 'perda de pacote preservada como NaN; nada foi interpolado',
+            SessionStart: na(p.meta && p.meta.sessionStart),
+            NonConformanceNote: 'coordenadas de eletrodo e sistema de referência anatômica não constam do ' +
+              'Session Report do Percept e não podem ser inventados aqui'
+          }, null, 2)
+        });
+
+        /* eventos do paciente */
+        const eventos = (p.snapshots || []).map(s => ({
+          onset: isFinite(s.t) && p.meta.sessionStart ? +((s.t - Date.parse(p.meta.sessionStart)) / 1000).toFixed(3) : 'n/a',
+          duration: 0, trial_type: s.name || 'evento', value: 'n/a'
+        }));
+        if (eventos.length) arquivos.push({
+          path: base + 'events.tsv',
+          content: tsv(['onset', 'duration', 'trial_type', 'value'], eventos)
+        });
+
+        /* sinal bruto em TSV — o BIDS-iEEG prefere BrainVision/EDF/NWB; aqui o
+           TSV acompanha o EDF gerado à parte, e isso fica dito */
+        if (opts.includeSignalTsv !== false && tds.length) {
+          const n = Math.min.apply(null, tds.map(t => t.data.length));
+          const linhas = [tds.map(t => t.label).join('\t')];
+          for (let i = 0; i < n; i++) linhas.push(tds.map(t => isFinite(t.data[i]) ? t.data[i].toFixed(4) : 'n/a').join('\t'));
+          arquivos.push({ path: base + 'ieeg.tsv', content: linhas.join('\n') + '\n' });
+        }
+      });
+  });
+
+  return arquivos;
 }
 
 /* ---------- core/io/timezone.js ---------- */
@@ -8439,6 +8919,9 @@ function fitDoseResponse(ma, power, opts) {
 
 
 
+
+
+
 const API = {
   parsePercept, parsePerceptText, MODALITIES, BANDS, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId,
   fft, nextPow2, welchPSD, spectrogram, bandpassFFT, hilbertEnvelope, detectBursts, fitAperiodic,
@@ -8449,7 +8932,7 @@ const API = {
   peakInBand, daysSince, pickSpectrum, spectralMetrics, burstMetrics, doseResponse, ecgMetrics, deviceStateMetrics,
   mergeTrend, collectThresholds, chronicMetrics, extractMetrics,
   /* ranking dos pares bipolares do Survey (F1) */
-  rankSurveyChannels,
+  rankSurveyChannels, cohortSummary, wilsonCI,
   detectStates, betaEnvelopeSeries, streamOnOff, bimodalityCoefficient,
   /* integridade do sinal bruto (Onda 1 — L01, L02, L05, L07) */
   parseIntList, unwrapCounter, unwrapTicks, analyzePackets, insertNaNGaps, effectiveFs, stitchStreams,
@@ -8465,7 +8948,7 @@ const API = {
   generateChecklist, checklistDocx, CHECKLIST_ITEMS,
   /* leituras em linguagem clínica e semáforo de QC (Onda 8.1) */
   clinicalReadings, qcTrafficLight,
-  makeZip, makeDocx, crc32,
+  makeZip, makeDocx, crc32, writeEdf, buildBidsLike,
   /* fidelidade e QC (Ondas 1.3 e 2.2 — L03, L04, L06, L13–L17, L19) */
   inferDeviceState, statesComparable,
   dstTransitions, detectOffsetBreaks, resolveOffsets, segmentByOffset,
@@ -12119,6 +12602,85 @@ const FIGURES = [
           `E antes de tudo isso: se a métrica não for reprodutível, a diferença observada pode ser só ruído de medida.`
       }));
     }
+  },
+
+  /* ----------------------------------------------------------------- F27 */
+  {
+    id: 'F27', title: 'Coorte — todos os registros carregados lado a lado',
+    sub: 'tabela por sujeito, estatísticas de grupo e prevalência com IC de Wilson',
+    has: () => S.files.length > 0,
+    render(node, d) {
+      const subs = subjects();
+      const pacotes = subs.map(s => {
+        try { return C.extractMetrics(s.files.map(x => x.parsed), offMin(), { profileId: activeProfileId() }); }
+        catch (e) { return null; }
+      }).filter(Boolean);
+      const co = C.cohortSummary(pacotes, {});
+      if (!co) return node.appendChild(el('div', { class: 'empty', text: 'Nenhum registro com métricas extraíveis.' }));
+
+      node.appendChild(el('div', {
+        class: co.descriptiveOnly ? 'warnbox' : 'note',
+        html: `<b>${co.nSubjects} sujeito(s), ${co.nHemispheres} hemisfério(s).</b> ${co.note}. ${co.caveat}`
+      }));
+
+      /* prevalência de pico */
+      const pv = co.prevalence;
+      node.appendChild(el('h4', { class: 'qc-title', html: '<b>Prevalência de pico na banda primária</b> — a estatística que muda o cálculo amostral de um estudo' }));
+      node.appendChild(table(['recorte', 'k / n', 'proporção', 'IC 95% (Wilson)', 'referência'], [
+        ['por hemisfério', `${pv.byHemisphere.k} / ${pv.byHemisphere.n}`, isFinite(pv.byHemisphere.pct) ? f(pv.byHemisphere.pct, 1) + ' %' : '—',
+          `${f(100 * pv.byHemisphere.ci95[0], 1)}–${f(100 * pv.byHemisphere.ci95[1], 1)} %`, pv.reference],
+        ['bilateral', `${pv.bilateral.k} / ${pv.bilateral.n}`, isFinite(pv.bilateral.pct) ? f(pv.bilateral.pct, 1) + ' %' : '—',
+          `${f(100 * pv.bilateral.ci95[0], 1)}–${f(100 * pv.bilateral.ci95[1], 1)} %`, pv.ciMethod]
+      ]));
+
+      /* tabela por sujeito */
+      node.appendChild(el('h4', { class: 'qc-title', html: '<b>Por sujeito e hemisfério</b>' }));
+      node.appendChild(table(
+        ['sujeito', 'hemi.', 'pico?', 'pico (Hz)', 'rel. (%)', 'χ aperiód.', 'burst/s', 'MESOR', 'amp. 24 h', 'acrofase', '% beta alto', 'dias'],
+        co.rows.map(r => [
+          r.subjectId,
+          { html: `<span class="hemi-${String(r.hemisphere)[0]}">${hname(r.hemisphere)}</span>` },
+          { html: r.hasPeak === null ? '—' : r.hasPeak ? '<span class="sig">sim</span>' : '<span class="ns">não</span>' },
+          f(r.peakHz, 1), f(r.betaRelPct, 1), f(r.aperiodicExponent, 2), f(r.burstRate, 2),
+          f(r.mesor, 1), f(r.amp24, 2), isFinite(r.acrophase) ? f(r.acrophase, 1) + ' h' : '—',
+          isFinite(r.offPct) ? f(r.offPct, 1) + ' %' : '—', isFinite(r.nDays) ? String(r.nDays) : '—'
+        ])));
+
+      /* estatísticas de grupo */
+      node.appendChild(el('h4', { class: 'qc-title', html: '<b>Estatísticas de grupo</b> — mediana [IQR], por hemisfério' }));
+      node.appendChild(table(['métrica', 'todos', 'esquerdo', 'direito'],
+        co.stats.map(e => {
+          const fmt = r => !r ? '—' : r.circular
+            ? `${f(r.mean, 1)} h (R = ${f(r.concentration, 2)}, n = ${r.n})`
+            : `${f(r.median, 2)} [${f(r.q1, 2)}; ${f(r.q3, 2)}] (n = ${r.n})`;
+          return [e.label, fmt(e.all), fmt(e.left), fmt(e.right)];
+        })));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Acrofase é grandeza circular.</b> Média aritmética de horários é incorreta — 23 h e 1 h ` +
+          `não têm média 12 h. As linhas de acrofase trazem a média circular e a concentração R (0 = espalhado por todo o ` +
+          `ciclo, 1 = todos no mesmo horário).`
+      }));
+
+      node.appendChild(exportRow([
+        {
+          label: '⤓ CSV da coorte', fn: () => P.downloadText(P.toCSV(co.rows.map(r => ({
+            sujeito: r.subjectId, hemisferio: r.hemisphere,
+            tem_pico: r.hasPeak === null ? '' : (r.hasPeak ? 1 : 0),
+            pico_hz: r.peakHz, relativa_pct: r.betaRelPct, expoente_aperiodico: r.aperiodicExponent,
+            burst_taxa_hz: r.burstRate, burst_duracao_ms: r.burstMeanMs,
+            mesor: r.mesor, amplitude_24h: r.amp24, acrofase_h: r.acrophase,
+            pct_beta_alto: r.offPct, dias_timeline: r.nDays
+          }))), 'coorte_por_hemisferio.csv', 'text/csv')
+        },
+        {
+          label: '⤓ JSON da coorte', fn: () => P.downloadText(JSON.stringify({
+            generated_at: new Date().toISOString(), n_subjects: co.nSubjects,
+            descriptive_only: co.descriptiveOnly, note: co.note,
+            prevalence: co.prevalence, subjects: co.subjects, stats: co.stats
+          }, null, 2), 'coorte.json', 'application/json')
+        }
+      ]));
+    }
   }
 ];
 
@@ -12285,7 +12847,8 @@ function renderRail() {
       ['⤓ Todas as figuras (PNG)', 'baixa cada gráfico individualmente', downloadAllFigures],
       ['⤓ Checklist PERCEPT-REPORT (.md)', 'itens mínimos de reporte, preenchidos automaticamente', () => exportChecklist('md')],
       ['⤓ Checklist PERCEPT-REPORT (.docx)', 'mesmo conteúdo, pronto para material suplementar', () => exportChecklist('docx')],
-      ['⤓ Manifesto de proveniência', 'todos os parâmetros efetivos + hash citável da análise', exportManifest]
+      ['⤓ Manifesto de proveniência', 'todos os parâmetros efetivos + hash citável da análise', exportManifest],
+      ['⤓ Pacote completo (.zip)', 'métricas, EDF, BIDS-like, manifesto, checklist e todas as figuras', exportarPacote, 'primary']
     ].forEach(([label, desc, fn, cls]) => {
       grid.appendChild(el('div', { class: 'exportitem' }, [
         el('button', { class: 'btn' + (cls ? ' ' + cls : ''), text: label, onclick: fn }),
@@ -12771,6 +13334,122 @@ async function exportChronicCSV() {
   P.downloadText(P.toCSV(b.chronic, unionKeys(b.chronic)), `percept_${b.subject.id}_metricas_cronicas.csv`, 'text/csv');
 }
 
+/* ------------------------------------------ pacote único (Onda 6) --------
+   Um ZIP com tudo o que a análise produziu: métricas, sinal em EDF, estrutura
+   BIDS-like, manifesto de proveniência com hash, checklist e as figuras em PNG.
+   O ZIP é escrito sem compressão (método "store"), porque comprimir exigiria
+   deflate — e a dependência zero vale também aqui. */
+async function exportarPacote() {
+  if (!S.files.length) return alert('Carregue ao menos um arquivo antes de exportar o pacote.');
+  const ps = activeFiles().map(x => x.parsed);
+  Prog.begin('Montando o pacote completo').expect(7);
+  const arquivos = [];
+  const texto = (nome, conteudo) => arquivos.push({ name: nome, data: conteudo });
+  try {
+    await Prog.step('calculando as métricas');
+    const b = await exportBundleAsync();
+    if (b) {
+      texto('metricas/percept_metricas.json', JSON.stringify({
+        export: { tool: 'Percept LFP Studio', generated_at: new Date().toISOString(), timezone_offset_min: offMin() },
+        subject: b.subject, sessions: b.sessions, acute: b.acute, chronic: b.chronic
+      }, null, 2));
+      if (b.acute.length) texto('metricas/metricas_agudas.csv', P.toCSV(b.acute, unionKeys(b.acute)));
+      if (b.chronic.length) texto('metricas/metricas_cronicas.csv', P.toCSV(b.chronic, unionKeys(b.chronic)));
+    }
+
+    await Prog.step('escrevendo o Timeline em formato longo');
+    const dd = ds();
+    const linhas = [];
+    Object.keys(dd.trend).forEach(h => dd.trend[h].forEach(r => linhas.push({
+      hemisferio: h, utc: new Date(r.t).toISOString(),
+      hora_local_decimal: +C.localHour(r.t, offMin()).toFixed(4),
+      dia_local: C.localDayKey(r.t, offMin()), lfp: r.lfp, mA: r.ma
+    })));
+    if (linhas.length) texto('metricas/timeline_longo.csv', P.toCSV(linhas));
+
+    await Prog.step('convertendo o sinal bruto para EDF');
+    const tds = dd.bsTimeDomain.concat(dd.montageTD);
+    if (tds.length) {
+      const sinais = tds.map(td => ({
+        label: td.label, data: td.data, fs: td.fsEff || td.fs, unit: 'uV',
+        prefilter: 'passa-alta do dispositivo (nao exposta no Session Report)'
+      }));
+      const edf = C.writeEdf(sinais, {
+        startMs: isFinite(td0Ms(tds[0])) ? td0Ms(tds[0]) : Date.now(),
+        patientId: (b && b.subject.id) || 'sub-x'
+      });
+      if (edf) {
+        arquivos.push({ name: 'sinal/percept.edf', data: edf.bytes });
+        texto('sinal/percept_edf_metadados.json', JSON.stringify(edf.meta, null, 2));
+      }
+    }
+
+    await Prog.step('montando a estrutura BIDS-like');
+    const bids = C.buildBidsLike(ps, { includeSignalTsv: false, appVersion: '0.6.0' });
+    (bids || []).forEach(a => texto('bids/' + a.path, a.content));
+
+    await Prog.step('reunindo a proveniência e o hash citável');
+    const prov = await buildProvenance();
+    const man = prov.manifest();
+    man.manifestHash = await prov.hash();
+    texto('proveniencia/manifesto.json', JSON.stringify(man, null, 2));
+    try {
+      const ck = C.generateChecklist(man, b, activeProfile());
+      texto('proveniencia/PERCEPT-REPORT.md', ck.markdown);
+    } catch (e) { Prog.falhaEtapa(String(e && e.message || e)); }
+
+    await Prog.step('desenhando e exportando as figuras');
+    await renderAllReady();
+    const d2 = ds();
+    figurasVisiveis().forEach(fig => {
+      if (!fig.has(d2)) return;
+      const no = document.getElementById('content-' + fig.id);
+      const cvs = no ? Array.from(no.querySelectorAll('canvas')) : [];
+      cvs.forEach((cv, j) => {
+        try {
+          const url = cv.toDataURL('image/png');
+          const bin = atob(url.split(',')[1]);
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          arquivos.push({ name: `figuras/${fig.id}${cvs.length > 1 ? '_' + (j + 1) : ''}.png`, data: bytes });
+        } catch (e) { /* canvas vazio ou bloqueado: segue sem essa figura */ }
+      });
+    });
+
+    await Prog.step('fechando o ZIP');
+    texto('LEIA-ME.txt',
+      'PACOTE DE ANÁLISE — Percept LFP Studio\n' +
+      '=====================================\n\n' +
+      `Gerado em ${new Date().toISOString()}\n` +
+      `Registro: ${(b && b.subject.id) || '—'} · perfil: ${activeProfile().label}\n` +
+      `Fuso aplicado: UTC${offMin() >= 0 ? '+' : '−'}${String(Math.floor(Math.abs(offMin()) / 60)).padStart(2, '0')}:${String(Math.abs(offMin()) % 60).padStart(2, '0')}\n\n` +
+      'metricas/     métricas por sessão e por hemisfério, em CSV e JSON\n' +
+      'sinal/        sinal bruto em EDF+ e os metadados da conversão\n' +
+      'bids/         estrutura BIDS-like (NÃO é um dataset BIDS conforme — ver dataset_description.json)\n' +
+      'proveniencia/ manifesto com todos os parâmetros efetivos, hash citável e checklist PERCEPT-REPORT\n' +
+      'figuras/      cada gráfico em PNG\n\n' +
+      'AMOSTRAS AUSENTES: a perda de pacote é preservada como NaN em todo o pipeline. No EDF, que não tem\n' +
+      'representação para dado ausente, essas amostras foram escritas no mínimo digital e a lista de lacunas\n' +
+      'está em sinal/percept_edf_metadados.json. Remascare antes de qualquer análise.\n\n' +
+      'Ferramenta de pesquisa e apoio à decisão. Não substitui o julgamento clínico nem o software regulado\n' +
+      'do fabricante.\n');
+    const zip = C.makeZip(arquivos);
+    const blob = new Blob([zip], { type: 'application/zip' });
+    const a = document.createElement('a');
+    a.download = `percept_pacote_${(b && b.subject.id) || 'analise'}.zip`;
+    a.href = URL.createObjectURL(blob); a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 8000);
+    await Prog.finish(`pacote com ${arquivos.length} arquivos`);
+  } catch (e) { Prog.fail(e); }
+}
+function td0Ms(td) {
+  if (!td) return NaN;
+  if (isFinite(td.firstPacketMs)) return td.firstPacketMs;
+  if (td.firstPacketDateTime) return Date.parse(td.firstPacketDateTime);
+  if (isFinite(td.t0)) return td.t0;
+  return NaN;
+}
+
 /* Abre e renderiza TODAS as figuras com dados (usado por relatório e PNG).
    É a operação mais cara do aplicativo — em registros de meses passa de dez
    segundos — e por isso é a que mais precisa anunciar cada etapa. Figuras já
@@ -13067,6 +13746,12 @@ function init() {
     S.tzOverride = e.target.value === 'auto' ? null : parseInt(e.target.value, 10);
     renderAll('Aplicando fuso horário');
   });
+  const bp = document.getElementById('btnPasta');
+  const di = document.getElementById('dirInput');
+  if (bp && di) {
+    bp.addEventListener('click', () => di.click());
+    di.addEventListener('change', e => { const fs = Array.from(e.target.files || []); e.target.value = ''; handleFiles(fs); });
+  }
   const px = document.getElementById('procX');
   if (px) px.addEventListener('click', () => { const p = document.getElementById('proc'); if (p) p.hidden = true; });
   ['clinico', 'pesquisa'].forEach(m => {
@@ -13091,7 +13776,7 @@ function init() {
 }
 document.addEventListener('DOMContentLoaded', init);
 /* hook de depuração (usado pela suíte de testes; inerte em produção) */
-window.__PLS__ = { FIGURES, buildProvenance, carregaExterno, ds, invalidarDs, S, renderRail, renderFigure, renderFigureAsync, renderAllReady, handleFiles, offMin, exportBundle, exportBundleAsync, buildReportCover, Prog, proximoQuadro, setModo, modoAtual, figurasVisiveis, leiturasClinicas, leiturasClinicasAsync, PIPELINES, rodarPipeline, preencherSemaforo, inserirLeituras, Trabalhador, Instrumentacao };
+window.__PLS__ = { FIGURES, buildProvenance, carregaExterno, exportarPacote, ds, invalidarDs, S, renderRail, renderFigure, renderFigureAsync, renderAllReady, handleFiles, offMin, exportBundle, exportBundleAsync, buildReportCover, Prog, proximoQuadro, setModo, modoAtual, figurasVisiveis, leiturasClinicas, leiturasClinicasAsync, PIPELINES, rodarPipeline, preencherSemaforo, inserirLeituras, Trabalhador, Instrumentacao };
 })();
 </script>
 </body>

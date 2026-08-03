@@ -158,8 +158,63 @@ A coluna **Leitura clínica** resume, em uma frase, o que cada figura diz ao mé
 | **F24** | **Sinal externo (IMU/EMG/ECG) — alinhamento e coerência** | `BrainSenseTimeDomain` + CSV/TSV externo | Se a oscilação do LFP é **do cérebro** ou é o próprio movimento entrando pelo eletrodo. |
 | **F25** | **Actograma duplo-plot e banda-controle** | `LFPTrendLogs` (≥ 2 dias) + snapshots datados | Se o horário do pico **deriva entre os dias** e se o padrão diurno é **específico da banda**. |
 | **F26** | **Longitudinal — impedância, confiabilidade e uso** | ≥ 2 sessões | Se o que mudou entre visitas foi **o cérebro ou a medida**. |
+| **F27** | **Coorte — todos os registros lado a lado** | ≥ 1 registro | Prevalência de pico com **IC de Wilson**, tabela por sujeito e estatísticas de grupo. |
 
 Cada figura exporta PNG e os dados subjacentes em CSV.
+
+---
+
+## Coorte, pacote único e linha de comando
+
+**Ingestão de pasta.** O botão `+ pasta` lê todos os `.json` de um diretório, incluindo subpastas, e
+agrupa por sujeito pseudonimizado. Registros de pessoas diferentes nunca são agregados — o software
+detecta e obriga a escolher.
+
+**Modo coorte (F27).** Tabela por sujeito × hemisfério, estatísticas de grupo e a **prevalência de
+pico na banda primária** — a estatística que muda o cálculo amostral de um estudo e que quase nunca
+é reportada. O IC é de **Wilson**, não de Wald: com 2 de 2 hemisférios, Wald daria [100 %; 100 %] e
+Wilson dá **[34,2 %; 100 %]**, que é a verdade. Abaixo de 5 sujeitos o resumo sai marcado como
+**descritivo** e nenhum teste de grupo é aplicado. Acrofase entra como grandeza **circular** — 23 h
+e 1 h não têm média 12 h.
+
+**Pacote completo (.zip).** Um arquivo com tudo o que a análise produziu, escrito sem compressão
+(método *store*, porque *deflate* exigiria dependência):
+
+```
+metricas/       CSV e JSON por sessão e hemisfério, mais o Timeline em formato longo
+sinal/          o sinal bruto em EDF+ e os metadados da conversão
+bids/           estrutura BIDS-like
+proveniencia/   manifesto com todos os parâmetros efetivos, hash citável e checklist PERCEPT-REPORT
+figuras/        cada gráfico em PNG
+LEIA-ME.txt
+```
+
+**EDF+ escrito do zero.** EDF é o formato que EEGLAB, FieldTrip, MNE e Brainstorm abrem. O problema
+que ele *não* resolve — e que aqui não é escondido — é que o formato armazena inteiros de 16 bits e
+**não tem representação para dado ausente**. A política adotada: as amostras faltantes recebem o
+**mínimo digital**, valor que fica fora da faixa física por construção (a faixa é calculada só sobre
+amostras válidas, com margem); a lista de lacunas acompanha o arquivo em JSON; e o campo de
+pré-filtragem de cada canal declara a política em texto. Escrever NaN como zero, o que a maioria dos
+conversores faz, seria criar sinal onde não há. Verificado: erro máximo de reconstrução de
+**1,7 × 10⁻³ µV** (menor que um passo de quantização) e **zero** colisões entre amostras válidas e a
+marca de ausente.
+
+**BIDS-like, e o nome é literal.** O que sai é a estrutura de diretórios, a nomenclatura e os
+arquivos de metadados do BIDS-iEEG, com os campos disponíveis preenchidos e os ausentes marcados
+`n/a`. Não é um dataset BIDS conforme, porque o Session Report do Percept não traz coordenadas de
+eletrodo, sistema de referência anatômica nem protocolo de tarefa — e o `dataset_description.json`
+diz isso.
+
+**Linha de comando.** Processa uma coorte inteira sem abrir a interface, rodando **o mesmo núcleo**
+que o navegador executa (lido de `index.html`, não de uma cópia paralela):
+
+```bash
+node tools/cli.mjs <pasta> --out saida [--tz -180] [--profile pd] [--no-edf] [--no-bids]
+```
+
+Escreve métricas por sujeito, EDF por sessão, a estrutura BIDS-like, o resumo da coorte e um
+`execucao.json` com o que foi lido, o que falhou e por quê. Não gera figuras: elas dependem de
+canvas, e desenhar em Node exigiria dependência gráfica — a CLI declara isso em vez de omitir.
 
 ---
 
