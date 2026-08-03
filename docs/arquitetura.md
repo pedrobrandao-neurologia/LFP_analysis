@@ -60,6 +60,9 @@ Estado atual (verificado):
 | `io/external.js` | `stats` (nenhuma dependência de `dsp`) |
 | `io/sync.js` | `dsp/filters`, `stats` |
 | `dsp/coherence.js` | `dsp/fft`, `dsp/nan`, `stats` |
+| `stats/cluster.js`, `stats/icc.js` | `stats` |
+| `metrics/control.js` | `io/parse`, `dsp/spectral`, `stats/cluster` |
+| `metrics/longitudinal.js` | `stats`, `stats/icc`, `metrics/extract` |
 | `report/reading.js` | `profiles` (só o perfil; nenhuma dependência de DSP) |
 | `stats/optimize.js` | `stats` (Levenberg-Marquardt compartilhado por `dsp` e `adbs`) |
 | `dsp/multitaper.js`, `dsp/specparam.js`, `dsp/wavelet.js`, `dsp/pac.js`, `dsp/gamma.js` | `dsp`, `stats` |

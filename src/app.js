@@ -2927,6 +2927,271 @@ const FIGURES = [
           `por isso a parte imaginária vem sempre junto, porque só sobrevive nela o que teve atraso de propagação.`
       }));
     }
+  },
+
+  /* ----------------------------------------------------------------- F25 */
+  {
+    id: 'F25', title: 'Actograma e banda-controle — o ritmo é específico?',
+    sub: 'duplo-plot com deriva de fase · marcador vs. banda-controle por permutação de cluster',
+    has: d => Object.keys(d.trend).length || d.snapshots.length,
+    render(node, d) {
+      const hemis = Object.keys(d.trend);
+      const h = opt('F25', 'hemi', hemis[0]);
+      const binMin = opt('F25', 'bin', 30);
+      const norm = opt('F25', 'norm', true);
+      const pb = profileBands().primary || { lo: 13, hi: 35 };
+      const cLo = opt('F25', 'clo', 55), cHi = opt('F25', 'chi', 95);
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        hemis.length ? ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: 'STN ' + hname(x) })), h, v => setOpt('F25', 'hemi', v)) : el('span', { class: 'exphint', text: 'sem Timeline' }),
+        ctrlSelect('bin', [{ value: 15, label: '15 min' }, { value: 30, label: '30 min' }, { value: 60, label: '60 min' }], binMin, v => setOpt('F25', 'bin', +v)),
+        ctrlCheck('normalizar cada dia', norm, v => setOpt('F25', 'norm', v)),
+        ctrlNumber('banda-controle de (Hz)', cLo, 1, 120, 5, v => setOpt('F25', 'clo', v)),
+        ctrlNumber('banda-controle até (Hz)', cHi, 5, 125, 5, v => setOpt('F25', 'chi', v))
+      ]));
+
+      /* ---------------- (a) actograma duplo-plot ----------------------- */
+      if (hemis.length) {
+        const limpo = C.removeOutliersMAD(d.trend[h], 'lfp', 4).kept;
+        const ac = C.actogram(limpo, offMin(), { binMin, normalizeDaily: norm });
+        if (!ac.ok) node.appendChild(el('div', { class: 'empty', text: ac.reason }));
+        else {
+          const box = plotBox(node, Math.max(200, 54 + ac.days.length * 8));
+          const M = ac.rows.map(r => r.values);
+          const ch = new P.Chart(box.canvas, {
+            width: box.width, height: box.height, xlim: [0, 48], ylim: [0, ac.days.length],
+            xlabel: 'hora local (dois dias por linha)', ylabel: 'dia',
+            title: `(a) actograma duplo-plot — STN ${hname(h)}, ${ac.days.length} dias`,
+            pad: { l: 76, r: 62, t: 24, b: 42 }
+          });
+          ch.heat(M, { cmap: norm ? 'divergent' : 'viridis', zmin: ac.zmin, zmax: ac.zmax, smooth: false });
+          const passo = Math.max(1, Math.ceil(ac.days.length / 14));
+          ch.axes({
+            grid: false, xticks: [0, 6, 12, 18, 24, 30, 36, 42, 48],
+            xfmt: v => String(v % 24).padStart(2, '0') + 'h',
+            yticks: ac.days.map((_, i) => i + .5).filter((_, i) => i % passo === 0),
+            yfmt: v => (ac.days[Math.floor(v)] || '').slice(5).split('-').reverse().join('/')
+          });
+          ch.vline(24, { color: COL.ink, width: 1.2, dash: [4, 3] });
+          ch.colorbar({ label: norm ? '% mediana do dia' : 'u.a.' });
+
+          node.appendChild(table(['item', 'valor', 'leitura'], [
+            ['dias registrados', String(ac.days.length), `bin de ${ac.binMin} min · ${norm ? 'cada dia normalizado pela própria mediana' : 'escala absoluta'}`],
+            ['deriva do horário do pico', isFinite(ac.medianDriftHoursPerDay) ? `${f(ac.medianDriftHoursPerDay, 2)} h/dia` : '—',
+              isFinite(ac.totalDriftHours) ? `acumula ${f(Math.abs(ac.totalDriftHours), 1)} h no período` : '—'],
+            ['acrofase por dia', ac.acrophaseByDay.filter(isFinite).slice(0, 8).map(v => f(v, 1) + 'h').join(' · ') + (ac.days.length > 8 ? ' …' : ''),
+              'média circular do perfil, ponderada — não o bin de máximo, que salta com ruído']
+          ]));
+          node.appendChild(el('div', {
+            class: Math.abs(ac.medianDriftHoursPerDay) >= 0.15 ? 'warnbox' : 'note',
+            html: `<b>Deriva de fase.</b> ${ac.driftNote}. ${ac.note}.`
+          }));
+          node.appendChild(exportRow([
+            { label: '⤓ PNG actograma', fn: () => P.downloadCanvas(box.canvas, 'F25a_actograma') },
+            {
+              label: '⤓ CSV actograma', fn: () => P.downloadText(P.toCSV(ac.rows.flatMap(r =>
+                r.values.map((v, i) => ({ dia: r.day, bin: i, hora: +((i + 0.5) * ac.binMin / 60).toFixed(3), valor: v })))),
+                'F25_actograma.csv', 'text/csv')
+            }
+          ]));
+        }
+      }
+
+      /* ---------------- (b) banda-controle ----------------------------- */
+      node.appendChild(el('h4', { class: 'qc-title', html: '<b>(b) O padrão diurno é específico da banda?</b>' }));
+      const espectros = (d.snapshots || []).filter(s => s.f && s.f.length && s.p).map(s => ({ t: s.t, f: s.f, p: s.p }));
+      const cb = C.controlBandDiurnal(espectros, offMin(), {
+        markerBand: [pb.lo, pb.hi], controlBand: [cLo, cHi], nBins: 12, nPermutations: 1500
+      });
+      if (!cb.ok) {
+        node.appendChild(el('div', { class: 'empty', html: `${cb.reason}.` }));
+        node.appendChild(el('div', {
+          class: 'note', html: `<b>Por que esta pergunta importa.</b> Um padrão diurno na potência do marcador pode ser ` +
+            `ritmo neural — ou postura, movimento, impedância que muda com a temperatura, qualquer coisa que module o ` +
+            `sinal <b>inteiro</b>. O teste é ver se a mesma variação aparece numa banda que não deveria carregar o ` +
+            `biomarcador. Sem espectros datados suficientes, esta verificação não pode ser feita, e a variação diurna ` +
+            `do Timeline <b>não pode</b> ser atribuída à banda.`
+        }));
+      } else {
+        const b2 = plotBox(node, 250);
+        const todos = cb.markerProfile.concat(cb.controlProfile).filter(isFinite);
+        const ch2 = new P.Chart(b2.canvas, {
+          width: b2.width, height: b2.height, xlim: [0, 24],
+          ylim: [Math.min.apply(null, todos) * 0.95, Math.max.apply(null, todos) * 1.08],
+          xlabel: 'hora local', ylabel: 'potência (normalizada pela média da própria banda)',
+          title: `(b) perfil diurno — marcador ${pb.lo}–${pb.hi} Hz vs. controle ${cLo}–${cHi} Hz`,
+          pad: { l: 76, r: 14, t: 24, b: 42 }
+        });
+        ch2.axes({ xticks: [0, 4, 8, 12, 16, 20, 24], xfmt: v => String(v).padStart(2, '0') + 'h' });
+        (cb.cluster && cb.cluster.clusters || []).filter(c => c.significant).forEach(c => {
+          const a = cb.hours[c.startIdx] - 12 / cb.nBins, b = cb.hours[c.endIdx] + 12 / cb.nBins;
+          ch2.span(a, b, { color: COL.accent, alpha: .13, label: 'cluster significativo' });
+        });
+        ch2.line(cb.hours, cb.markerProfile, { color: hcol(h || 'Left'), width: 2, label: `marcador ${pb.lo}–${pb.hi} Hz` });
+        ch2.line(cb.hours, cb.controlProfile, { color: COL.muted, width: 1.6, dash: [5, 3], label: `controle ${cLo}–${cHi} Hz` });
+        ch2.legend({ x: ch2.x0 + 8, y: ch2.y1 + 6 });
+
+        const cl = cb.cluster;
+        node.appendChild(table(['item', 'valor', 'o que significa'], [
+          ['espectros com hora', `${cb.nSpectra} em ${cb.nDays} dia(s)`, `${cb.nPerBin.filter(v => v > 0).length} de ${cb.nBins} bins de hora preenchidos`],
+          ['amplitude diurna do marcador', f(cb.markerAmplitude, 3), 'pico a vale do perfil normalizado'],
+          ['amplitude diurna do controle', f(cb.controlAmplitude, 3), 'a mesma medida, na banda que não deveria carregar o biomarcador'],
+          ['razão de amplitudes', isFinite(cb.amplitudeRatio) ? `${f(cb.amplitudeRatio, 2)}×` : '—', 'quanto o marcador varia a mais que o controle'],
+          ['clusters testados', cl ? String(cl.clusters.length) : '—', cl ? `${cl.nPermutations} permutações, limiar |t| ≥ ${cl.clusterThreshold}, semente ${cl.seed}` : '—'],
+          ['clusters significativos', cl ? String(cl.clusters.filter(c => c.significant).length) : '—',
+            cl && cl.clusters.length ? cl.clusters.slice(0, 3).map(c => `${f(cb.hours[c.startIdx], 0)}–${f(cb.hours[c.endIdx], 0)}h p=${f(c.p, 3)}`).join(' · ') : (cl ? cl.reason : '—')]
+        ]));
+        node.appendChild(el('div', {
+          class: cb.bandSpecific ? 'note' : 'warnbox',
+          html: `<b>Veredito: ${cb.verdict}.</b> ${cb.interpretation}.`
+        }));
+        if (cl && cl.clusters.length) node.appendChild(el('div', {
+          class: 'note', html: `<b>O que o teste de cluster não diz.</b> ${cl.caveat}`
+        }));
+        node.appendChild(exportRow([
+          { label: '⤓ PNG perfis', fn: () => P.downloadCanvas(b2.canvas, 'F25b_banda_controle') },
+          {
+            label: '⤓ CSV perfis', fn: () => P.downloadText(P.toCSV(cb.hours.map((x, i) => ({
+              hora: x, marcador: cb.markerProfile[i], controle: cb.controlProfile[i], n: cb.nPerBin[i],
+              banda_marcador: `${pb.lo}-${pb.hi}`, banda_controle: `${cLo}-${cHi}`
+            }))), 'F25_banda_controle.csv', 'text/csv')
+          }
+        ]));
+      }
+    }
+  },
+
+  /* ----------------------------------------------------------------- F26 */
+  {
+    id: 'F26', title: 'Longitudinal — impedância, confiabilidade e uso do aparelho',
+    sub: 'o que mudou entre sessões antes de atribuir a mudança ao cérebro',
+    has: d => true,
+    render(node, d) {
+      const ps = activeFiles().map(x => x.parsed);
+      const limiar = opt('F26', 'thr', 25);
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlNumber('mudança de impedância que marca (%)', limiar, 5, 100, 5, v => setOpt('F26', 'thr', v))
+      ]));
+
+      /* ---- impedância -------------------------------------------------- */
+      node.appendChild(el('h4', { class: 'qc-title', html: '<b>(a) Deriva de impedância</b>' }));
+      const imp = C.impedanceDrift(ps, { changePct: limiar });
+      if (!imp.ok) node.appendChild(el('div', { class: 'empty', text: imp.reason }));
+      else {
+        const box = plotBox(node, 260);
+        const todos = imp.contacts.flatMap(c => c.series.map(s => s.ohm));
+        const xs = imp.contacts.flatMap(c => c.series.map(s => isFinite(s.days) ? s.days : 0));
+        const ch = new P.Chart(box.canvas, {
+          width: box.width, height: box.height,
+          xlim: [Math.min.apply(null, xs) - 5, Math.max.apply(null, xs) + 5],
+          ylim: [0, Math.max.apply(null, todos) * 1.12],
+          xlabel: 'dias desde o implante', ylabel: 'impedância (Ω)',
+          title: `(a) impedância monopolar por contato — ${imp.nSessions} sessões`,
+          pad: { l: 72, r: 14, t: 24, b: 42 }
+        });
+        ch.axes();
+        imp.contacts.forEach(c => {
+          const marcado = c.flagged;
+          ch.line(c.series.map(s => isFinite(s.days) ? s.days : 0), c.series.map(s => s.ohm),
+            { color: marcado ? COL.right : hcol(c.hemisphere), width: marcado ? 2 : .9 });
+        });
+        ch.legend({ x: ch.x0 + 8, y: ch.y1 + 6 });
+
+        node.appendChild(table(['hemisfério', 'contato', 'n', 'primeira (Ω)', 'última (Ω)', 'variação', 'Ω/dia', 'R²'],
+          imp.contacts.slice(0, 12).map(c => [
+            { html: `<span class="hemi-${String(c.hemisphere)[0]}">${hname(c.hemisphere)}</span>` },
+            c.contact, String(c.n), f(c.firstOhm, 0), f(c.lastOhm, 0),
+            { html: c.flagged ? `<span class="sig">${c.changePct > 0 ? '+' : ''}${f(c.changePct, 1)}%</span>` : `${c.changePct > 0 ? '+' : ''}${f(c.changePct, 1)}%` },
+            isFinite(c.slopeOhmPerDay) ? f(c.slopeOhmPerDay, 2) : '—',
+            isFinite(c.r2) ? f(c.r2, 2) : '—'
+          ])));
+        node.appendChild(el('div', {
+          class: imp.nFlagged ? 'warnbox' : 'note',
+          html: `<b>Leitura.</b> ${imp.interpretation}`
+        }));
+      }
+
+      /* ---- confiabilidade --------------------------------------------- */
+      node.appendChild(el('h4', { class: 'qc-title', html: '<b>(b) A métrica é reprodutível o bastante para comparar?</b>' }));
+      const sujeitos = subjects();
+      const pacotes = sujeitos.map(s => {
+        try { return C.extractMetrics(s.files.map(x => x.parsed), offMin(), { profileId: activeProfileId() }); }
+        catch (e) { return null; }
+      }).filter(Boolean);
+      const rel = C.longitudinalReliability(pacotes, { hemisphere: 'Left' });
+      if (!rel.ok) {
+        node.appendChild(el('div', { class: 'empty', html: rel.reason }));
+        /* com um sujeito, ao menos descreve a variação entre sessões */
+        const b = exportBundle();
+        if (b && b.acute.length > 1) {
+          const campos = [['beta_peak_hz', 'pico beta (Hz)'], ['aperiodic_exponent', 'expoente aperiódico'], ['burst_rate_hz', 'taxa de bursts (/s)']];
+          node.appendChild(table(['métrica', 'hemisfério', 'n sessões', 'mediana', 'variação (máx − mín)', 'coef. de variação'],
+            ['Left', 'Right'].flatMap(hh => campos.map(([k, rot]) => {
+              const v = b.acute.filter(r => r.hemisphere === hh && isFinite(r[k])).map(r => r[k]);
+              if (v.length < 2) return null;
+              const med = C.median(v), amp = Math.max.apply(null, v) - Math.min.apply(null, v);
+              const cv = med !== 0 ? 100 * C.sd(v) / Math.abs(med) : NaN;
+              return [rot, { html: `<span class="hemi-${hh[0]}">${hname(hh)}</span>` }, String(v.length), f(med, 3), f(amp, 3), isFinite(cv) ? f(cv, 1) + ' %' : '—'];
+            }).filter(Boolean))));
+          node.appendChild(el('div', {
+            class: 'note', html: `<b>O que isto é e o que não é.</b> A tabela descreve <i>quanto</i> a métrica variou ` +
+              `entre as sessões desta pessoa. Ela <b>não</b> diz se a métrica distingue pacientes: para isso é preciso ` +
+              `variância ENTRE sujeitos, e portanto ao menos três pessoas com duas sessões cada. Uma variação de 10% pode ` +
+              `ser excelente (se as pessoas diferem entre si em 100%) ou inútil (se diferem em 10%).`
+          }));
+        }
+      } else {
+        node.appendChild(table(['métrica', 'ICC(2,1)', 'ICC(3,1)', 'IC 95%', 'n × k', 'leitura'],
+          rel.fields.map(r => r.ok
+            ? [r.label, f(r.icc21, 3), f(r.icc31, 3), `[${f(r.ci95[0], 2)} – ${f(r.ci95[1], 2)}]`, `${r.n} × ${r.k}`,
+              { html: r.ciSpansCategories ? `<span class="ns">${r.interpretation} (IC largo)</span>` : `<span class="sig">${r.interpretation}</span>` }]
+            : [r.label, '—', '—', '—', '—', r.reason])));
+        node.appendChild(el('div', { class: 'note', html: `<b>Qual ICC.</b> ${rel.note}` }));
+        rel.fields.filter(r => r.ok && r.ciSpansCategories).forEach(r => node.appendChild(el('div', {
+          class: 'warnbox', html: `<b>${r.label}.</b> ${r.caveat}.`
+        })));
+      }
+
+      /* ---- uso e bateria ---------------------------------------------- */
+      node.appendChild(el('h4', { class: 'qc-title', html: '<b>(c) Uso do aparelho e bateria</b>' }));
+      const ub = C.usageAndBattery(ps);
+      if (!ub.ok) node.appendChild(el('div', { class: 'empty', text: ub.reason }));
+      else {
+        node.appendChild(table(['sessão', 'bateria', 'meses estimados', 'terapia acumulada (h)', 'desde o último retorno (h)', 'uso por grupo'],
+          ub.rows.map(r => [
+            String(r.sessionStart || '').slice(0, 10) || r.file,
+            isFinite(r.batteryPct) ? f(r.batteryPct, 0) + ' %' : '—',
+            isFinite(r.batteryMonths) ? f(r.batteryMonths, 0) : '—',
+            isFinite(r.therapyHoursTotal) ? f(r.therapyHoursTotal, 0) : '—',
+            isFinite(r.therapyHoursSinceFU) ? f(r.therapyHoursSinceFU, 0) : '—',
+            r.groupUsage.length ? r.groupUsage.map(g => `${g.id}: ${f(g.pct, 0)}%`).join(' · ') : '—'
+          ])));
+        node.appendChild(el('div', {
+          class: 'note',
+          html: `<b>Uso.</b> ${ub.adherenceNote}.` +
+            (isFinite(ub.batteryDropPctPerMonth) ? ` Bateria caindo ${f(ub.batteryDropPctPerMonth, 1)} pontos percentuais por mês.` : '') +
+            ` ${ub.caveat}`
+        }));
+      }
+
+      node.appendChild(exportRow([
+        {
+          label: '⤓ CSV impedância', fn: () => {
+            if (!imp.ok) return alert(imp.reason);
+            P.downloadText(P.toCSV(imp.contacts.flatMap(c => c.series.map(s => ({
+              hemisferio: c.hemisphere, contato: c.contact, dias_desde_implante: s.days, ohm: s.ohm,
+              variacao_pct_total: c.changePct, ohm_por_dia: c.slopeOhmPerDay, marcado: c.flagged ? 1 : 0
+            })))), 'F26_impedancia.csv', 'text/csv');
+          }
+        }
+      ]));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Por que esta figura vem antes de qualquer comparação entre visitas.</b> ` +
+          `Comparar o beta de hoje com o de seis meses atrás só faz sentido se o que mudou for o cérebro, e não a ` +
+          `medida. Impedância sobe com encapsulamento glial e altera o divisor de tensão, portanto a amplitude ` +
+          `registrada; troca de contato de sensing muda o que se mede; versões de firmware mudam a escala do Timeline. ` +
+          `E antes de tudo isso: se a métrica não for reprodutível, a diferença observada pode ser só ruído de medida.`
+      }));
+    }
   }
 ];
 

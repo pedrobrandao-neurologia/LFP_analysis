@@ -1977,6 +1977,141 @@ sec('sinal externo, sincronização e coerência');
   });
 }
 
+/* --------- actograma, banda-controle, cluster, ICC e longitudinal --------- */
+sec('actograma, banda-controle, cluster, ICC e longitudinal (Ondas 4.1 e 4.3)');
+{
+  let sem4 = 777;
+  const rnd4 = () => { sem4 = (Math.imul(sem4, 1664525) + 1013904223) >>> 0; return sem4 / 4294967296; };
+  const g4 = () => { let u = 0, v = 0; while (u === 0) u = rnd4(); while (v === 0) v = rnd4(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+  const mat = (nEnsaios, nPontos, bump) => Array.from({ length: nEnsaios }, () =>
+    Array.from({ length: nPontos }, (_, i) => g4() + (bump && i >= 10 && i <= 16 ? 2 : 0)));
+
+  t('cluster encontra a região com efeito e a localiza corretamente', () => {
+    const r = C.clusterPermutation(mat(20, 30, true), mat(20, 30, false), { nPermutations: 500 });
+    const sig = r.clusters.filter(c => c.significant);
+    assert(sig.length >= 1, 'nenhum cluster significativo');
+    const c = sig[0];
+    assert(c.startIdx <= 11 && c.endIdx >= 15, `cluster [${c.startIdx}-${c.endIdx}] não cobre a região 10–16`);
+    assert(/EM ALGUM LUGAR/.test(r.caveat), 'a ressalva sobre localização não está presente');
+    return `cluster [${c.startIdx}–${c.endIdx}] massa ${c.mass} p = ${c.p}`;
+  });
+
+  t('cluster não inventa efeito onde não há', () => {
+    const r = C.clusterPermutation(mat(20, 30, false), mat(20, 30, false), { nPermutations: 500 });
+    assert(!r.anySignificant, 'declarou significativo em ruído puro: ' + JSON.stringify(r.clusters.map(c => c.p)));
+    return r.clusters.length ? `${r.clusters.length} cluster(s) candidato(s), nenhum significativo` : 'nenhum cluster candidato';
+  });
+
+  t('cluster pareado usa troca de sinal e é reprodutível', () => {
+    const A = mat(15, 24, true), B = mat(15, 24, false);
+    const a = C.clusterPermutation(A, B, { paired: true, nPermutations: 400, seed: 5 });
+    const b = C.clusterPermutation(A, B, { paired: true, nPermutations: 400, seed: 5 });
+    assert(a.paired, 'não marcou como pareado');
+    assert(JSON.stringify(a.clusters) === JSON.stringify(b.clusters), 'resultado mudou com a mesma semente');
+    return `${a.clusters.length} cluster(s), reprodutível com a semente ${a.seed}`;
+  });
+
+  t('actograma recupera a deriva de fase que existe e não inventa a que não existe', () => {
+    const T0 = Date.parse('2025-03-01T00:00:00Z');
+    const monta = deriva => {
+      const rows = [];
+      for (let d = 0; d < 14; d++) for (let k = 0; k < 144; k++) {
+        const tt = T0 + d * 864e5 + k * 6e5;
+        rows.push({ t: tt, lfp: 40 + 8 * Math.cos(2 * Math.PI * (k / 144 - (16 + deriva * d) / 24)) + 1.5 * g4() });
+      }
+      return rows;
+    };
+    const medidas = [0, 0.25, -0.5].map(dv => ({ dv, medido: C.actogram(monta(dv), 0, { binMin: 30 }).medianDriftHoursPerDay }));
+    medidas.forEach(m => assert(Math.abs(m.medido - m.dv) < 0.12, `deriva ${m.dv} h/dia medida como ${m.medido}`));
+    const semDeriva = C.actogram(monta(0), 0, { binMin: 30 });
+    assert(/se mantém/.test(semDeriva.driftNote), 'inventou deriva: ' + semDeriva.driftNote);
+    const comDeriva = C.actogram(monta(-0.5), 0, { binMin: 30 });
+    assert(/desloca/.test(comDeriva.driftNote), 'não relatou a deriva real');
+    assert(comDeriva.rows[0].values.length === 2 * comDeriva.nBins, 'não é duplo-plot');
+    return medidas.map(m => `${m.dv}→${m.medido}`).join(' · ') + ' h/dia';
+  });
+
+  t('banda-controle recusa quando não há espectros datados suficientes', () => {
+    const r = C.controlBandDiurnal([{ t: 1, f: [1, 2], p: [1, 1] }], -180, {});
+    assert(!r.ok, 'aceitou com um espectro só');
+    assert(/ao menos 8/.test(r.reason), 'motivo: ' + r.reason);
+    return r.reason.slice(0, 90);
+  });
+
+  t('banda-controle separa ritmo específico de modulação global', () => {
+    const T0 = Date.parse('2025-03-01T00:00:00Z');
+    const espectro = (hora, ganhoMarcador, ganhoGlobal) => {
+      const f = [], p = [];
+      for (let k = 1; k <= 120; k++) {
+        const x = k * 0.977;
+        let v = Math.pow(10, 1 - 1.4 * Math.log10(x));
+        if (x >= 13 && x <= 35) v *= ganhoMarcador;
+        p.push(v * ganhoGlobal * (1 + 0.05 * g4())); f.push(x);
+      }
+      return { f, p };
+    };
+    const monta = (especifico) => {
+      const out = [];
+      for (let d = 0; d < 6; d++) for (let hh = 0; hh < 24; hh += 3) {
+        const ciclo = 1 + 0.6 * Math.cos(2 * Math.PI * (hh - 16) / 24);
+        const e = especifico ? espectro(hh, ciclo, 1) : espectro(hh, 1, ciclo);
+        out.push({ t: T0 + d * 864e5 + hh * 36e5, f: e.f, p: e.p });
+      }
+      return out;
+    };
+    const espec = C.controlBandDiurnal(monta(true), 0, { markerBand: [13, 35], controlBand: [55, 95], nBins: 8, nPermutations: 600 });
+    const global = C.controlBandDiurnal(monta(false), 0, { markerBand: [13, 35], controlBand: [55, 95], nBins: 8, nPermutations: 600 });
+    assert(espec.ok && global.ok, 'não avaliável');
+    assert(espec.bandSpecific, `ritmo específico não reconhecido: razão ${espec.amplitudeRatio}, cluster ${espec.cluster && espec.cluster.anySignificant}`);
+    assert(!global.bandSpecific, `modulação global tratada como específica: razão ${global.amplitudeRatio}`);
+    return `específico: razão ${espec.amplitudeRatio}× (${espec.verdict}) · global: razão ${global.amplitudeRatio}× (${global.verdict})`;
+  });
+
+  t('ICC separa métrica confiável de métrica que é só ruído', () => {
+    const bom = Array.from({ length: 8 }, (_, i) => Array.from({ length: 3 }, () => 20 + i * 2 + 0.4 * g4()));
+    const ruim = Array.from({ length: 8 }, () => Array.from({ length: 3 }, () => 20 + 3 * g4()));
+    const a = C.icc(bom), b = C.icc(ruim);
+    assert(a.ok && b.ok, 'ICC não calculado');
+    assert(a.icc21 > 0.9 && a.interpretation === 'excelente', 'confiável: ' + a.icc21);
+    assert(b.icc21 < 0.5 && b.interpretation === 'ruim', 'não confiável: ' + b.icc21);
+    assert(a.ci95[0] < a.icc21 && a.icc21 < a.ci95[1], 'IC não contém a estimativa');
+    return `confiável ${a.icc21} [${a.ci95.join('; ')}] · ruído ${b.icc21} [${b.ci95.join('; ')}]`;
+  });
+
+  t('ICC com amostra pequena declara que não distingue nada', () => {
+    const pequeno = Array.from({ length: 3 }, (_, i) => Array.from({ length: 3 }, () => 20 + i * 2 + 1.5 * g4()));
+    const r = C.icc(pequeno);
+    assert(r.ok, 'não calculou');
+    if (r.ciSpansCategories) assert(/NÃO distingue/.test(r.caveat), 'ressalva ausente: ' + r.caveat);
+    const recusa = C.icc([[1, 2], [2, 3]]);
+    assert(!recusa.ok && /ao menos 3 sujeitos/.test(recusa.reason), 'aceitou 2 sujeitos');
+    return `n=3: IC [${r.ci95.join('; ')}]${r.ciSpansCategories ? ' — declarado indistinguível' : ''}`;
+  });
+
+  t('deriva de impedância é detectada e ligada ao efeito sobre a amplitude', () => {
+    const a = parsed[0];
+    const b = JSON.parse(JSON.stringify(a));
+    b.fileName = 'segunda.json';
+    b.meta.sessionStart = '2025-06-01T10:00:00Z';
+    Object.keys(b.impedance).forEach(h => b.impedance[h].mono.forEach((e, i) => { e.ohm = e.ohm * (i === 0 ? 1.6 : 1.05); }));
+    const r = C.impedanceDrift([a, b], { changePct: 25 });
+    assert(r.ok, 'não avaliou: ' + r.reason);
+    assert(r.nFlagged >= 1, 'não marcou o contato que mudou 60%');
+    assert(/divisor de tensão/.test(r.interpretation), 'não explica por que importa');
+    const so = C.impedanceDrift([a], {});
+    assert(!so.ok, 'avaliou deriva com uma sessão só');
+    return `${r.nContacts} contatos, ${r.nFlagged} marcado(s), mediana ${r.medianChangePct}%`;
+  });
+
+  t('confiabilidade longitudinal recusa com menos de 3 sujeitos e explica por quê', () => {
+    const b = C.extractMetrics(parsed, -180, { profileId: 'pd' });
+    const r = C.longitudinalReliability([b], {});
+    assert(!r.ok, 'calculou ICC com um sujeito');
+    assert(/variância ENTRE sujeitos/.test(r.reason), 'não explica o motivo estatístico: ' + r.reason);
+    return r.reason.slice(0, 110);
+  });
+}
+
 /* ------------------------------------------------------------- resultado -- */
 console.log(`\n${'='.repeat(58)}`);
 console.log(`  ${ok} passaram   ${falhas} falharam   ${pulados} sem dados`);

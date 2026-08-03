@@ -7262,6 +7262,670 @@ function alignByTimestamp(lfpT0Ms, extT0Ms) {
   };
 }
 
+/* ---------- core/stats/cluster.js ---------- */
+/* stats/cluster.js — teste de permutação por CLUSTER.
+
+   O PROBLEMA QUE ELE RESOLVE. Comparar dois grupos ponto a ponto ao longo de
+   uma série (48 bins de hora do dia, 24 janelas em torno de um evento, 100 bins
+   de frequência) gera dezenas de testes. Corrigir cada um por Bonferroni destrói
+   o poder; não corrigir produz "achados" onde só há ruído. O teste por cluster
+   resolve isso trocando a unidade de inferência: em vez de perguntar "este bin
+   difere?", pergunta "existe uma REGIÃO CONTÍGUA de diferença maior do que o
+   acaso produziria?". É o padrão em eletrofisiologia desde Maris & Oostenveld.
+
+   COMO FUNCIONA
+     1. estatística ponto a ponto (t de Welch, ou t de uma amostra no caso
+        pareado);
+     2. limiar de formação de cluster — pontos acima dele viram candidatos;
+     3. massa do cluster = soma das estatísticas dentro de cada região contígua;
+     4. o rótulo de grupo é permutado (ou o sinal, no caso pareado) muitas vezes,
+        e a MAIOR massa de cada permutação forma o nulo;
+     5. p de cada cluster = fração de permutações cuja maior massa iguala ou
+        supera a massa observada.
+
+   O QUE ESTE TESTE NÃO DIZ — e a literatura erra isso o tempo todo: ele NÃO
+   localiza o efeito. Um cluster significativo diz que existe diferença em algum
+   lugar dentro dele, não que ela vale para cada ponto seu, nem que as bordas do
+   cluster são as bordas do efeito. A saída registra essa ressalva junto do p.
+
+   Reprodutibilidade: permutações com gerador de semente fixa.
+
+   Referências:
+     Maris E, Oostenveld R. J Neurosci Methods 2007;164:177-190.
+     Sassenhagen J, Draschkow D. Psychophysiology 2019;56:e13335 (o que o
+       teste NÃO permite concluir).                                          */
+
+/* t de Welch entre dois vetores. */
+function tWelch(a, b) {
+  const na = a.length, nb = b.length;
+  if (na < 2 || nb < 2) return NaN;
+  const va = variance(a) / na, vb = variance(b) / nb;
+  const den = Math.sqrt(va + vb);
+  return den > 0 ? (mean(a) - mean(b)) / den : NaN;
+}
+
+/* t de uma amostra (caso pareado: diferenças). */
+function tUmaAmostra(d) {
+  const n = d.length;
+  if (n < 2) return NaN;
+  const s = Math.sqrt(variance(d) / n);
+  return s > 0 ? mean(d) / s : NaN;
+}
+
+/* Junta pontos contíguos acima do limiar em clusters, com a massa somada. */
+function agrupa(stat, limiar) {
+  const clusters = [];
+  let ini = -1, sinal = 0;
+  for (let i = 0; i <= stat.length; i++) {
+    const v = i < stat.length ? stat[i] : NaN;
+    const acima = isFinite(v) && Math.abs(v) >= limiar;
+    const s = acima ? Math.sign(v) : 0;
+    if (ini < 0 && acima) { ini = i; sinal = s; }
+    else if (ini >= 0 && (!acima || s !== sinal)) {
+      let massa = 0;
+      for (let k = ini; k < i; k++) massa += stat[k];
+      clusters.push({ startIdx: ini, endIdx: i - 1, size: i - ini, mass: massa, direction: sinal > 0 ? 'maior' : 'menor' });
+      ini = acima ? i : -1; sinal = s;
+    }
+  }
+  return clusters;
+}
+
+/* clusterPermutation(A, B, opts)
+   A e B: matrizes [n_ensaios][n_pontos]. Se `paired`, A e B têm o mesmo n e o
+   teste é sobre as diferenças, permutando SINAIS.                            */
+function clusterPermutation(A, B, opts) {
+  opts = opts || {};
+  const nPerm = opts.nPermutations == null ? 2000 : opts.nPermutations;
+  const pareado = !!opts.paired;
+  const alpha = isFinite(opts.alpha) ? opts.alpha : 0.05;
+  const limiar = isFinite(opts.clusterThreshold) ? opts.clusterThreshold : 2.0;
+  if (!A || !A.length || !B || !B.length) return null;
+  const nPontos = A[0].length;
+  if (!nPontos || B[0].length !== nPontos) return null;
+  if (pareado && A.length !== B.length) return null;
+
+  const estatistica = (grupoA, grupoB) => {
+    const out = new Float64Array(nPontos);
+    for (let p = 0; p < nPontos; p++) {
+      if (pareado) {
+        const d = [];
+        for (let i = 0; i < grupoA.length; i++) {
+          const x = grupoA[i][p], y = grupoB[i][p];
+          if (isFinite(x) && isFinite(y)) d.push(x - y);
+        }
+        out[p] = d.length >= 2 ? tUmaAmostra(d) : NaN;
+      } else {
+        const a = [], b = [];
+        for (let i = 0; i < grupoA.length; i++) if (isFinite(grupoA[i][p])) a.push(grupoA[i][p]);
+        for (let i = 0; i < grupoB.length; i++) if (isFinite(grupoB[i][p])) b.push(grupoB[i][p]);
+        out[p] = (a.length >= 2 && b.length >= 2) ? tWelch(a, b) : NaN;
+      }
+    }
+    return out;
+  };
+
+  const obsStat = estatistica(A, B);
+  const obsClusters = agrupa(obsStat, limiar);
+  if (!obsClusters.length) return {
+    clusters: [], stat: Array.from(obsStat), nPermutations: 0,
+    clusterThreshold: limiar, alpha, paired: pareado,
+    anySignificant: false,
+    reason: `nenhum ponto atingiu o limiar de formação de cluster (|t| ≥ ${limiar}) — ` +
+      'sem cluster candidato não há o que testar'
+  };
+
+  let semente = isFinite(opts.seed) ? (opts.seed >>> 0) : 19730321;
+  const prox = () => { semente = (Math.imul(semente, 1664525) + 1013904223) >>> 0; return semente / 4294967296; };
+
+  const nulo = [];
+  const todos = pareado ? null : A.concat(B);
+  for (let perm = 0; perm < nPerm; perm++) {
+    let sa, sb;
+    if (pareado) {
+      sa = []; sb = [];
+      for (let i = 0; i < A.length; i++) {
+        if (prox() < 0.5) { sa.push(A[i]); sb.push(B[i]); } else { sa.push(B[i]); sb.push(A[i]); }
+      }
+    } else {
+      const idx = todos.map((_, i) => i);
+      for (let i = idx.length - 1; i > 0; i--) { const j = Math.floor(prox() * (i + 1)); [idx[i], idx[j]] = [idx[j], idx[i]]; }
+      sa = idx.slice(0, A.length).map(i => todos[i]);
+      sb = idx.slice(A.length).map(i => todos[i]);
+    }
+    const cl = agrupa(estatistica(sa, sb), limiar);
+    nulo.push(cl.length ? Math.max.apply(null, cl.map(c => Math.abs(c.mass))) : 0);
+  }
+
+  const clusters = obsClusters.map(c => {
+    const p = (nulo.filter(v => v >= Math.abs(c.mass)).length + 1) / (nulo.length + 1);
+    return Object.assign({}, c, {
+      mass: +c.mass.toFixed(4),
+      p: +p.toFixed(4), significant: p < alpha
+    });
+  }).sort((a, b) => Math.abs(b.mass) - Math.abs(a.mass));
+
+  return {
+    clusters, stat: Array.from(obsStat).map(v => isFinite(v) ? +v.toFixed(4) : NaN),
+    nPermutations: nulo.length, clusterThreshold: limiar, alpha, paired: pareado,
+    seed: isFinite(opts.seed) ? (opts.seed >>> 0) : 19730321,
+    nullMaxMassP95: +(nulo.slice().sort((a, b) => a - b)[Math.floor(nulo.length * 0.95)] || 0).toFixed(4),
+    anySignificant: clusters.some(c => c.significant),
+    caveat: 'um cluster significativo indica que existe diferença EM ALGUM LUGAR dentro dele. Não ' +
+      'autoriza afirmar que a diferença vale para cada ponto do cluster, nem que as bordas do cluster ' +
+      'são as bordas do efeito (Sassenhagen & Draschkow 2019).'
+  };
+}
+
+/* ---------- core/metrics/control.js ---------- */
+/* metrics/control.js — banda-controle e actograma.
+
+   BANDA-CONTROLE: A PERGUNTA QUE SEPARA RITMO DE ARTEFATO. Um padrão diurno na
+   potência de beta pode ser ritmo neural — ou pode ser postura, movimento,
+   impedância que muda com a temperatura, qualquer coisa que module o sinal
+   INTEIRO. O teste é simples e é o que a literatura pede: o mesmo padrão
+   aparece numa banda que não deveria carregar o biomarcador? Se aparecer, o
+   achado provavelmente não é específico da banda.
+
+   Aqui a comparação é feita sobre espectros COM HORA (snapshots de evento,
+   sessões de Survey datadas): para cada um, a potência da banda marcadora e a
+   da banda-controle, cada uma normalizada pela própria média, e o perfil diurno
+   das duas. A diferença entre os perfis é testada por permutação de cluster ao
+   longo do eixo de hora — não ponto a ponto.
+
+   ACTOGRAMA: a representação clássica da cronobiologia. Cada linha é um dia,
+   e o gráfico é DUPLICADO lado a lado (dia N e dia N+1 na mesma linha), o que
+   torna visível a deriva de fase — um ritmo que atrasa um pouco por dia aparece
+   como uma faixa diagonal, coisa que o heatmap simples esconde.
+
+   Unidades: potência na unidade do arquivo; hora local em horas decimais.
+
+   Referências:
+     Refinetti R, et al. Biol Rhythm Res 2007;38:275-325 (actograma e análise).
+     van Rheede JJ, et al. npj Parkinsons Dis 2022;8:88 (ritmo circadiano de
+       beta no STN e a necessidade de controle).                              */
+
+
+
+
+/* controlBandDiurnal(espectros, offMin, opts)
+   `espectros`: [{ t (ms), f, p }] — snapshots ou sessões datadas.            */
+function controlBandDiurnal(espectros, offMin, opts) {
+  opts = opts || {};
+  const marcador = opts.markerBand || [13, 35];
+  const controle = opts.controlBand || [55, 95];
+  const nBins = opts.nBins || 12;
+  const lista = (espectros || []).filter(s => s && s.f && s.f.length && s.p && isFinite(s.t));
+  if (lista.length < 8) return {
+    ok: false,
+    reason: `só ${lista.length} espectro(s) com hora — são necessários ao menos 8 para comparar perfis diurnos. ` +
+      'Ative o registro de eventos pelo paciente e aguarde alguns dias, ou carregue mais sessões datadas.'
+  };
+  const fmax = Math.max.apply(null, lista.map(s => s.f[s.f.length - 1]));
+  if (fmax < controle[0] + 5) return {
+    ok: false,
+    reason: `os espectros vão só até ${fmax.toFixed(0)} Hz e a banda-controle pedida é ${controle[0]}–${controle[1]} Hz — ` +
+      'escolha uma banda-controle dentro do que o dado cobre'
+  };
+
+  const linhas = lista.map(s => ({
+    t: s.t, hora: localHour(s.t, offMin), dia: localDayKey(s.t, offMin),
+    marcador: bandPower(s.f, s.p, marcador[0], marcador[1]),
+    controle: bandPower(s.f, s.p, controle[0], controle[1])
+  })).filter(r => isFinite(r.marcador) && isFinite(r.controle) && r.marcador > 0 && r.controle > 0);
+  if (linhas.length < 8) return { ok: false, reason: 'poucos espectros com potência válida nas duas bandas' };
+
+  /* normaliza cada banda pela PRÓPRIA média: o que se compara é a FORMA do
+     perfil diurno, não a escala — bandas diferentes têm potências diferentes */
+  const mm = mean(linhas.map(r => r.marcador)), mc = mean(linhas.map(r => r.controle));
+  linhas.forEach(r => { r.mNorm = r.marcador / mm; r.cNorm = r.controle / mc; });
+
+  const bins = Array.from({ length: nBins }, () => ({ m: [], c: [] }));
+  linhas.forEach(r => {
+    const b = Math.min(nBins - 1, Math.floor(r.hora / 24 * nBins));
+    bins[b].m.push(r.mNorm); bins[b].c.push(r.cNorm);
+  });
+  const horas = Array.from({ length: nBins }, (_, i) => (i + 0.5) * 24 / nBins);
+  const perfilM = bins.map(b => b.m.length ? median(b.m) : NaN);
+  const perfilC = bins.map(b => b.c.length ? median(b.c) : NaN);
+  const nPorBin = bins.map(b => b.m.length);
+
+  /* amplitude diurna de cada banda: pico-a-vale do perfil */
+  const amp = v => { const ok = v.filter(isFinite); return ok.length ? Math.max.apply(null, ok) - Math.min.apply(null, ok) : NaN; };
+  const ampM = amp(perfilM), ampC = amp(perfilC);
+
+  /* teste por cluster ao longo da hora: cada registro é um "ensaio" pareado
+     (a mesma amostra dá marcador e controle) */
+  const A = [], B = [];
+  linhas.forEach(r => {
+    const linhaA = new Array(nBins).fill(NaN), linhaB = new Array(nBins).fill(NaN);
+    const b = Math.min(nBins - 1, Math.floor(r.hora / 24 * nBins));
+    linhaA[b] = r.mNorm; linhaB[b] = r.cNorm;
+    A.push(linhaA); B.push(linhaB);
+  });
+  const cl = clusterPermutation(A, B, {
+    paired: true, nPermutations: opts.nPermutations || 2000,
+    clusterThreshold: opts.clusterThreshold || 2.0, seed: opts.seed
+  });
+
+  const razao = isFinite(ampM) && ampC > 0 ? ampM / ampC : NaN;
+  const especifico = isFinite(razao) && razao > 1.5 && cl && cl.anySignificant;
+
+  return {
+    ok: true,
+    markerBand: marcador, controlBand: controle, nBins,
+    hours: horas, markerProfile: perfilM, controlProfile: perfilC, nPerBin: nPorBin,
+    nSpectra: linhas.length, nDays: new Set(linhas.map(r => r.dia)).size,
+    markerAmplitude: isFinite(ampM) ? +ampM.toFixed(4) : NaN,
+    controlAmplitude: isFinite(ampC) ? +ampC.toFixed(4) : NaN,
+    amplitudeRatio: isFinite(razao) ? +razao.toFixed(3) : NaN,
+    cluster: cl,
+    bandSpecific: especifico,
+    verdict: !cl ? 'não avaliável'
+      : especifico ? 'o padrão diurno é específico da banda marcadora'
+        : cl.anySignificant ? 'as bandas diferem, mas a amplitude diurna do controle é comparável — especificidade fraca'
+          : 'não há diferença entre marcador e controle além do acaso',
+    interpretation: especifico
+      ? `a variação diurna do marcador é ${razao.toFixed(1)}× a da banda-controle (${controle[0]}–${controle[1]} Hz), ` +
+        'e a diferença entre os perfis sobrevive ao teste de cluster — o padrão não é um efeito global sobre o sinal inteiro'
+      : cl && cl.anySignificant
+        ? `há diferença entre os perfis, mas a banda-controle também varia (razão de amplitudes ${isFinite(razao) ? razao.toFixed(1) : '—'}×). ` +
+          'Postura, movimento e mudanças de impedância modulam o sinal inteiro e produzem padrão pseudo-diurno — ' +
+          'trate a especificidade como não demonstrada'
+        : 'o perfil do marcador não se separa do da banda-controle: com este dado não é possível dizer que a ' +
+          'variação diurna observada é específica da banda, e portanto não é possível atribuí-la ao biomarcador'
+  };
+}
+
+/* actogram(rows, offMin, opts) → matriz dias × bins, em formato duplo-plot.
+
+   Cada linha traz o dia D seguido do dia D+1, que é o que revela deriva de
+   fase: um ritmo que atrasa um pouco por dia vira uma diagonal.              */
+function actogram(rows, offMin, opts) {
+  opts = opts || {};
+  const binMin = opts.binMin || 30;
+  const nBins = Math.round(24 * 60 / binMin);
+  const norm = opts.normalizeDaily !== false;
+  const porDia = {};
+  (rows || []).forEach(r => {
+    if (!isFinite(r.lfp) || !isFinite(r.t)) return;
+    const d = localDayKey(r.t, offMin);
+    (porDia[d] = porDia[d] || []).push(r);
+  });
+  const dias = Object.keys(porDia).sort();
+  if (dias.length < 2) return { ok: false, reason: 'são necessários ao menos 2 dias de registro para um actograma' };
+
+  const perfilDe = dia => {
+    const arr = new Array(nBins).fill(NaN);
+    const baldes = Array.from({ length: nBins }, () => []);
+    porDia[dia].forEach(r => baldes[Math.min(nBins - 1, Math.floor(localHour(r.t, offMin) * 60 / binMin))].push(r.lfp));
+    const medDia = median(porDia[dia].map(r => r.lfp));
+    baldes.forEach((b, i) => { if (b.length) arr[i] = norm ? 100 * median(b) / medDia : median(b); });
+    return { arr, medDia, n: porDia[dia].length };
+  };
+  const perfis = {};
+  dias.forEach(d => { perfis[d] = perfilDe(d); });
+
+  /* duplo-plot: linha i = dia i seguido do dia i+1 */
+  const linhas = [];
+  for (let i = 0; i < dias.length; i++) {
+    const a = perfis[dias[i]].arr;
+    const b = i + 1 < dias.length ? perfis[dias[i + 1]].arr : new Array(nBins).fill(NaN);
+    linhas.push({
+      day: dias[i], values: a.concat(b),
+      n: perfis[dias[i]].n, dayMedian: +perfis[dias[i]].medDia.toFixed(4)
+    });
+  }
+  const planos = linhas.flatMap(l => l.values).filter(isFinite);
+
+  /* Acrofase de cada dia. O bin de maior valor é um estimador ruim: com poucas
+     amostras por bin ele salta de um bin para o vizinho por ruído, e a "deriva"
+     resultante é do estimador, não do ritmo. Aqui a acrofase é a MÉDIA CIRCULAR
+     das horas ponderada pelo excesso sobre o mínimo do dia — usa o perfil
+     inteiro e não só o pico. */
+  const acro = dias.map(d => {
+    const a = perfis[d].arr;
+    const validos = a.filter(isFinite);
+    if (validos.length < 4) return NaN;
+    const minimo = Math.min.apply(null, validos);
+    let sx = 0, sy = 0, sw = 0;
+    a.forEach((v, i) => {
+      if (!isFinite(v)) return;
+      const w = v - minimo;
+      if (!(w > 0)) return;
+      const ang = 2 * Math.PI * ((i + 0.5) * binMin / 60) / 24;
+      sx += w * Math.cos(ang); sy += w * Math.sin(ang); sw += w;
+    });
+    if (!(sw > 0)) return NaN;
+    let ang = Math.atan2(sy, sx);
+    if (ang < 0) ang += 2 * Math.PI;
+    return ang / (2 * Math.PI) * 24;
+  });
+  const derivas = [];
+  for (let i = 1; i < acro.length; i++) {
+    if (!isFinite(acro[i]) || !isFinite(acro[i - 1])) continue;
+    let d = acro[i] - acro[i - 1];
+    while (d > 12) d -= 24; while (d < -12) d += 24;
+    derivas.push(d);
+  }
+  const derivaMediana = derivas.length ? median(derivas) : NaN;
+
+  return {
+    ok: true, binMin, nBins, days: dias, rows: linhas,
+    normalizeDaily: norm,
+    zmin: planos.length ? +quantile(planos, 0.02).toFixed(3) : NaN,
+    zmax: planos.length ? +quantile(planos, 0.98).toFixed(3) : NaN,
+    acrophaseByDay: acro.map(v => isFinite(v) ? +v.toFixed(2) : NaN),
+    medianDriftHoursPerDay: isFinite(derivaMediana) ? +derivaMediana.toFixed(3) : NaN,
+    totalDriftHours: isFinite(derivaMediana) ? +(derivaMediana * (dias.length - 1)).toFixed(2) : NaN,
+    /* 0,15 h/dia ≈ 9 min/dia: parece pouco, mas em duas semanas acumula 2 h e
+       desloca a leitura de acrofase. O limiar precisa ser exigente. */
+    driftNote: !isFinite(derivaMediana) ? 'deriva não estimável'
+      : Math.abs(derivaMediana) < 0.15
+        ? `o horário do pico se mantém entre os dias (${derivaMediana >= 0 ? '+' : ''}${derivaMediana.toFixed(2)} h/dia) — sem deriva relevante`
+        : `o horário do pico desloca-se ${derivaMediana > 0 ? 'para mais tarde' : 'para mais cedo'} ` +
+          `${Math.abs(derivaMediana).toFixed(2)} h por dia, o que acumula ` +
+          `${Math.abs(derivaMediana * (dias.length - 1)).toFixed(1)} h nos ${dias.length} dias registrados. ` +
+          'Num actograma isso aparece como faixa diagonal — pode ser ritmo em curso livre, mudança de rotina ou ' +
+          'artefato de mudança de horário; confronte com o diário antes de interpretar',
+    note: 'cada linha mostra o dia e o dia seguinte lado a lado (duplo-plot) — é o arranjo que torna a deriva ' +
+      'de fase visível, e que o heatmap simples esconde'
+  };
+}
+
+/* ---------- core/stats/icc.js ---------- */
+/* stats/icc.js — coeficiente de correlação intraclasse (ICC).
+
+   PARA QUE SERVE AQUI. "O pico beta desta pessoa é 21 Hz" só é uma frase útil
+   se, medido de novo em outra sessão, der 21 Hz de novo. O ICC responde
+   exatamente isso: da variância total observada, quanto é diferença ENTRE
+   pessoas e quanto é ruído de medida. Sem ele, uma métrica com boa aparência
+   pode não distinguir paciente nenhum.
+
+   QUAL ICC — a escolha muda o número e precisa ser declarada (McGraw & Wong,
+   nomenclatura de Shrout & Fleiss):
+     • ICC(2,1), concordância absoluta, medida única — as sessões são amostra de
+       uma população de sessões possíveis. É o que se quer para test-retest;
+     • ICC(3,1), consistência, medida única — trata as sessões como fixas e
+       IGNORA diferença sistemática entre elas. Dá número maior; use apenas se a
+       calibração entre sessões for irrelevante para a pergunta.
+   Os dois saem, para que a escolha fique visível.
+
+   IC de 95% pelo método F clássico. Faixas de interpretação de Koo & Li 2016:
+   < 0,5 ruim; 0,5–0,75 moderado; 0,75–0,9 bom; > 0,9 excelente — e o IC importa
+   mais que o ponto: com 5 sujeitos o IC costuma ir de "ruim" a "excelente", e
+   nesse caso a resposta honesta é "não dá para dizer".
+
+   Entrada: matriz [n sujeitos][k sessões], sem faltantes (linhas incompletas
+   são descartadas e contadas).
+
+   Referências:
+     Shrout PE, Fleiss JL. Psychol Bull 1979;86:420-428.
+     McGraw KO, Wong SP. Psychol Methods 1996;1:30-46.
+     Koo TK, Li MY. J Chiropr Med 2016;15:155-163.                            */
+
+
+/* Quantil da F por bissecção sobre a cauda — evitamos tabela e dependência. */
+function fQuantile(p, df1, df2) {
+  if (!(df1 > 0 && df2 > 0)) return NaN;
+  let lo = 1e-6, hi = 1e6;
+  for (let i = 0; i < 200; i++) {
+    const m = Math.sqrt(lo * hi);
+    /* fPValue devolve P(F > m); queremos P(F > m) = 1 - p */
+    if (fPValue(m, df1, df2) > 1 - p) lo = m; else hi = m;
+    if (hi / lo < 1 + 1e-9) break;
+  }
+  return Math.sqrt(lo * hi);
+}
+
+function icc(matriz, opts) {
+  opts = opts || {};
+  const alpha = isFinite(opts.alpha) ? opts.alpha : 0.05;
+  const bruta = (matriz || []).filter(l => Array.isArray(l) && l.length);
+  if (!bruta.length) return null;
+  const k = bruta[0].length;
+  const linhas = bruta.filter(l => l.length === k && l.every(isFinite));
+  const descartadas = bruta.length - linhas.length;
+  const n = linhas.length;
+  if (n < 3 || k < 2) return {
+    ok: false, n, k, nDropped: descartadas,
+    reason: `são necessários ao menos 3 sujeitos e 2 sessões completas; há ${n} × ${k}` +
+      (descartadas ? ` (${descartadas} linha(s) incompleta(s) descartada(s))` : '')
+  };
+
+  const grande = mean(linhas.flat());
+  const mediaLinha = linhas.map(l => mean(l));
+  const mediaCol = Array.from({ length: k }, (_, j) => mean(linhas.map(l => l[j])));
+
+  let SSR = 0, SSC = 0, SSE = 0;
+  for (let i = 0; i < n; i++) SSR += k * (mediaLinha[i] - grande) ** 2;
+  for (let j = 0; j < k; j++) SSC += n * (mediaCol[j] - grande) ** 2;
+  for (let i = 0; i < n; i++) for (let j = 0; j < k; j++)
+    SSE += (linhas[i][j] - mediaLinha[i] - mediaCol[j] + grande) ** 2;
+
+  const MSR = SSR / (n - 1);
+  const MSC = k > 1 ? SSC / (k - 1) : 0;
+  const MSE = SSE / ((n - 1) * (k - 1));
+
+  /* ICC(2,1): concordância absoluta, efeitos aleatórios */
+  const icc21 = (MSR - MSE) / (MSR + (k - 1) * MSE + (k / n) * (MSC - MSE));
+  /* ICC(3,1): consistência, efeitos mistos */
+  const icc31 = (MSR - MSE) / (MSR + (k - 1) * MSE);
+
+  /* IC do ICC(3,1) — fórmula clássica; usada também como IC de referência do
+     (2,1), cuja fórmula exata é mais complexa e cuja diferença é pequena
+     quando MSC ≈ MSE. Isso fica DECLARADO. */
+  const F = MSR / MSE;
+  const fSup = fQuantile(1 - alpha / 2, n - 1, (n - 1) * (k - 1));
+  const fInf = fQuantile(1 - alpha / 2, (n - 1) * (k - 1), n - 1);
+  const Fl = F / fSup, Fu = F * fInf;
+  const lo = (Fl - 1) / (Fl + (k - 1));
+  const hi = (Fu - 1) / (Fu + (k - 1));
+
+  const faixa = v => !isFinite(v) ? 'não avaliável'
+    : v < 0.5 ? 'ruim' : v < 0.75 ? 'moderado' : v < 0.9 ? 'bom' : 'excelente';
+  const larguraIC = hi - lo;
+
+  return {
+    ok: true, n, k, nDropped: descartadas,
+    icc21: +icc21.toFixed(4), icc31: +icc31.toFixed(4),
+    ci95: [+lo.toFixed(4), +hi.toFixed(4)],
+    ciMethod: 'F clássico sobre o ICC(3,1); aplicado também como referência ao (2,1)',
+    F: +F.toFixed(3), df1: n - 1, df2: (n - 1) * (k - 1),
+    p: +fPValue(F, n - 1, (n - 1) * (k - 1)).toExponential(3),
+    MSR: +MSR.toFixed(6), MSC: +MSC.toFixed(6), MSE: +MSE.toFixed(6),
+    interpretation: faixa(icc21),
+    ciSpansCategories: larguraIC > 0.35,
+    caveat: larguraIC > 0.35
+      ? `o IC de 95% vai de ${lo.toFixed(2)} (${faixa(lo)}) a ${hi.toFixed(2)} (${faixa(hi)}) — com ${n} sujeitos e ` +
+        `${k} sessões, o dado NÃO distingue confiabilidade ruim de excelente. Reporte o intervalo, não o ponto`
+      : `IC de 95% entre ${lo.toFixed(2)} e ${hi.toFixed(2)}; a estimativa é informativa nesta amostra`,
+    note: 'ICC(2,1) trata as sessões como amostra e penaliza diferença sistemática entre elas; ICC(3,1) ' +
+      'ignora essa diferença e por isso dá número maior. Para test-retest, o (2,1) é o pertinente.'
+  };
+}
+
+/* ---------- core/metrics/longitudinal.js ---------- */
+/* metrics/longitudinal.js — o que muda entre sessões: impedância, uso, bateria
+   e a confiabilidade das próprias métricas.
+
+   POR QUE ISTO EXISTE. Comparar o beta de hoje com o de seis meses atrás só faz
+   sentido se o que mudou for o cérebro, e não a medida. Três coisas mudam a
+   medida sem que ninguém perceba:
+     • IMPEDÂNCIA do contato — sobe com encapsulamento glial, muda o divisor de
+       tensão e portanto a amplitude registrada. Uma queda de 30% no beta com um
+       salto de impedância no mesmo contato não é achado clínico;
+     • TROCA DE CONTATO DE SENSING entre sessões — muda o que se mede;
+     • deriva de FIRMWARE e de escala do Timeline entre versões.
+   E uma terceira pergunta, anterior a todas: a métrica é reprodutível o
+   bastante para que a comparação signifique algo? É o que o ICC responde.
+
+   Unidades: impedância em ohms; tempo de terapia em horas; bateria em %.
+
+   Referências:
+     Lempka SF, et al. J Neural Eng 2009;6:046001 (impedância e encapsulamento).
+     Swinnen BEKS, et al. J Neural Eng 2025;22:014001 (checklist de reporte).  */
+
+
+
+const quando = s => s ? Date.parse(s) : NaN;
+
+/* impedanceDrift(parsedList) — por hemisfério e contato, ao longo das sessões. */
+function impedanceDrift(parsedList, opts) {
+  opts = opts || {};
+  const limiarPct = isFinite(opts.changePct) ? opts.changePct : 25;
+  const lista = (parsedList || []).filter(p => p && p.impedance && Object.keys(p.impedance).length);
+  if (lista.length < 2) return {
+    ok: false, nSessions: lista.length,
+    reason: `impedância presente em ${lista.length} sessão(ões) — a deriva só é observável com pelo menos 2`
+  };
+
+  const implante = lista[0].device && lista[0].device.implantDate ? lista[0].device.implantDate : null;
+  const sessoes = lista.map(p => ({
+    file: p.fileName,
+    t: quando(p.meta && p.meta.sessionStart),
+    days: implante && p.meta && p.meta.sessionStart ? daysSince(implante, p.meta.sessionStart) : NaN,
+    imp: p.impedance
+  })).filter(s => isFinite(s.t)).sort((a, b) => a.t - b.t);
+  if (sessoes.length < 2) return { ok: false, reason: 'sessões sem data utilizável' };
+
+  /* série por contato monopolar (Case × eletrodo), que é o mais comparável */
+  const porContato = new Map();
+  sessoes.forEach((s, is) => {
+    Object.keys(s.imp).forEach(hemi => {
+      (s.imp[hemi].mono || []).forEach(e => {
+        const chave = `${hemi}|${e.a}-${e.b}`;
+        if (!porContato.has(chave)) porContato.set(chave, { hemisphere: hemi, contact: `${e.a}-${e.b}`, pontos: [] });
+        if (isFinite(e.ohm)) porContato.get(chave).pontos.push({ i: is, days: s.days, ohm: e.ohm, t: s.t });
+      });
+    });
+  });
+
+  const contatos = [];
+  porContato.forEach(c => {
+    if (c.pontos.length < 2) return;
+    const primeiro = c.pontos[0].ohm, ultimo = c.pontos[c.pontos.length - 1].ohm;
+    const varPct = primeiro > 0 ? 100 * (ultimo - primeiro) / primeiro : NaN;
+    const x = c.pontos.map(p => isFinite(p.days) ? p.days : p.i);
+    const y = c.pontos.map(p => p.ohm);
+    const reg = c.pontos.length >= 3 ? linreg(x, y) : null;
+    contatos.push({
+      hemisphere: c.hemisphere, contact: c.contact, n: c.pontos.length,
+      firstOhm: primeiro, lastOhm: ultimo,
+      changePct: isFinite(varPct) ? +varPct.toFixed(1) : NaN,
+      slopeOhmPerDay: reg && isFinite(reg.slope) ? +reg.slope.toFixed(3) : NaN,
+      r2: reg && isFinite(reg.r2) ? +reg.r2.toFixed(3) : NaN,
+      series: c.pontos.map(p => ({ days: p.days, ohm: p.ohm })),
+      flagged: isFinite(varPct) && Math.abs(varPct) >= limiarPct
+    });
+  });
+  if (!contatos.length) return { ok: false, reason: 'nenhum contato com impedância medida em mais de uma sessão' };
+
+  const marcados = contatos.filter(c => c.flagged);
+  const variacoes = contatos.map(c => c.changePct).filter(isFinite);
+  return {
+    ok: true, nSessions: sessoes.length, nContacts: contatos.length,
+    changeThresholdPct: limiarPct,
+    contacts: contatos.sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct)),
+    medianChangePct: variacoes.length ? +median(variacoes).toFixed(1) : NaN,
+    nFlagged: marcados.length,
+    spanDays: isFinite(sessoes[0].days) && isFinite(sessoes[sessoes.length - 1].days)
+      ? sessoes[sessoes.length - 1].days - sessoes[0].days : NaN,
+    interpretation: marcados.length
+      ? `${marcados.length} contato(s) mudaram mais de ${limiarPct}% de impedância entre a primeira e a última sessão ` +
+        `(${marcados.slice(0, 4).map(c => `${c.hemisphere === 'Left' ? 'E' : c.hemisphere === 'Right' ? 'D' : c.hemisphere}:${c.contact} ${c.changePct > 0 ? '+' : ''}${c.changePct}%`).join(', ')}). ` +
+        'Mudança de impedância altera o divisor de tensão e portanto a AMPLITUDE registrada: uma variação de potência ' +
+        'no mesmo contato, no mesmo período, não pode ser lida como mudança neural sem considerar isto.'
+      : `nenhum contato variou mais de ${limiarPct}%; a amplitude registrada é comparável entre estas sessões ` +
+        'no que depende da impedância'
+  };
+}
+
+/* usageAndBattery(parsedList) — uso por grupo, horas de terapia e bateria. */
+function usageAndBattery(parsedList) {
+  const lista = (parsedList || []).filter(Boolean);
+  if (!lista.length) return { ok: false, reason: 'nenhum arquivo' };
+  const linhas = lista.map(p => ({
+    file: p.fileName,
+    sessionStart: p.meta && p.meta.sessionStart || null,
+    batteryPct: p.device ? p.device.batteryPct : NaN,
+    batteryMonths: p.device ? p.device.batteryMonths : NaN,
+    therapyHoursTotal: p.device ? p.device.therapyHoursTotal : NaN,
+    therapyHoursSinceFU: p.device ? p.device.therapyHoursSinceFU : NaN,
+    groupUsage: (p.groupUsage || []).slice()
+  })).sort((a, b) => quando(a.sessionStart) - quando(b.sessionStart));
+
+  const comBateria = linhas.filter(l => isFinite(l.batteryPct));
+  let quedaPorMes = NaN;
+  if (comBateria.length >= 2) {
+    const a = comBateria[0], b = comBateria[comBateria.length - 1];
+    const meses = (quando(b.sessionStart) - quando(a.sessionStart)) / (1000 * 3600 * 24 * 30.44);
+    if (meses > 0.5) quedaPorMes = (a.batteryPct - b.batteryPct) / meses;
+  }
+  const comTerapia = linhas.filter(l => isFinite(l.therapyHoursTotal));
+  let horasPorDia = NaN;
+  if (comTerapia.length >= 2) {
+    const a = comTerapia[0], b = comTerapia[comTerapia.length - 1];
+    const dias = (quando(b.sessionStart) - quando(a.sessionStart)) / (1000 * 3600 * 24);
+    if (dias > 1) horasPorDia = (b.therapyHoursTotal - a.therapyHoursTotal) / dias;
+  }
+
+  return {
+    ok: true, rows: linhas, nSessions: linhas.length,
+    batteryDropPctPerMonth: isFinite(quedaPorMes) ? +quedaPorMes.toFixed(2) : NaN,
+    therapyHoursPerDay: isFinite(horasPorDia) ? +horasPorDia.toFixed(2) : NaN,
+    adherenceNote: !isFinite(horasPorDia) ? 'consumo de terapia não estimável com estas sessões'
+      : horasPorDia > 26 ? `${horasPorDia.toFixed(1)} h de terapia por dia de calendário — acima de 24 h, o que indica ` +
+        'contagem em mais de um canal ou período de sessão mal definido; trate como não interpretável'
+        : horasPorDia < 12 ? `${horasPorDia.toFixed(1)} h de terapia por dia — o estimulador passou parte do tempo desligado`
+          : `${horasPorDia.toFixed(1)} h de terapia por dia de calendário`,
+    caveat: 'estes números vêm de contadores acumulados do dispositivo. Eles descrevem o APARELHO, não a adesão do ' +
+      'paciente ao tratamento como um todo, e não substituem a anamnese.'
+  };
+}
+
+/* longitudinalReliability(bundles, campos) — ICC das métricas entre sessões.
+
+   `bundles`: um por SUJEITO, cada um com `acute` (linhas por sessão × hemisfério).
+   A matriz é sujeitos × sessões, uma por métrica.                            */
+function longitudinalReliability(bundles, opts) {
+  opts = opts || {};
+  const campos = opts.fields || [
+    { key: 'beta_peak_hz', label: 'frequência do pico beta (Hz)' },
+    { key: 'aperiodic_exponent', label: 'expoente aperiódico' },
+    { key: 'burst_rate_hz', label: 'taxa de bursts (/s)' },
+    { key: 'burst_mean_ms', label: 'duração média de burst (ms)' }
+  ];
+  const hemi = opts.hemisphere || 'Left';
+  const lista = (bundles || []).filter(b => b && b.acute && b.acute.length);
+  if (lista.length < 3) return {
+    ok: false, nSubjects: lista.length,
+    reason: `confiabilidade entre sessões exige ao menos 3 sujeitos; há ${lista.length}. ` +
+      'Com um sujeito só é possível descrever a variação entre sessões, não estimar o ICC — ' +
+      'porque não existe variância ENTRE sujeitos para comparar com o ruído de medida.'
+  };
+
+  const resultados = campos.map(c => {
+    const matriz = lista.map(b => {
+      const linhas = b.acute.filter(r => r.hemisphere === hemi && isFinite(r[c.key]))
+        .sort((x, y) => String(x.session_date_local || '').localeCompare(String(y.session_date_local || '')));
+      return linhas.map(r => r[c.key]);
+    });
+    const k = Math.min.apply(null, matriz.map(l => l.length));
+    if (!(k >= 2)) return { field: c.key, label: c.label, ok: false, reason: 'nem todos os sujeitos têm 2+ sessões com esta métrica' };
+    const cortada = matriz.map(l => l.slice(0, k));
+    const r = icc(cortada, {});
+    return Object.assign({ field: c.key, label: c.label }, r || { ok: false, reason: 'ICC não calculável' });
+  });
+
+  return {
+    ok: true, hemisphere: hemi, nSubjects: lista.length,
+    fields: resultados,
+    note: 'ICC(2,1) é o pertinente para test-retest: ele penaliza diferença sistemática entre sessões, que é ' +
+      'exatamente o que uma mudança de calibração ou de contato produz.'
+  };
+}
+
 /* ---------- core/adbs/eligibility.js ---------- */
 /* adbs/eligibility.js — relatório de elegibilidade a aDBS.
 
@@ -7771,6 +8435,10 @@ function fitDoseResponse(ma, power, opts) {
 
 
 
+
+
+
+
 const API = {
   parsePercept, parsePerceptText, MODALITIES, BANDS, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId,
   fft, nextPow2, welchPSD, spectrogram, bandpassFFT, hilbertEnvelope, detectBursts, fitAperiodic,
@@ -7816,7 +8484,11 @@ const API = {
   detectGamma, confirmEntrainment,
   /* sinais externos, sincronização e coerência (Onda 2.3) */
   parseExternalCsv, resampleUniform, coherence, coherenceBand,
-  alignByCrossCorrelation, alignByStimArtifact, alignByTimestamp, detectStimSteps
+  alignByCrossCorrelation, alignByStimArtifact, alignByTimestamp, detectStimSteps,
+  /* actograma, banda-controle e cluster (Onda 4.1) */
+  clusterPermutation, controlBandDiurnal, actogram,
+  /* confiabilidade longitudinal, impedância e uso (Onda 4.3) */
+  icc, impedanceDrift, usageAndBattery, longitudinalReliability
 };
 if (typeof module !== "undefined" && module.exports) module.exports = API;
 root.PerceptCore = API;
@@ -11180,6 +11852,271 @@ const FIGURES = [
           `(2) Tomar o máximo sobre os bins da banda é comparação múltipla; o limiar corrigido acima já leva isso em conta. ` +
           `(3) <b>Condução de volume e referência comum</b> produzem coerência de fase zero sem interação nenhuma — ` +
           `por isso a parte imaginária vem sempre junto, porque só sobrevive nela o que teve atraso de propagação.`
+      }));
+    }
+  },
+
+  /* ----------------------------------------------------------------- F25 */
+  {
+    id: 'F25', title: 'Actograma e banda-controle — o ritmo é específico?',
+    sub: 'duplo-plot com deriva de fase · marcador vs. banda-controle por permutação de cluster',
+    has: d => Object.keys(d.trend).length || d.snapshots.length,
+    render(node, d) {
+      const hemis = Object.keys(d.trend);
+      const h = opt('F25', 'hemi', hemis[0]);
+      const binMin = opt('F25', 'bin', 30);
+      const norm = opt('F25', 'norm', true);
+      const pb = profileBands().primary || { lo: 13, hi: 35 };
+      const cLo = opt('F25', 'clo', 55), cHi = opt('F25', 'chi', 95);
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        hemis.length ? ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: 'STN ' + hname(x) })), h, v => setOpt('F25', 'hemi', v)) : el('span', { class: 'exphint', text: 'sem Timeline' }),
+        ctrlSelect('bin', [{ value: 15, label: '15 min' }, { value: 30, label: '30 min' }, { value: 60, label: '60 min' }], binMin, v => setOpt('F25', 'bin', +v)),
+        ctrlCheck('normalizar cada dia', norm, v => setOpt('F25', 'norm', v)),
+        ctrlNumber('banda-controle de (Hz)', cLo, 1, 120, 5, v => setOpt('F25', 'clo', v)),
+        ctrlNumber('banda-controle até (Hz)', cHi, 5, 125, 5, v => setOpt('F25', 'chi', v))
+      ]));
+
+      /* ---------------- (a) actograma duplo-plot ----------------------- */
+      if (hemis.length) {
+        const limpo = C.removeOutliersMAD(d.trend[h], 'lfp', 4).kept;
+        const ac = C.actogram(limpo, offMin(), { binMin, normalizeDaily: norm });
+        if (!ac.ok) node.appendChild(el('div', { class: 'empty', text: ac.reason }));
+        else {
+          const box = plotBox(node, Math.max(200, 54 + ac.days.length * 8));
+          const M = ac.rows.map(r => r.values);
+          const ch = new P.Chart(box.canvas, {
+            width: box.width, height: box.height, xlim: [0, 48], ylim: [0, ac.days.length],
+            xlabel: 'hora local (dois dias por linha)', ylabel: 'dia',
+            title: `(a) actograma duplo-plot — STN ${hname(h)}, ${ac.days.length} dias`,
+            pad: { l: 76, r: 62, t: 24, b: 42 }
+          });
+          ch.heat(M, { cmap: norm ? 'divergent' : 'viridis', zmin: ac.zmin, zmax: ac.zmax, smooth: false });
+          const passo = Math.max(1, Math.ceil(ac.days.length / 14));
+          ch.axes({
+            grid: false, xticks: [0, 6, 12, 18, 24, 30, 36, 42, 48],
+            xfmt: v => String(v % 24).padStart(2, '0') + 'h',
+            yticks: ac.days.map((_, i) => i + .5).filter((_, i) => i % passo === 0),
+            yfmt: v => (ac.days[Math.floor(v)] || '').slice(5).split('-').reverse().join('/')
+          });
+          ch.vline(24, { color: COL.ink, width: 1.2, dash: [4, 3] });
+          ch.colorbar({ label: norm ? '% mediana do dia' : 'u.a.' });
+
+          node.appendChild(table(['item', 'valor', 'leitura'], [
+            ['dias registrados', String(ac.days.length), `bin de ${ac.binMin} min · ${norm ? 'cada dia normalizado pela própria mediana' : 'escala absoluta'}`],
+            ['deriva do horário do pico', isFinite(ac.medianDriftHoursPerDay) ? `${f(ac.medianDriftHoursPerDay, 2)} h/dia` : '—',
+              isFinite(ac.totalDriftHours) ? `acumula ${f(Math.abs(ac.totalDriftHours), 1)} h no período` : '—'],
+            ['acrofase por dia', ac.acrophaseByDay.filter(isFinite).slice(0, 8).map(v => f(v, 1) + 'h').join(' · ') + (ac.days.length > 8 ? ' …' : ''),
+              'média circular do perfil, ponderada — não o bin de máximo, que salta com ruído']
+          ]));
+          node.appendChild(el('div', {
+            class: Math.abs(ac.medianDriftHoursPerDay) >= 0.15 ? 'warnbox' : 'note',
+            html: `<b>Deriva de fase.</b> ${ac.driftNote}. ${ac.note}.`
+          }));
+          node.appendChild(exportRow([
+            { label: '⤓ PNG actograma', fn: () => P.downloadCanvas(box.canvas, 'F25a_actograma') },
+            {
+              label: '⤓ CSV actograma', fn: () => P.downloadText(P.toCSV(ac.rows.flatMap(r =>
+                r.values.map((v, i) => ({ dia: r.day, bin: i, hora: +((i + 0.5) * ac.binMin / 60).toFixed(3), valor: v })))),
+                'F25_actograma.csv', 'text/csv')
+            }
+          ]));
+        }
+      }
+
+      /* ---------------- (b) banda-controle ----------------------------- */
+      node.appendChild(el('h4', { class: 'qc-title', html: '<b>(b) O padrão diurno é específico da banda?</b>' }));
+      const espectros = (d.snapshots || []).filter(s => s.f && s.f.length && s.p).map(s => ({ t: s.t, f: s.f, p: s.p }));
+      const cb = C.controlBandDiurnal(espectros, offMin(), {
+        markerBand: [pb.lo, pb.hi], controlBand: [cLo, cHi], nBins: 12, nPermutations: 1500
+      });
+      if (!cb.ok) {
+        node.appendChild(el('div', { class: 'empty', html: `${cb.reason}.` }));
+        node.appendChild(el('div', {
+          class: 'note', html: `<b>Por que esta pergunta importa.</b> Um padrão diurno na potência do marcador pode ser ` +
+            `ritmo neural — ou postura, movimento, impedância que muda com a temperatura, qualquer coisa que module o ` +
+            `sinal <b>inteiro</b>. O teste é ver se a mesma variação aparece numa banda que não deveria carregar o ` +
+            `biomarcador. Sem espectros datados suficientes, esta verificação não pode ser feita, e a variação diurna ` +
+            `do Timeline <b>não pode</b> ser atribuída à banda.`
+        }));
+      } else {
+        const b2 = plotBox(node, 250);
+        const todos = cb.markerProfile.concat(cb.controlProfile).filter(isFinite);
+        const ch2 = new P.Chart(b2.canvas, {
+          width: b2.width, height: b2.height, xlim: [0, 24],
+          ylim: [Math.min.apply(null, todos) * 0.95, Math.max.apply(null, todos) * 1.08],
+          xlabel: 'hora local', ylabel: 'potência (normalizada pela média da própria banda)',
+          title: `(b) perfil diurno — marcador ${pb.lo}–${pb.hi} Hz vs. controle ${cLo}–${cHi} Hz`,
+          pad: { l: 76, r: 14, t: 24, b: 42 }
+        });
+        ch2.axes({ xticks: [0, 4, 8, 12, 16, 20, 24], xfmt: v => String(v).padStart(2, '0') + 'h' });
+        (cb.cluster && cb.cluster.clusters || []).filter(c => c.significant).forEach(c => {
+          const a = cb.hours[c.startIdx] - 12 / cb.nBins, b = cb.hours[c.endIdx] + 12 / cb.nBins;
+          ch2.span(a, b, { color: COL.accent, alpha: .13, label: 'cluster significativo' });
+        });
+        ch2.line(cb.hours, cb.markerProfile, { color: hcol(h || 'Left'), width: 2, label: `marcador ${pb.lo}–${pb.hi} Hz` });
+        ch2.line(cb.hours, cb.controlProfile, { color: COL.muted, width: 1.6, dash: [5, 3], label: `controle ${cLo}–${cHi} Hz` });
+        ch2.legend({ x: ch2.x0 + 8, y: ch2.y1 + 6 });
+
+        const cl = cb.cluster;
+        node.appendChild(table(['item', 'valor', 'o que significa'], [
+          ['espectros com hora', `${cb.nSpectra} em ${cb.nDays} dia(s)`, `${cb.nPerBin.filter(v => v > 0).length} de ${cb.nBins} bins de hora preenchidos`],
+          ['amplitude diurna do marcador', f(cb.markerAmplitude, 3), 'pico a vale do perfil normalizado'],
+          ['amplitude diurna do controle', f(cb.controlAmplitude, 3), 'a mesma medida, na banda que não deveria carregar o biomarcador'],
+          ['razão de amplitudes', isFinite(cb.amplitudeRatio) ? `${f(cb.amplitudeRatio, 2)}×` : '—', 'quanto o marcador varia a mais que o controle'],
+          ['clusters testados', cl ? String(cl.clusters.length) : '—', cl ? `${cl.nPermutations} permutações, limiar |t| ≥ ${cl.clusterThreshold}, semente ${cl.seed}` : '—'],
+          ['clusters significativos', cl ? String(cl.clusters.filter(c => c.significant).length) : '—',
+            cl && cl.clusters.length ? cl.clusters.slice(0, 3).map(c => `${f(cb.hours[c.startIdx], 0)}–${f(cb.hours[c.endIdx], 0)}h p=${f(c.p, 3)}`).join(' · ') : (cl ? cl.reason : '—')]
+        ]));
+        node.appendChild(el('div', {
+          class: cb.bandSpecific ? 'note' : 'warnbox',
+          html: `<b>Veredito: ${cb.verdict}.</b> ${cb.interpretation}.`
+        }));
+        if (cl && cl.clusters.length) node.appendChild(el('div', {
+          class: 'note', html: `<b>O que o teste de cluster não diz.</b> ${cl.caveat}`
+        }));
+        node.appendChild(exportRow([
+          { label: '⤓ PNG perfis', fn: () => P.downloadCanvas(b2.canvas, 'F25b_banda_controle') },
+          {
+            label: '⤓ CSV perfis', fn: () => P.downloadText(P.toCSV(cb.hours.map((x, i) => ({
+              hora: x, marcador: cb.markerProfile[i], controle: cb.controlProfile[i], n: cb.nPerBin[i],
+              banda_marcador: `${pb.lo}-${pb.hi}`, banda_controle: `${cLo}-${cHi}`
+            }))), 'F25_banda_controle.csv', 'text/csv')
+          }
+        ]));
+      }
+    }
+  },
+
+  /* ----------------------------------------------------------------- F26 */
+  {
+    id: 'F26', title: 'Longitudinal — impedância, confiabilidade e uso do aparelho',
+    sub: 'o que mudou entre sessões antes de atribuir a mudança ao cérebro',
+    has: d => true,
+    render(node, d) {
+      const ps = activeFiles().map(x => x.parsed);
+      const limiar = opt('F26', 'thr', 25);
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlNumber('mudança de impedância que marca (%)', limiar, 5, 100, 5, v => setOpt('F26', 'thr', v))
+      ]));
+
+      /* ---- impedância -------------------------------------------------- */
+      node.appendChild(el('h4', { class: 'qc-title', html: '<b>(a) Deriva de impedância</b>' }));
+      const imp = C.impedanceDrift(ps, { changePct: limiar });
+      if (!imp.ok) node.appendChild(el('div', { class: 'empty', text: imp.reason }));
+      else {
+        const box = plotBox(node, 260);
+        const todos = imp.contacts.flatMap(c => c.series.map(s => s.ohm));
+        const xs = imp.contacts.flatMap(c => c.series.map(s => isFinite(s.days) ? s.days : 0));
+        const ch = new P.Chart(box.canvas, {
+          width: box.width, height: box.height,
+          xlim: [Math.min.apply(null, xs) - 5, Math.max.apply(null, xs) + 5],
+          ylim: [0, Math.max.apply(null, todos) * 1.12],
+          xlabel: 'dias desde o implante', ylabel: 'impedância (Ω)',
+          title: `(a) impedância monopolar por contato — ${imp.nSessions} sessões`,
+          pad: { l: 72, r: 14, t: 24, b: 42 }
+        });
+        ch.axes();
+        imp.contacts.forEach(c => {
+          const marcado = c.flagged;
+          ch.line(c.series.map(s => isFinite(s.days) ? s.days : 0), c.series.map(s => s.ohm),
+            { color: marcado ? COL.right : hcol(c.hemisphere), width: marcado ? 2 : .9 });
+        });
+        ch.legend({ x: ch.x0 + 8, y: ch.y1 + 6 });
+
+        node.appendChild(table(['hemisfério', 'contato', 'n', 'primeira (Ω)', 'última (Ω)', 'variação', 'Ω/dia', 'R²'],
+          imp.contacts.slice(0, 12).map(c => [
+            { html: `<span class="hemi-${String(c.hemisphere)[0]}">${hname(c.hemisphere)}</span>` },
+            c.contact, String(c.n), f(c.firstOhm, 0), f(c.lastOhm, 0),
+            { html: c.flagged ? `<span class="sig">${c.changePct > 0 ? '+' : ''}${f(c.changePct, 1)}%</span>` : `${c.changePct > 0 ? '+' : ''}${f(c.changePct, 1)}%` },
+            isFinite(c.slopeOhmPerDay) ? f(c.slopeOhmPerDay, 2) : '—',
+            isFinite(c.r2) ? f(c.r2, 2) : '—'
+          ])));
+        node.appendChild(el('div', {
+          class: imp.nFlagged ? 'warnbox' : 'note',
+          html: `<b>Leitura.</b> ${imp.interpretation}`
+        }));
+      }
+
+      /* ---- confiabilidade --------------------------------------------- */
+      node.appendChild(el('h4', { class: 'qc-title', html: '<b>(b) A métrica é reprodutível o bastante para comparar?</b>' }));
+      const sujeitos = subjects();
+      const pacotes = sujeitos.map(s => {
+        try { return C.extractMetrics(s.files.map(x => x.parsed), offMin(), { profileId: activeProfileId() }); }
+        catch (e) { return null; }
+      }).filter(Boolean);
+      const rel = C.longitudinalReliability(pacotes, { hemisphere: 'Left' });
+      if (!rel.ok) {
+        node.appendChild(el('div', { class: 'empty', html: rel.reason }));
+        /* com um sujeito, ao menos descreve a variação entre sessões */
+        const b = exportBundle();
+        if (b && b.acute.length > 1) {
+          const campos = [['beta_peak_hz', 'pico beta (Hz)'], ['aperiodic_exponent', 'expoente aperiódico'], ['burst_rate_hz', 'taxa de bursts (/s)']];
+          node.appendChild(table(['métrica', 'hemisfério', 'n sessões', 'mediana', 'variação (máx − mín)', 'coef. de variação'],
+            ['Left', 'Right'].flatMap(hh => campos.map(([k, rot]) => {
+              const v = b.acute.filter(r => r.hemisphere === hh && isFinite(r[k])).map(r => r[k]);
+              if (v.length < 2) return null;
+              const med = C.median(v), amp = Math.max.apply(null, v) - Math.min.apply(null, v);
+              const cv = med !== 0 ? 100 * C.sd(v) / Math.abs(med) : NaN;
+              return [rot, { html: `<span class="hemi-${hh[0]}">${hname(hh)}</span>` }, String(v.length), f(med, 3), f(amp, 3), isFinite(cv) ? f(cv, 1) + ' %' : '—'];
+            }).filter(Boolean))));
+          node.appendChild(el('div', {
+            class: 'note', html: `<b>O que isto é e o que não é.</b> A tabela descreve <i>quanto</i> a métrica variou ` +
+              `entre as sessões desta pessoa. Ela <b>não</b> diz se a métrica distingue pacientes: para isso é preciso ` +
+              `variância ENTRE sujeitos, e portanto ao menos três pessoas com duas sessões cada. Uma variação de 10% pode ` +
+              `ser excelente (se as pessoas diferem entre si em 100%) ou inútil (se diferem em 10%).`
+          }));
+        }
+      } else {
+        node.appendChild(table(['métrica', 'ICC(2,1)', 'ICC(3,1)', 'IC 95%', 'n × k', 'leitura'],
+          rel.fields.map(r => r.ok
+            ? [r.label, f(r.icc21, 3), f(r.icc31, 3), `[${f(r.ci95[0], 2)} – ${f(r.ci95[1], 2)}]`, `${r.n} × ${r.k}`,
+              { html: r.ciSpansCategories ? `<span class="ns">${r.interpretation} (IC largo)</span>` : `<span class="sig">${r.interpretation}</span>` }]
+            : [r.label, '—', '—', '—', '—', r.reason])));
+        node.appendChild(el('div', { class: 'note', html: `<b>Qual ICC.</b> ${rel.note}` }));
+        rel.fields.filter(r => r.ok && r.ciSpansCategories).forEach(r => node.appendChild(el('div', {
+          class: 'warnbox', html: `<b>${r.label}.</b> ${r.caveat}.`
+        })));
+      }
+
+      /* ---- uso e bateria ---------------------------------------------- */
+      node.appendChild(el('h4', { class: 'qc-title', html: '<b>(c) Uso do aparelho e bateria</b>' }));
+      const ub = C.usageAndBattery(ps);
+      if (!ub.ok) node.appendChild(el('div', { class: 'empty', text: ub.reason }));
+      else {
+        node.appendChild(table(['sessão', 'bateria', 'meses estimados', 'terapia acumulada (h)', 'desde o último retorno (h)', 'uso por grupo'],
+          ub.rows.map(r => [
+            String(r.sessionStart || '').slice(0, 10) || r.file,
+            isFinite(r.batteryPct) ? f(r.batteryPct, 0) + ' %' : '—',
+            isFinite(r.batteryMonths) ? f(r.batteryMonths, 0) : '—',
+            isFinite(r.therapyHoursTotal) ? f(r.therapyHoursTotal, 0) : '—',
+            isFinite(r.therapyHoursSinceFU) ? f(r.therapyHoursSinceFU, 0) : '—',
+            r.groupUsage.length ? r.groupUsage.map(g => `${g.id}: ${f(g.pct, 0)}%`).join(' · ') : '—'
+          ])));
+        node.appendChild(el('div', {
+          class: 'note',
+          html: `<b>Uso.</b> ${ub.adherenceNote}.` +
+            (isFinite(ub.batteryDropPctPerMonth) ? ` Bateria caindo ${f(ub.batteryDropPctPerMonth, 1)} pontos percentuais por mês.` : '') +
+            ` ${ub.caveat}`
+        }));
+      }
+
+      node.appendChild(exportRow([
+        {
+          label: '⤓ CSV impedância', fn: () => {
+            if (!imp.ok) return alert(imp.reason);
+            P.downloadText(P.toCSV(imp.contacts.flatMap(c => c.series.map(s => ({
+              hemisferio: c.hemisphere, contato: c.contact, dias_desde_implante: s.days, ohm: s.ohm,
+              variacao_pct_total: c.changePct, ohm_por_dia: c.slopeOhmPerDay, marcado: c.flagged ? 1 : 0
+            })))), 'F26_impedancia.csv', 'text/csv');
+          }
+        }
+      ]));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Por que esta figura vem antes de qualquer comparação entre visitas.</b> ` +
+          `Comparar o beta de hoje com o de seis meses atrás só faz sentido se o que mudou for o cérebro, e não a ` +
+          `medida. Impedância sobe com encapsulamento glial e altera o divisor de tensão, portanto a amplitude ` +
+          `registrada; troca de contato de sensing muda o que se mede; versões de firmware mudam a escala do Timeline. ` +
+          `E antes de tudo isso: se a métrica não for reprodutível, a diferença observada pode ser só ruído de medida.`
       }));
     }
   }
