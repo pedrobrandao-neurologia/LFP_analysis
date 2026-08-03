@@ -6580,6 +6580,688 @@ function confirmEntrainment(registros, opts) {
   };
 }
 
+/* ---------- core/io/external.js ---------- */
+/* io/external.js — importação de sinal externo (IMU, EMG, ECG, acelerômetro).
+
+   POR QUE ISTO IMPORTA. Várias perguntas de LFP só se respondem com um segundo
+   sinal. Tremor: a oscilação do STN é do cérebro ou é o próprio tremor entrando
+   pelo eletrodo? Distonia cervical: o pico teta-alfa do GPi é biomarcador ou é
+   o tremor cefálico de 1–6 Hz batendo em cima dele? Artefato cardíaco: o QRS
+   está mesmo ali? Sem um canal externo, essas perguntas não têm resposta — e
+   este software prefere dizer isso a inventar uma.
+
+   O QUE ESTE MÓDULO FAZ. Lê um CSV/TSV de qualquer origem (Delsys, APDM/Opal,
+   planilha, gravador genérico), descobre o delimitador, o cabeçalho, a coluna
+   de tempo e os canais numéricos, e devolve as séries com a frequência de
+   amostragem INFERIDA e a irregularidade dessa inferência declarada.
+
+   O QUE ELE NÃO FAZ. Não interpola. Lacuna de amostragem vira NaN e é
+   contabilizada; linha malformada é descartada com contagem. Não adivinha
+   unidade: se o cabeçalho não disser, a unidade sai como desconhecida e as
+   figuras dizem "u.a.".
+
+   Referência de arquitetura: DBSsync (Vivien) — sincronização de sinais
+   externos ao Percept por artefato de estimulação.                          */
+
+const DELIMS = [',', ';', '\t', '|'];
+
+/* Escolhe o delimitador pelo que produz mais colunas de forma CONSISTENTE nas
+   primeiras linhas — contar só na primeira linha erra em arquivo com texto. */
+function detectaDelimitador(linhas) {
+  let melhor = ',', melhorNota = -1;
+  DELIMS.forEach(d => {
+    const contas = linhas.slice(0, 12).map(l => l.split(d).length);
+    if (!contas.length) return;
+    const m = median(contas);
+    if (m < 2) return;
+    const consistentes = contas.filter(c => c === m).length / contas.length;
+    const nota = m * consistentes;
+    if (nota > melhorNota) { melhorNota = nota; melhor = d; }
+  });
+  return melhor;
+}
+
+const numero = s => {
+  if (s == null) return NaN;
+  const t = String(s).trim().replace(/^"|"$/g, '');
+  if (!t) return NaN;
+  /* aceita vírgula decimal, comum em exportação brasileira e europeia */
+  const v = Number(t.indexOf(',') >= 0 && t.indexOf('.') < 0 ? t.replace(',', '.') : t);
+  return isFinite(v) ? v : NaN;
+};
+
+/* Interpreta a coluna de tempo. Devolve tempos em MILISSEGUNDOS e diz como
+   chegou lá — se a interpretação estiver errada, o alinhamento inteiro está, e
+   isso não pode ficar implícito. */
+function interpretaTempo(valores) {
+  const brutos = valores.map(v => String(v == null ? '' : v).trim().replace(/^"|"$/g, ''));
+  /* 1. timestamp ISO */
+  const iso = brutos.slice(0, 5).every(s => s && !isFinite(Number(s)) && isFinite(Date.parse(s)));
+  if (iso) return {
+    ms: brutos.map(s => Date.parse(s)),
+    interpretation: 'timestamp ISO 8601 absoluto', absolute: true
+  };
+  const nums = brutos.map(numero);
+  const validos = nums.filter(isFinite);
+  if (validos.length < 4) return null;
+  const dif = [];
+  for (let i = 1; i < nums.length; i++) if (isFinite(nums[i]) && isFinite(nums[i - 1])) dif.push(nums[i] - nums[i - 1]);
+  const dt = median(dif.filter(v => v > 0));
+  const primeiro = validos[0];
+  /* 2. epoch em milissegundos (ordem de 1e12 a partir de 2001) */
+  if (primeiro > 1e11) return { ms: nums, interpretation: 'epoch Unix em milissegundos', absolute: true };
+  /* 3. epoch em segundos */
+  if (primeiro > 1e8) return { ms: nums.map(v => v * 1000), interpretation: 'epoch Unix em segundos', absolute: true };
+  /* 4. tempo relativo: segundos ou milissegundos, decidido pelo passo típico */
+  if (dt >= 1) return {
+    ms: nums.map(v => v - validos[0]),
+    interpretation: `tempo relativo em milissegundos (passo típico ${dt.toFixed(2)} ms)`, absolute: false
+  };
+  return {
+    ms: nums.map(v => (v - validos[0]) * 1000),
+    interpretation: `tempo relativo em segundos (passo típico ${dt.toFixed(5)} s)`, absolute: false
+  };
+}
+
+/* parseExternalCsv(texto, opts) → { channels, tMs, fs, ... } */
+function parseExternalCsv(texto, opts) {
+  opts = opts || {};
+  const linhas = String(texto || '').split(/\r?\n/).filter(l => l.trim().length);
+  if (linhas.length < 4) return { ok: false, reason: 'arquivo com menos de 4 linhas úteis' };
+  const delim = opts.delimiter || detectaDelimitador(linhas);
+  const celulas = linhas.map(l => l.split(delim).map(c => c.trim().replace(/^"|"$/g, '')));
+
+  /* cabeçalho: primeira linha em que a maioria das células NÃO é número */
+  let iCab = -1;
+  for (let i = 0; i < Math.min(5, celulas.length); i++) {
+    const naoNum = celulas[i].filter(c => c && !isFinite(numero(c))).length;
+    if (naoNum >= Math.ceil(celulas[i].length / 2)) { iCab = i; break; }
+  }
+  const cabecalho = iCab >= 0 ? celulas[iCab] : celulas[0].map((_, i) => 'col' + (i + 1));
+  const corpo = celulas.slice(iCab >= 0 ? iCab + 1 : 0);
+  const nCols = median(corpo.slice(0, 50).map(r => r.length));
+  const linhasDescartadas = corpo.filter(r => r.length !== nCols).length;
+  const dados = corpo.filter(r => r.length === nCols);
+  if (dados.length < 4) return { ok: false, reason: 'nenhuma linha de dados consistente com o cabeçalho' };
+
+  /* coluna de tempo: a indicada pelo usuário, ou a primeira cujo nome sugere
+     tempo, ou a primeira monotônica crescente */
+  let iTempo = isFinite(opts.timeColumn) ? opts.timeColumn : -1;
+  if (iTempo < 0) iTempo = cabecalho.findIndex(c => /^(time|tempo|timestamp|t|datetime|date|sec|seconds|ms)\b/i.test(c || ''));
+  if (iTempo < 0) {
+    for (let c = 0; c < nCols; c++) {
+      const col = dados.slice(0, 200).map(r => numero(r[c]));
+      let cresce = 0;
+      for (let i = 1; i < col.length; i++) if (col[i] > col[i - 1]) cresce++;
+      if (cresce > 0.95 * (col.length - 1)) { iTempo = c; break; }
+    }
+  }
+  if (iTempo < 0) iTempo = 0;
+
+  const tempo = interpretaTempo(dados.map(r => r[iTempo]));
+  if (!tempo) return { ok: false, reason: 'não foi possível interpretar a coluna de tempo' };
+
+  /* canais: todas as demais colunas majoritariamente numéricas */
+  const canais = [];
+  for (let c = 0; c < nCols; c++) {
+    if (c === iTempo) continue;
+    const col = dados.map(r => numero(r[c]));
+    const validos = col.filter(isFinite).length;
+    if (validos < 0.5 * col.length) continue;
+    const nome = (cabecalho[c] || ('col' + (c + 1))).trim();
+    const unidade = (nome.match(/\(([^)]+)\)|\[([^\]]+)\]/) || [])[1] || (nome.match(/\[([^\]]+)\]/) || [])[1] || null;
+    canais.push({
+      name: nome, unit: unidade,
+      kind: /acc|aceler|imu|gyro|giro/i.test(nome) ? 'imu'
+        : /emg|musc/i.test(nome) ? 'emg'
+          : /ecg|ekg|card/i.test(nome) ? 'ecg' : 'desconhecido',
+      data: Float64Array.from(col),
+      nValid: validos, nNaN: col.length - validos
+    });
+  }
+  if (!canais.length) return { ok: false, reason: 'nenhuma coluna numérica além do tempo' };
+
+  /* fs efetiva e a irregularidade dela — um jitter alto invalida qualquer
+     análise espectral do sinal externo, e precisa aparecer */
+  const dif = [];
+  for (let i = 1; i < tempo.ms.length; i++) {
+    const d = tempo.ms[i] - tempo.ms[i - 1];
+    if (isFinite(d) && d > 0) dif.push(d);
+  }
+  const dtMed = median(dif);
+  const fs = dtMed > 0 ? 1000 / dtMed : NaN;
+  const q1 = quantile(dif, 0.25), q3 = quantile(dif, 0.75);
+  const jitterPct = dtMed > 0 ? 100 * (q3 - q1) / dtMed : NaN;
+  /* lacunas: intervalos maiores que 3× o passo típico */
+  const lacunas = [];
+  for (let i = 1; i < tempo.ms.length; i++) {
+    const d = tempo.ms[i] - tempo.ms[i - 1];
+    if (isFinite(d) && d > 3 * dtMed) lacunas.push({ atMs: tempo.ms[i - 1], gapMs: +d.toFixed(2) });
+  }
+
+  const avisos = [];
+  if (linhasDescartadas) avisos.push(`${linhasDescartadas} linha(s) descartada(s) por número de colunas diferente do cabeçalho`);
+  if (isFinite(jitterPct) && jitterPct > 5) avisos.push(
+    `a amostragem é irregular (IQR do intervalo = ${jitterPct.toFixed(1)}% do passo típico) — ` +
+    'análise espectral deste sinal fica frágil; considere reamostrar antes de comparar bandas');
+  if (lacunas.length) avisos.push(`${lacunas.length} lacuna(s) de amostragem detectada(s); nada foi interpolado`);
+  if (!tempo.absolute) avisos.push(
+    'a coluna de tempo é RELATIVA — o alinhamento com o LFP não pode ser feito por timestamp e ' +
+    'precisa de correlação cruzada ou de deslocamento informado à mão');
+
+  return {
+    ok: true,
+    delimiter: delim === '\t' ? 'tabulação' : delim,
+    headerRow: iCab, timeColumn: iTempo, timeColumnName: cabecalho[iTempo] || null,
+    timeInterpretation: tempo.interpretation, absoluteTime: tempo.absolute,
+    tMs: tempo.ms,
+    channels: canais,
+    nSamples: dados.length, nRowsDropped: linhasDescartadas,
+    fs: isFinite(fs) ? +fs.toFixed(4) : NaN,
+    sampleIntervalMs: isFinite(dtMed) ? +dtMed.toFixed(4) : NaN,
+    jitterPct: isFinite(jitterPct) ? +jitterPct.toFixed(2) : NaN,
+    gaps: lacunas, durationSec: +((tempo.ms[tempo.ms.length - 1] - tempo.ms[0]) / 1000).toFixed(3),
+    warnings: avisos
+  };
+}
+
+/* Reamostra para uma grade regular por interpolação linear ENTRE amostras
+   vizinhas, e devolve NaN dentro das lacunas — reamostrar não é o mesmo que
+   preencher buraco, e a diferença é preservada. */
+function resampleUniform(tMs, y, fsAlvo, opts) {
+  opts = opts || {};
+  const maxGapMs = isFinite(opts.maxGapMs) ? opts.maxGapMs : 3 * 1000 / fsAlvo;
+  const validos = [];
+  for (let i = 0; i < tMs.length; i++) if (isFinite(tMs[i]) && isFinite(y[i])) validos.push(i);
+  if (validos.length < 4) return null;
+  const t0 = tMs[validos[0]], t1 = tMs[validos[validos.length - 1]];
+  const n = Math.floor((t1 - t0) * fsAlvo / 1000) + 1;
+  if (!(n > 1)) return null;
+  const out = new Float64Array(n);
+  let k = 0;
+  for (let i = 0; i < n; i++) {
+    const t = t0 + i * 1000 / fsAlvo;
+    while (k + 1 < validos.length && tMs[validos[k + 1]] < t) k++;
+    const a = validos[k], b = validos[Math.min(k + 1, validos.length - 1)];
+    const ta = tMs[a], tb = tMs[b];
+    if (tb - ta > maxGapMs) { out[i] = NaN; continue; }
+    out[i] = tb === ta ? y[a] : y[a] + (y[b] - y[a]) * (t - ta) / (tb - ta);
+  }
+  let nNaN = 0; for (let i = 0; i < n; i++) if (!isFinite(out[i])) nNaN++;
+  return {
+    data: out, fs: fsAlvo, t0Ms: t0, n,
+    nNaN, pctNaN: +(100 * nNaN / n).toFixed(2),
+    maxGapMs,
+    note: 'interpolação linear apenas ENTRE amostras vizinhas; lacunas maiores que o limite ficam NaN'
+  };
+}
+
+/* ---------- core/dsp/coherence.js ---------- */
+/* dsp/coherence.js — coerência espectral entre dois sinais.
+
+   O QUE MEDE. A coerência de magnitude quadrática Cxy(f) ∈ [0,1] diz quanto da
+   variação de um sinal numa frequência é explicada linearmente pelo outro, com
+   relação de fase constante. É a ferramenta para perguntar: o pico de 5 Hz no
+   GPi é o mesmo ritmo do tremor cefálico medido pelo IMU? A oscilação beta do
+   STN acompanha a atividade do EMG?
+
+   TRÊS ARMADILHAS, TODAS TRATADAS AQUI
+
+   1. COERÊNCIA É INFLADA POR POUCOS SEGMENTOS. Com L segmentos independentes, a
+      coerência esperada sob a hipótese nula NÃO é zero: é 1/L. Com 4 segmentos,
+      dois ruídos independentes dão Cxy ≈ 0,25 — que parece "coerência
+      moderada". Por isso todo resultado traz o LIMIAR de significância
+      1 − α^(1/(L−1)) e o número de segmentos usados.
+
+   2. CONDUÇÃO DE VOLUME E REFERÊNCIA COMUM produzem coerência de fase ZERO sem
+      nenhuma interação. A parte IMAGINÁRIA da coerência (Nolte et al.) é
+      insensível a isso: só sobrevive o que tem defasagem, ou seja, o que levou
+      tempo para propagar. Ela vem junto, sempre.
+
+   3. LACUNAS. Segmento com NaN é descartado, nunca preenchido, e a fração usada
+      é reportada — igual ao Welch deste mesmo repositório.
+
+   Unidades: f em Hz; Cxy adimensional; fase em radianos; atraso em ms.
+
+   Referências:
+     Halliday DM, et al. Prog Biophys Mol Biol 1995;64:237-278.
+     Nolte G, et al. Clin Neurophysiol 2004;115:2292-2307 (coerência imaginária).
+     Bortel R, Sovka P. Signal Processing 2007;87:1100-1117 (viés e limiar).   */
+
+
+
+/* coherence(x, y, fs, {nperseg, overlap, alpha})
+   x e y precisam ter o MESMO comprimento e a mesma fs — reamostre antes.     */
+function coherence(x, y, fs, opts) {
+  opts = opts || {};
+  const n = Math.min(x.length, y.length);
+  const nper = opts.nperseg || Math.min(nextPow2(Math.floor(fs)), nextPow2(n));
+  const nfft = nextPow2(nper);
+  const overlap = opts.overlap == null ? 0.5 : opts.overlap;
+  const passo = Math.max(1, Math.floor(nper * (1 - overlap)));
+  const alpha = isFinite(opts.alpha) ? opts.alpha : 0.05;
+  if (n < nper * 2) return { f: [], cxy: null, reason: 'registro curto demais para dois segmentos' };
+
+  const w = hann(nper);
+  const nBins = nfft / 2 + 1;
+  const Sxx = new Float64Array(nBins), Syy = new Float64Array(nBins);
+  const SxyRe = new Float64Array(nBins), SxyIm = new Float64Array(nBins);
+  let L = 0, descartados = 0;
+
+  for (let s = 0; s + nper <= n; s += passo) {
+    let temNaN = false;
+    for (let i = s; i < s + nper; i++) if (!isFinite(x[i]) || !isFinite(y[i])) { temNaN = true; break; }
+    if (temNaN) { descartados++; continue; }
+    const sx = detrendLinearNaN(x.subarray ? x.subarray(s, s + nper) : x.slice(s, s + nper));
+    const sy = detrendLinearNaN(y.subarray ? y.subarray(s, s + nper) : y.slice(s, s + nper));
+    const xr = new Float64Array(nfft), xi = new Float64Array(nfft);
+    const yr = new Float64Array(nfft), yi = new Float64Array(nfft);
+    for (let i = 0; i < nper; i++) { xr[i] = sx[i] * w[i]; yr[i] = sy[i] * w[i]; }
+    fft(xr, xi, false); fft(yr, yi, false);
+    for (let k = 0; k < nBins; k++) {
+      Sxx[k] += xr[k] * xr[k] + xi[k] * xi[k];
+      Syy[k] += yr[k] * yr[k] + yi[k] * yi[k];
+      /* Sxy = X · conj(Y) */
+      SxyRe[k] += xr[k] * yr[k] + xi[k] * yi[k];
+      SxyIm[k] += xi[k] * yr[k] - xr[k] * yi[k];
+    }
+    L++;
+  }
+  if (L < 3) return {
+    f: [], cxy: null, nSegments: L, nSegmentsDropped: descartados,
+    reason: `apenas ${L} segmento(s) sem lacuna — com menos de 3 a coerência não é estimável de forma útil`
+  };
+
+  const f = new Float64Array(nBins), cxy = new Float64Array(nBins);
+  const fase = new Float64Array(nBins), imag = new Float64Array(nBins);
+  for (let k = 0; k < nBins; k++) {
+    f[k] = k * fs / nfft;
+    const den = Sxx[k] * Syy[k];
+    const num = SxyRe[k] * SxyRe[k] + SxyIm[k] * SxyIm[k];
+    cxy[k] = den > 0 ? Math.min(1, num / den) : NaN;
+    fase[k] = Math.atan2(SxyIm[k], SxyRe[k]);
+    imag[k] = den > 0 ? SxyIm[k] / Math.sqrt(den) : NaN;
+  }
+
+  /* limiar de significância sob a nula, para L segmentos independentes.
+     Segmentos com 50% de sobreposição NÃO são independentes: o L efetivo é
+     menor, e usar L cheio deixa o limiar otimista. Correção conservadora de
+     Welch: L_eff ≈ L / (1 + 2·overlap²) para janela de Hann. */
+  const Lef = Math.max(2, Math.round(L / (1 + 2 * overlap * overlap)));
+  const limiar = 1 - Math.pow(alpha, 1 / (Lef - 1));
+
+  return {
+    f, cxy, phaseRad: fase, imagCoherency: imag,
+    nSegments: L, nSegmentsEffective: Lef, nSegmentsDropped: descartados,
+    nperseg: nper, df: fs / nfft, overlap, alpha,
+    significanceThreshold: +limiar.toFixed(5),
+    expectedNullCoherence: +(1 / Lef).toFixed(5),
+    reason: null,
+    note: `com ${Lef} segmentos efetivos, dois ruídos independentes dariam coerência média de ` +
+      `${(1 / Lef).toFixed(3)} — só acima de ${limiar.toFixed(3)} há evidência contra a nula (α = ${alpha})`
+  };
+}
+
+/* Resumo por banda: coerência média, pico, e se passa do limiar. O atraso vem
+   da INCLINAÇÃO da fase dentro da banda (dφ/dω), não da fase num ponto — fase
+   num ponto só é interpretável a menos de múltiplos de 2π. */
+function coherenceBand(coh, lo, hi) {
+  if (!coh || !coh.cxy) return null;
+  const idx = [];
+  for (let i = 0; i < coh.f.length; i++) if (coh.f[i] >= lo && coh.f[i] <= hi && isFinite(coh.cxy[i])) idx.push(i);
+  if (idx.length < 3) return null;
+  const vals = idx.map(i => coh.cxy[i]);
+  let bi = idx[0];
+  idx.forEach(i => { if (coh.cxy[i] > coh.cxy[bi]) bi = i; });
+
+  /* Atraso pela INCLINAÇÃO da fase, com dois cuidados que mudam o número:
+
+     (a) só entram os bins em que há coerência de verdade. Onde Cxy é ruído, a
+         fase também é, e incluir esses pontos numa reta comum arrasta a
+         inclinação para qualquer lugar;
+     (b) o ajuste é PONDERADO por Cxy, porque bins mais coerentes têm fase
+         menos incerta.
+
+     Convenção: Sxy = X·conj(Y). Se y(t) = x(t − τ), então Y = X·e^(−iωτ) e
+     Sxy = |X|²·e^(+iωτ), ou seja φ = +ωτ e τ = +dφ/dω. Positivo significa que
+     o SEGUNDO sinal está atrasado em relação ao primeiro. */
+  const usados = idx.filter(i => coh.cxy[i] > coh.significanceThreshold);
+  const paraFase = usados.length >= 4 ? usados : idx;
+  const w = paraFase.map(i => 2 * Math.PI * coh.f[i]);
+  const peso = paraFase.map(i => Math.max(0, coh.cxy[i]));
+  const ph = [];
+  let acc = coh.phaseRad[paraFase[0]];
+  ph.push(acc);
+  for (let k = 1; k < paraFase.length; k++) {
+    let d = coh.phaseRad[paraFase[k]] - coh.phaseRad[paraFase[k - 1]];
+    while (d > Math.PI) d -= 2 * Math.PI;
+    while (d < -Math.PI) d += 2 * Math.PI;
+    acc += d; ph.push(acc);
+  }
+  const sw = peso.reduce((a, v) => a + v, 0) || 1;
+  const mw = w.reduce((a, v, k) => a + v * peso[k], 0) / sw;
+  const mp = ph.reduce((a, v, k) => a + v * peso[k], 0) / sw;
+  let sxy = 0, sxx = 0;
+  for (let k = 0; k < w.length; k++) {
+    sxy += peso[k] * (w[k] - mw) * (ph[k] - mp);
+    sxx += peso[k] * (w[k] - mw) * (w[k] - mw);
+  }
+  const b = sxx > 0 ? sxy / sxx : NaN;
+  const atrasoMs = isFinite(b) ? b * 1000 : NaN;
+  const nBinsFase = paraFase.length;
+  const imMax = idx.reduce((m, i) => Math.abs(coh.imagCoherency[i]) > Math.abs(coh.imagCoherency[m]) ? i : m, idx[0]);
+  /* A decisão sobre condução de volume tem de ser tomada NA FREQUÊNCIA EM QUE
+     HÁ COERÊNCIA, não no máximo da parte imaginária ao longo da banda: onde a
+     coerência é ruído, a parte imaginária também é, e o máximo dela sobre
+     vários bins chega a 0,2 por acaso. No pico, a parte imaginária é
+     √Cxy·sen(φ) — perto de zero significa fase zero, que é a assinatura de
+     mistura instantânea. */
+  const imagPico = coh.imagCoherency[bi];
+  const faseGrau = coh.phaseRad[bi] * 180 / Math.PI;
+
+  /* Para acoplamento de banda ESTREITA (tremor), a inclinação da fase é
+     estimada sobre poucos bins e fica ruidosa. A fase NO PICO dá um número
+     melhor — ao custo de ser ambígua a menos de múltiplos de 2π, o que só é
+     inofensivo quando |τ| < 1/(2·f_pico). Os dois saem, com a ressalva. */
+  const tauPicoMs = isFinite(coh.phaseRad[bi]) && coh.f[bi] > 0
+    ? 1000 * coh.phaseRad[bi] / (2 * Math.PI * coh.f[bi]) : NaN;
+  const ambiguidadeMs = coh.f[bi] > 0 ? 1000 / coh.f[bi] : NaN;
+  const larguraSig = usados.length ? (coh.f[usados[usados.length - 1]] - coh.f[usados[0]]) : 0;
+  const estreita = larguraSig < 3;
+
+  const media = vals.reduce((a, v) => a + v, 0) / vals.length;
+  /* O limiar de `coherence()` vale PARA UM BIN. Tomar o MÁXIMO sobre os bins da
+     banda é uma comparação múltipla disfarçada: com 11 bins e α = 0,05, ruído
+     puro ultrapassa o limiar por bin quase metade das vezes. Correção de Šidák
+     sobre o número de bins da banda. */
+  const nBins = idx.length;
+  const alfaCorr = 1 - Math.pow(1 - coh.alpha, 1 / nBins);
+  const limiarBanda = 1 - Math.pow(alfaCorr, 1 / (coh.nSegmentsEffective - 1));
+  const significativo = coh.cxy[bi] > limiarBanda;
+  return {
+    band: [lo, hi], nBins,
+    meanCoherence: +media.toFixed(4),
+    medianCoherence: +median(vals).toFixed(4),
+    peakCoherence: +coh.cxy[bi].toFixed(4), peakHz: +coh.f[bi].toFixed(3),
+    threshold: coh.significanceThreshold,
+    thresholdBandCorrected: +limiarBanda.toFixed(5),
+    significant: significativo,
+    phaseAtPeakRad: +coh.phaseRad[bi].toFixed(4),
+    lagMs: isFinite(atrasoMs) ? +atrasoMs.toFixed(2) : NaN,
+    lagFromNBins: nBinsFase,
+    lagAtPeakMs: isFinite(tauPicoMs) ? +tauPicoMs.toFixed(2) : NaN,
+    lagAmbiguityMs: isFinite(ambiguidadeMs) ? +ambiguidadeMs.toFixed(2) : NaN,
+    significantBandwidthHz: +larguraSig.toFixed(2),
+    preferredLagMs: estreita && isFinite(tauPicoMs) ? +tauPicoMs.toFixed(2)
+      : (isFinite(atrasoMs) ? +atrasoMs.toFixed(2) : NaN),
+    preferredLagSource: estreita ? 'fase no pico (banda estreita)' : 'inclinação da fase na banda',
+    maxImagCoherency: +coh.imagCoherency[imMax].toFixed(4),
+    maxImagHz: +coh.f[imMax].toFixed(3),
+    imagAtPeak: +imagPico.toFixed(4),
+    phaseAtPeakDeg: +faseGrau.toFixed(1),
+    /* limiar relativo: 0,1·√Cxy corresponde a |φ| ≲ 6° no pico */
+    volumeConductionSuspected: significativo && Math.abs(imagPico) < 0.1 * Math.sqrt(Math.max(0, coh.cxy[bi])),
+    interpretation: !significativo
+      ? `nenhuma frequência da banda passa do limiar de ${limiarBanda.toFixed(3)} ` +
+        `(limiar por bin ${coh.significanceThreshold.toFixed(3)}, corrigido para os ${nBins} bins da banda) — ` +
+        'não há evidência de acoplamento linear entre os dois sinais nesta banda'
+      : Math.abs(imagPico) < 0.1 * Math.sqrt(Math.max(0, coh.cxy[bi]))
+        ? `há coerência (pico ${coh.cxy[bi].toFixed(2)} em ${coh.f[bi].toFixed(1)} Hz), mas no pico a fase é de ` +
+          `${faseGrau.toFixed(0)}° e a parte imaginária é ${imagPico.toFixed(3)} — praticamente nula. O padrão é ` +
+          'compatível com condução de volume ou referência comum, não com interação com atraso de propagação'
+        : `coerência de ${coh.cxy[bi].toFixed(2)} em ${coh.f[bi].toFixed(1)} Hz, com fase de ${faseGrau.toFixed(0)}° e ` +
+          `parte imaginária de ${imagPico.toFixed(2)} no pico — há defasagem, o que é incompatível com mistura instantânea` +
+          (estreita && isFinite(tauPicoMs)
+            ? `. O acoplamento é de banda estreita (${larguraSig.toFixed(1)} Hz), então o atraso vem da fase no pico: ` +
+              `${tauPicoMs.toFixed(1)} ms — ambíguo a menos de múltiplos de ${ambiguidadeMs.toFixed(0)} ms`
+            : isFinite(atrasoMs)
+              ? `; atraso pela inclinação da fase sobre ${nBinsFase} bins: ${atrasoMs.toFixed(1)} ms` : '')
+  };
+}
+
+/* ---------- core/io/sync.js ---------- */
+/* io/sync.js — alinhamento temporal entre o LFP do Percept e um sinal externo.
+
+   O PROBLEMA. O gravador externo (IMU, EMG, ECG) tem o próprio relógio. Mesmo
+   quando os dois arquivos trazem hora absoluta, os relógios divergem — e uma
+   defasagem de 200 ms já destrói qualquer conclusão sobre atraso de fase entre
+   córtex e músculo. Três caminhos, do mais confiável ao menos:
+
+   1. ARTEFATO DE ESTIMULAÇÃO (`alignByStimArtifact`). Ligar ou desligar a
+      estimulação produz um degrau em AMBOS os sinais — no LFP porque o artefato
+      entra no sensing, no externo porque o pulso acopla ao amplificador. É o
+      método do DBSsync e o único que dá alinhamento sub-amostra confiável,
+      porque o evento é o MESMO evento físico.
+
+   2. CORRELAÇÃO CRUZADA DE ENVELOPES (`alignByCrossCorrelation`). Sem evento
+      comum, resta procurar o deslocamento que maximiza a correlação entre os
+      envelopes de banda. Funciona quando existe atividade compartilhada — em
+      tremor, quase sempre. A confiança é medida contra um NULO por
+      deslocamentos aleatórios: um pico de correlação sozinho não significa
+      nada, porque sempre existe um máximo.
+
+   3. TIMESTAMP DECLARADO (`alignByTimestamp`). Barato e frequentemente errado.
+      Fica disponível, mas o resultado avisa que não foi verificado.
+
+   Nenhum destes métodos é aplicado em silêncio: a saída sempre traz `method`,
+   `confidence` e o que sustenta (ou não) o alinhamento.
+
+   Unidades: atrasos em milissegundos; positivo = o sinal externo está ATRASADO
+   em relação ao LFP.
+
+   Referência de arquitetura: DBSsync (Vivien) — sincronização por artefato de
+   estimulação.                                                               */
+
+
+/* Correlação de Pearson entre duas séries, ignorando pares com NaN. */
+function correl(a, b, desloc) {
+  let n = 0, sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0;
+  const ini = Math.max(0, -desloc), fim = Math.min(a.length, b.length - desloc);
+  for (let i = ini; i < fim; i++) {
+    const x = a[i], y = b[i + desloc];
+    if (!isFinite(x) || !isFinite(y)) continue;
+    n++; sa += x; sb += y; saa += x * x; sbb += y * y; sab += x * y;
+  }
+  if (n < 32) return { r: NaN, n };
+  const cov = sab / n - (sa / n) * (sb / n);
+  const va = saa / n - (sa / n) ** 2, vb = sbb / n - (sb / n) ** 2;
+  return { r: va > 0 && vb > 0 ? cov / Math.sqrt(va * vb) : NaN, n };
+}
+
+/* alignByCrossCorrelation(lfp, ext, fs, {band, maxLagSec, nSurrogates})
+   Ambos já reamostrados para a MESMA fs.                                     */
+function alignByCrossCorrelation(lfp, ext, fs, opts) {
+  opts = opts || {};
+  const banda = opts.band || [2, 12];
+  const maxLag = Math.round((isFinite(opts.maxLagSec) ? opts.maxLagSec : 5) * fs);
+  const nSur = opts.nSurrogates == null ? 200 : opts.nSurrogates;
+  if (lfp.length < 4 * fs || ext.length < 4 * fs)
+    return { ok: false, reason: 'séries curtas demais para correlação cruzada (mínimo 4 s cada)' };
+
+  /* envelopes de banda: o que se compara é a MODULAÇÃO de amplitude, não a
+     forma de onda — as duas modalidades não têm por que ter a mesma fase */
+  const envDe = x => {
+    const b = bandpassFFT(x, fs, banda[0], banda[1]);
+    return hilbertEnvelope(b);
+  };
+  const a = envDe(lfp), b = envDe(ext);
+
+  let melhor = 0, melhorR = -Infinity;
+  const curva = [];
+  for (let d = -maxLag; d <= maxLag; d++) {
+    const { r } = correl(a, b, d);
+    if (isFinite(r)) {
+      curva.push({ lagMs: 1000 * d / fs, r, d });
+      if (r > melhorR) { melhorR = r; melhor = d; }
+    }
+  }
+  if (!curva.length) return { ok: false, reason: 'nenhum deslocamento produziu sobreposição suficiente' };
+
+  /* LARGURA do pico de correlação = incerteza do alinhamento. O envelope de um
+     ritmo estreito é liso, então o máximo é raso e o deslocamento fica mal
+     determinado mesmo com correlação alta. Reportar só o máximo esconderia
+     isso; aqui sai a faixa em que a correlação fica dentro de 95% do pico. */
+  const alvo = melhorR * 0.95;
+  const dentro = curva.filter(p => p.r >= alvo).map(p => p.lagMs);
+  const larguraMs = dentro.length ? (Math.max.apply(null, dentro) - Math.min.apply(null, dentro)) / 2 : NaN;
+
+  /* nulo: deslocamentos MUITO maiores que a janela de busca destroem qualquer
+     relação real e mostram o quanto de correlação o acaso já entrega */
+  let semente = (opts.seed >>> 0) || 20260803;
+  const prox = () => { semente = (Math.imul(semente, 1664525) + 1013904223) >>> 0; return semente / 4294967296; };
+  const nulos = [];
+  const minNulo = Math.max(maxLag * 3, Math.floor(fs * 10));
+  for (let s = 0; s < nSur && minNulo < a.length / 2; s++) {
+    const d = minNulo + Math.floor(prox() * (a.length - 2 * minNulo));
+    const { r } = correl(a, b, d);
+    if (isFinite(r)) nulos.push(r);
+  }
+  const mu = nulos.length ? mean(nulos) : NaN;
+  const s0 = nulos.length > 2 ? sd(nulos) : NaN;
+  const z = isFinite(s0) && s0 > 0 ? (melhorR - mu) / s0 : NaN;
+  const p = nulos.length ? (nulos.filter(v => v >= melhorR).length + 1) / (nulos.length + 1) : NaN;
+
+  const confianca = !isFinite(z) ? 'não avaliável'
+    : (z > 5 && melhorR > 0.3 && larguraMs < 100) ? 'alta'
+      : (z > 3 && larguraMs < 250) ? 'moderada' : 'baixa';
+
+  return {
+    ok: true, method: 'correlação cruzada de envelopes',
+    band: banda, lagMs: +(1000 * melhor / fs).toFixed(2),
+    correlation: +melhorR.toFixed(4),
+    z: isFinite(z) ? +z.toFixed(2) : NaN,
+    pEmpirical: isFinite(p) ? +p.toFixed(4) : NaN,
+    nSurrogates: nulos.length, seed: (opts.seed >>> 0) || 20260803,
+    confidence: confianca,
+    peakHalfWidthMs: isFinite(larguraMs) ? +larguraMs.toFixed(1) : NaN,
+    curve: curva.filter((_, i) => i % Math.max(1, Math.round(curva.length / 400)) === 0),
+    caveat: (confianca === 'alta'
+      ? 'o deslocamento encontrado é claramente melhor que o acaso; ainda assim ele supõe que os dois sinais ' +
+        'compartilham modulação de amplitude nesta banda. '
+      : 'o pico de correlação não se destaca do nulo — trate este alinhamento como NÃO estabelecido e ' +
+        'prefira sincronizar por artefato de estimulação ou por marcador comum. ') +
+      (isFinite(larguraMs)
+        ? `A incerteza do deslocamento é de aproximadamente ±${larguraMs.toFixed(0)} ms (largura do pico de ` +
+          'correlação) — não interprete atraso de fase com resolução melhor que isso.'
+        : '')
+  };
+}
+
+/* Detecta degraus de amplitude (ligar/desligar estimulação) numa série: o ponto
+   onde a energia de alta frequência muda de patamar. */
+function detectStimSteps(x, fs, opts) {
+  opts = opts || {};
+  const jan = Math.max(8, Math.round((opts.windowSec || 0.25) * fs));
+  const n = Math.floor(x.length / jan);
+  if (n < 6) return [];
+  const energia = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    let s = 0, c = 0;
+    for (let k = i * jan; k < (i + 1) * jan && k < x.length; k++) {
+      if (!isFinite(x[k])) continue;
+      const d = k > 0 && isFinite(x[k - 1]) ? x[k] - x[k - 1] : 0;   /* derivada realça o artefato */
+      s += d * d; c++;
+    }
+    energia[i] = c ? Math.sqrt(s / c) : NaN;
+  }
+  /* Um limiar ABSOLUTO sobre a energia falha quando o trecho com estimulação
+     ocupa boa parte do registro: ele puxa a própria mediana para cima e o
+     degrau some. O critério aqui é de MUDANÇA, e é livre de escala: salto no
+     log da energia entre janelas vizinhas, grande em relação à variação típica
+     desses saltos. */
+  const validos = Array.from(energia).filter(v => isFinite(v) && v > 0);
+  if (validos.length < 6) return [];
+  const logE = Array.from(energia).map(v => (isFinite(v) && v > 0) ? Math.log(v) : NaN);
+  const saltos = [];
+  for (let i = 1; i < n; i++) if (isFinite(logE[i]) && isFinite(logE[i - 1])) saltos.push(logE[i] - logE[i - 1]);
+  if (saltos.length < 5) return [];
+  const medSalto = median(saltos);
+  const mad = median(saltos.map(v => Math.abs(v - medSalto))) || 1e-9;
+  const kMad = isFinite(opts.k) ? opts.k : 5;
+  const razaoMin = isFinite(opts.minRatio) ? opts.minRatio : 1.8;
+  const limiar = Math.max(kMad * 1.4826 * mad, Math.log(razaoMin));
+  const degraus = [];
+  for (let i = 1; i < n; i++) {
+    if (!isFinite(logE[i]) || !isFinite(logE[i - 1])) continue;
+    const d = logE[i] - logE[i - 1];
+    if (Math.abs(d - medSalto) < limiar) continue;
+    /* evita marcar duas janelas seguidas do mesmo degrau */
+    const ultimo = degraus[degraus.length - 1];
+    if (ultimo && (i * jan) / fs - ultimo.atSec < 2 * jan / fs) continue;
+    degraus.push({
+      atSec: +((i * jan) / fs).toFixed(4),
+      direction: d > 0 ? 'liga' : 'desliga',
+      ratio: +Math.exp(Math.abs(d)).toFixed(2)
+    });
+  }
+  return degraus;
+}
+
+/* alignByStimArtifact(lfp, ext, fs, opts) — casa o PRIMEIRO degrau de cada
+   série. Só devolve alinhamento se os dois tiverem o mesmo número de degraus na
+   mesma ordem; senão diz que não dá, em vez de casar coisas diferentes. */
+function alignByStimArtifact(lfp, ext, fs, opts) {
+  opts = opts || {};
+  const a = detectStimSteps(lfp, fs, opts);
+  const b = detectStimSteps(ext, fs, opts);
+  if (!a.length || !b.length) return {
+    ok: false, method: 'artefato de estimulação',
+    reason: `degraus detectados: ${a.length} no LFP, ${b.length} no sinal externo — ` +
+      'é preciso ao menos um em cada; ligue e desligue a estimulação com os dois gravando'
+  };
+  /* Pareamento por PROXIMIDADE e mesma direção, não por ordem no vetor: um
+     degrau espúrio a mais em uma das séries desalinharia todos os pares se o
+     casamento fosse posicional. Cada degrau externo só pode ser usado uma vez. */
+  const janelaMs = isFinite(opts.maxPairMs) ? opts.maxPairMs : 3000;
+  const usados = new Set();
+  const pares = [];
+  a.forEach(pa => {
+    let melhor = -1, dist = Infinity;
+    b.forEach((pb, j) => {
+      if (usados.has(j) || pb.direction !== pa.direction) return;
+      const d = Math.abs(pb.atSec - pa.atSec) * 1000;
+      if (d < dist && d <= janelaMs) { dist = d; melhor = j; }
+    });
+    if (melhor >= 0) { usados.add(melhor); pares.push(1000 * (b[melhor].atSec - pa.atSec)); }
+  });
+  if (!pares.length) return {
+    ok: false, method: 'artefato de estimulação',
+    reason: `nenhum degrau do LFP encontrou par de mesma direção no sinal externo dentro de ` +
+      `${(janelaMs / 1000).toFixed(1)} s (LFP: ${a.map(x => x.direction + '@' + x.atSec.toFixed(1) + 's').join(', ')}; ` +
+      `externo: ${b.map(x => x.direction + '@' + x.atSec.toFixed(1) + 's').join(', ')}) — o evento não é o mesmo, ` +
+      `ou o desalinhamento é maior que a janela de pareamento`
+  };
+  const lag = median(pares);
+  const disp = pares.length > 1 ? quantile(pares, 0.75) - quantile(pares, 0.25) : 0;
+  return {
+    ok: true, method: 'artefato de estimulação',
+    lagMs: +lag.toFixed(2), nEvents: pares.length,
+    spreadMs: +disp.toFixed(2),
+    stepsLfp: a.slice(0, 8), stepsExternal: b.slice(0, 8),
+    confidence: pares.length >= 2 && disp < 50 ? 'alta' : pares.length >= 2 ? 'moderada' : 'baixa',
+    caveat: pares.length < 2
+      ? 'apenas um evento em comum: o alinhamento não pode ser verificado contra um segundo evento'
+      : disp < 50
+        ? `${pares.length} eventos concordam dentro de ${disp.toFixed(0)} ms — alinhamento verificado`
+        : `os ${pares.length} eventos discordam em ${disp.toFixed(0)} ms; há deriva entre os relógios, ` +
+          'e um único deslocamento não corrige o registro inteiro'
+  };
+}
+
+/* Alinhamento pelo timestamp declarado. Barato, disponível e não verificado. */
+function alignByTimestamp(lfpT0Ms, extT0Ms) {
+  if (!isFinite(lfpT0Ms) || !isFinite(extT0Ms)) return {
+    ok: false, method: 'timestamp declarado', reason: 'um dos sinais não traz hora absoluta'
+  };
+  return {
+    ok: true, method: 'timestamp declarado', lagMs: +(extT0Ms - lfpT0Ms).toFixed(2),
+    confidence: 'não verificado',
+    caveat: 'os relógios do neuroestimulador e do gravador externo não são sincronizados entre si. ' +
+      'Este deslocamento vem do que cada arquivo declara e NÃO foi verificado contra o sinal — ' +
+      'deriva de segundos é comum. Confirme por artefato de estimulação antes de interpretar atraso de fase.'
+  };
+}
+
 /* ---------- core/adbs/eligibility.js ---------- */
 /* adbs/eligibility.js — relatório de elegibilidade a aDBS.
 
@@ -7086,6 +7768,9 @@ function fitDoseResponse(ma, power, opts) {
 
 
 
+
+
+
 const API = {
   parsePercept, parsePerceptText, MODALITIES, BANDS, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId,
   fft, nextPow2, welchPSD, spectrogram, bandpassFFT, hilbertEnvelope, detectBursts, fitAperiodic,
@@ -7128,7 +7813,10 @@ const API = {
   specparam, specparamCompare,
   morletCWT, waveletBandEnvelope, waveletBursts, aperiodicBurstThreshold, burstDurationSensitivity,
   pacTort, tortMI, comodulogram, waveformAsymmetry, analytic,
-  detectGamma, confirmEntrainment
+  detectGamma, confirmEntrainment,
+  /* sinais externos, sincronização e coerência (Onda 2.3) */
+  parseExternalCsv, resampleUniform, coherence, coherenceBand,
+  alignByCrossCorrelation, alignByStimArtifact, alignByTimestamp, detectStimSteps
 };
 if (typeof module !== "undefined" && module.exports) module.exports = API;
 root.PerceptCore = API;
@@ -7867,6 +8555,7 @@ const S = {
   opts: {},             // opções por figura
   profile: null,        // id do perfil de doença; null = sugerir pelo JSON
   symptomSeries: null,  // série clínica importada (distonia): [{t, v}]
+  external: null,       // sinal externo importado (Onda 2.3): {name, parsed}
   mode: 'clinico',      // 'clinico' | 'pesquisa' (Onda 8.1)
 };
 
@@ -10277,6 +10966,222 @@ const FIGURES = [
         }))), 'F22_gama.csv', 'text/csv') }
       ]));
     }
+  },
+
+  /* ----------------------------------------------------------------- F24 */
+  {
+    id: 'F24', title: 'Sinal externo — IMU, EMG ou ECG: alinhamento e coerência',
+    sub: 'importa CSV/TSV, sincroniza com o LFP e mede acoplamento com limiar corrigido',
+    has: d => d.bsTimeDomain.length || d.montageTD.length,
+    render(node, d) {
+      const tds = d.bsTimeDomain.concat(d.montageTD);
+      if (!tds.length) return node.appendChild(el('div', { class: 'empty', text: 'Sem sinal bruto de LFP para comparar.' }));
+
+      /* ---- importação ------------------------------------------------- */
+      const barra = el('div', { class: 'ctrls' });
+      const entrada = el('input', {
+        type: 'file', accept: '.csv,.tsv,.txt,text/csv', id: 'extFile',
+        style: 'display:none',
+        onchange: e => {
+          const f = e.target.files && e.target.files[0];
+          e.target.value = '';
+          if (f) carregaExterno(f);
+        }
+      });
+      barra.appendChild(entrada);
+      barra.appendChild(el('button', {
+        class: 'btn' + (S.external ? '' : ' primary'),
+        text: S.external ? '↻ trocar arquivo externo' : '+ carregar sinal externo (CSV/TSV)',
+        onclick: () => { const i = document.getElementById('extFile'); if (i) i.click(); }
+      }));
+      if (S.external) barra.appendChild(el('button', {
+        class: 'btn', text: '× remover',
+        onclick: () => { S.external = null; renderFigureAsync('F24'); }
+      }));
+      node.appendChild(barra);
+
+      if (!S.external) {
+        node.appendChild(el('div', {
+          class: 'empty', html:
+            `Carregue um arquivo <b>CSV ou TSV</b> com uma coluna de tempo e um ou mais canais numéricos — ` +
+            `acelerômetro/giroscópio (IMU), EMG de superfície, ECG ou qualquer sinal contínuo gravado em paralelo.<br><br>` +
+            `<b>Por que isto responde perguntas que o LFP sozinho não responde:</b> em tremor, saber se a oscilação do ` +
+            `STN é do cérebro ou é o próprio tremor entrando pelo eletrodo; em distonia cervical, se o pico teta-alfa do ` +
+            `GPi é biomarcador ou é o tremor cefálico de 1–6 Hz batendo em cima dele.<br><br>` +
+            `<span style="color:var(--ink-3)">O arquivo é lido no próprio navegador e não sai deste dispositivo, ` +
+            `como todo o resto.</span>`
+        }));
+        return;
+      }
+
+      const ext = S.external;
+      if (!ext.parsed.ok) return node.appendChild(el('div', {
+        class: 'warnbox', html: `<b>Não foi possível ler "${ext.name}".</b> ${ext.parsed.reason}.`
+      }));
+
+      const p = ext.parsed;
+      node.appendChild(table(['propriedade', 'valor', 'observação'], [
+        ['arquivo', ext.name, `${p.nSamples.toLocaleString('pt-BR')} amostras · ${f(p.durationSec, 1)} s`],
+        ['delimitador / cabeçalho', `"${p.delimiter}" · linha ${p.headerRow + 1}`, p.nRowsDropped ? `${p.nRowsDropped} linha(s) descartada(s)` : 'todas as linhas consistentes'],
+        ['coluna de tempo', `${p.timeColumnName || '#' + (p.timeColumn + 1)}`, p.timeInterpretation],
+        ['frequência de amostragem', `${f(p.fs, 2)} Hz`, `passo típico ${f(p.sampleIntervalMs, 3)} ms · irregularidade ${f(p.jitterPct, 1)}%`],
+        ['canais numéricos', String(p.channels.length), p.channels.map(c => `${c.name} (${c.kind})`).join(' · ')],
+        ['lacunas', String(p.gaps.length), p.gaps.length ? 'nada foi interpolado' : 'amostragem contínua']
+      ]));
+      p.warnings.forEach(w => node.appendChild(el('div', { class: 'warnbox', html: `<b>Atenção.</b> ${w}.` })));
+
+      /* ---- seleção e alinhamento -------------------------------------- */
+      const iLfp = opt('F24', 'lfp', 0);
+      const iExt = opt('F24', 'ch', 0);
+      const metodo = opt('F24', 'sync', p.absoluteTime ? 'timestamp' : 'xcorr');
+      const manualMs = opt('F24', 'manual', 0);
+      const cbLo = opt('F24', 'clo', 2), cbHi = opt('F24', 'chi', 12);
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('canal de LFP', tds.map((t, i) => ({ value: i, label: `${t.label} (${hname(t.hemisphere)})` })), iLfp, v => setOpt('F24', 'lfp', +v)),
+        ctrlSelect('canal externo', p.channels.map((c, i) => ({ value: i, label: `${c.name} [${c.kind}]` })), iExt, v => setOpt('F24', 'ch', +v)),
+        ctrlSelect('sincronização', [
+          { value: 'timestamp', label: 'timestamp declarado' },
+          { value: 'xcorr', label: 'correlação cruzada' },
+          { value: 'stim', label: 'artefato de estimulação' },
+          { value: 'manual', label: 'deslocamento manual' }
+        ], metodo, v => setOpt('F24', 'sync', v)),
+        ctrlNumber('deslocamento manual (ms)', manualMs, -60000, 60000, 50, v => setOpt('F24', 'manual', v)),
+        ctrlNumber('coerência de (Hz)', cbLo, 1, 60, 1, v => setOpt('F24', 'clo', v)),
+        ctrlNumber('coerência até (Hz)', cbHi, 2, 90, 1, v => setOpt('F24', 'chi', v))
+      ]));
+
+      const td = tds[Math.min(iLfp, tds.length - 1)];
+      const canal = p.channels[Math.min(iExt, p.channels.length - 1)];
+      const fsL = td.fsEff || td.fs;
+      qualitySeal(node, td);
+
+      /* o externo vai para a MESMA grade do LFP; sem isso, coerência não existe */
+      const re = C.resampleUniform(p.tMs, canal.data, fsL, {});
+      if (!re) return node.appendChild(el('div', { class: 'empty', text: 'Não foi possível reamostrar o canal externo para a frequência do LFP.' }));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Reamostragem.</b> O canal externo foi levado de ${f(p.fs, 1)} Hz para ` +
+          `${f(fsL, 1)} Hz (a do LFP), porque coerência exige a mesma grade temporal. ${re.note}; ` +
+          `${f(re.pctNaN, 2)}% das amostras ficaram NaN.`
+      }));
+
+      /* alinhamento */
+      let al = null;
+      const lfpDados = td.data;
+      if (metodo === 'timestamp') {
+        const t0L = td.firstPacketMs != null ? td.firstPacketMs : (td.t0 != null ? td.t0 : NaN);
+        al = C.alignByTimestamp(t0L, p.absoluteTime ? p.tMs[0] : NaN);
+      } else if (metodo === 'xcorr') {
+        al = C.alignByCrossCorrelation(lfpDados, re.data, fsL, { band: [cbLo, cbHi], maxLagSec: 5, nSurrogates: 150 });
+      } else if (metodo === 'stim') {
+        al = C.alignByStimArtifact(lfpDados, re.data, fsL, {});
+      } else {
+        al = { ok: true, method: 'deslocamento manual', lagMs: manualMs, confidence: 'informado pelo usuário', caveat: 'valor digitado; nenhuma verificação foi feita contra o sinal' };
+      }
+
+      node.appendChild(el('h4', { class: 'qc-title', html: '<b>Sincronização</b>' }));
+      if (!al.ok) node.appendChild(el('div', { class: 'warnbox', html: `<b>${al.method}: não foi possível alinhar.</b> ${al.reason}.` }));
+      else {
+        node.appendChild(table(['item', 'valor', 'o que sustenta'], [
+          ['método', al.method, al.confidence ? `confiança: ${al.confidence}` : '—'],
+          ['deslocamento', `${f(al.lagMs, 1)} ms`, isFinite(al.peakHalfWidthMs) ? `incerteza ±${f(al.peakHalfWidthMs, 0)} ms` : (al.nEvents ? `${al.nEvents} evento(s) em comum` : '—')],
+          ...(isFinite(al.correlation) ? [['correlação no pico', f(al.correlation, 3), `z = ${f(al.z, 2)} contra ${al.nSurrogates} surrogados, p = ${f(al.pEmpirical, 4)}`]] : []),
+          ...(isFinite(al.spreadMs) ? [['dispersão entre eventos', `${f(al.spreadMs, 0)} ms`, al.nEvents > 1 ? 'concordância entre eventos' : 'um único evento']] : [])
+        ]));
+        node.appendChild(el('div', {
+          class: (al.confidence === 'alta') ? 'note' : 'warnbox',
+          html: `<b>Ressalva do alinhamento.</b> ${al.caveat}`
+        }));
+      }
+
+      /* aplica o deslocamento e recorta a sobreposição */
+      const desloc = al.ok && isFinite(al.lagMs) ? Math.round(al.lagMs * fsL / 1000) : 0;
+      const n = Math.min(lfpDados.length, re.data.length);
+      const ini = Math.max(0, desloc), fim = Math.min(n, re.data.length - Math.max(0, -desloc));
+      const nComum = Math.max(0, fim - ini);
+      if (nComum < 4 * fsL) return node.appendChild(el('div', {
+        class: 'empty', text: `Depois do deslocamento de ${f(al.lagMs || 0, 0)} ms sobram menos de 4 s em comum entre os dois sinais — insuficiente para coerência.`
+      }));
+      const a = new Float64Array(nComum), b = new Float64Array(nComum);
+      for (let i = 0; i < nComum; i++) { a[i] = lfpDados[ini + i]; b[i] = re.data[ini + i - desloc]; }
+
+      /* ---- gráficos ---------------------------------------------------- */
+      const passo = Math.max(1, Math.floor(nComum / 1400));
+      const tx = [], ya = [], yb = [];
+      const na = C.nanStats(a), nb = C.nanStats(b);
+      const escA = na.n ? 1 : 1;
+      let maxA = 0, maxB = 0;
+      for (let i = 0; i < nComum; i++) { if (isFinite(a[i])) maxA = Math.max(maxA, Math.abs(a[i])); if (isFinite(b[i])) maxB = Math.max(maxB, Math.abs(b[i])); }
+      for (let i = 0; i < nComum; i += passo) { tx.push(i / fsL); ya.push(a[i] / (maxA || 1)); yb.push(b[i] / (maxB || 1)); }
+      const box = plotBox(node, 220);
+      const ch = new P.Chart(box.canvas, {
+        width: box.width, height: box.height, xlim: [0, nComum / fsL], ylim: [-2.4, 1.2],
+        xlabel: 'tempo (s)', ylabel: 'amplitude normalizada',
+        title: `(a) LFP e ${canal.name} depois do alinhamento (${f(al.lagMs || 0, 0)} ms)`,
+        pad: { l: 68, r: 14, t: 24, b: 42 }
+      });
+      ch.axes();
+      ch.line(tx, ya, { color: hcol(td.hemisphere), width: .9, label: `LFP ${td.label}` });
+      ch.line(tx, yb.map(v => v - 1.4), { color: COL.accent, width: .9, label: canal.name });
+      ch.legend({ x: ch.x1 - 150, y: ch.y1 + 6 });
+
+      /* coerência */
+      const coh = C.coherence(a, b, fsL, { nperseg: Math.min(1024, Math.pow(2, Math.floor(Math.log2(nComum / 4)))), overlap: .5 });
+      if (!coh.cxy) return node.appendChild(el('div', { class: 'empty', text: coh.reason }));
+      const resumo = C.coherenceBand(coh, cbLo, cbHi);
+
+      const fmaxG = Math.min(60, fsL / 2);
+      const idx = []; for (let i = 0; i < coh.f.length; i++) if (coh.f[i] <= fmaxG) idx.push(i);
+      const b2 = plotBox(node, 250);
+      const ch2 = new P.Chart(b2.canvas, {
+        width: b2.width, height: b2.height, xlim: [0, fmaxG], ylim: [0, 1],
+        xlabel: 'frequência (Hz)', ylabel: 'coerência (Cxy)',
+        title: `(b) coerência LFP × ${canal.name} — ${coh.nSegments} segmentos (${coh.nSegmentsEffective} efetivos)`,
+        pad: { l: 62, r: 14, t: 24, b: 42 }
+      });
+      ch2.axes();
+      ch2.span(cbLo, Math.min(cbHi, fmaxG), { color: COL.accent, alpha: .08, label: 'banda avaliada' });
+      ch2.line(idx.map(i => coh.f[i]), idx.map(i => coh.cxy[i]), { color: COL.ink, width: 1.5, label: 'coerência' });
+      ch2.line(idx.map(i => coh.f[i]), idx.map(i => Math.abs(coh.imagCoherency[i])), { color: COL.warn, width: 1.2, dash: [4, 3], label: '|parte imaginária|' });
+      ch2.hline(coh.significanceThreshold, { color: COL.muted, dash: [3, 3], label: 'limiar por bin' });
+      if (resumo) ch2.hline(resumo.thresholdBandCorrected, { color: COL.right, dash: [5, 3], label: 'limiar corrigido' });
+      ch2.legend({ x: ch2.x1 - 160, y: ch2.y1 + 6 });
+
+      if (resumo) {
+        node.appendChild(table(['métrica', 'valor', 'o que significa'], [
+          ['coerência de pico', `${f(resumo.peakCoherence, 3)} em ${f(resumo.peakHz, 2)} Hz`, resumo.significant ? 'acima do limiar corrigido' : 'abaixo do limiar corrigido'],
+          ['coerência média na banda', f(resumo.meanCoherence, 3), `mediana ${f(resumo.medianCoherence, 3)}`],
+          ['limiar por bin', f(resumo.threshold, 3), `sob a nula, ${coh.nSegmentsEffective} segmentos efetivos dão ${f(coh.expectedNullCoherence, 3)} em média`],
+          ['limiar corrigido para a banda', f(resumo.thresholdBandCorrected, 3), `correção de Šidák sobre os ${resumo.nBins} bins da banda`],
+          ['fase e parte imaginária no pico', `${f(resumo.phaseAtPeakDeg, 0)}° · imag ${f(resumo.imagAtPeak, 3)}`, resumo.volumeConductionSuspected ? 'fase praticamente zero — compatível com condução de volume ou referência comum' : 'há defasagem real, incompatível com mistura instantânea'],
+          ['atraso estimado', isFinite(resumo.preferredLagMs) ? `${f(resumo.preferredLagMs, 1)} ms` : '—', `${resumo.preferredLagSource}; ambíguo a cada ${f(resumo.lagAmbiguityMs, 0)} ms`]
+        ]));
+        node.appendChild(el('div', {
+          class: resumo.significant && !resumo.volumeConductionSuspected ? 'note' : 'warnbox',
+          html: `<b>Leitura.</b> ${resumo.interpretation}.`
+        }));
+      }
+
+      node.appendChild(exportRow([
+        { label: '⤓ PNG alinhamento', fn: () => P.downloadCanvas(box.canvas, 'F24a_alinhamento') },
+        { label: '⤓ PNG coerência', fn: () => P.downloadCanvas(b2.canvas, 'F24b_coerencia') },
+        {
+          label: '⤓ CSV coerência', fn: () => P.downloadText(P.toCSV(idx.map(i => ({
+            hz: +coh.f[i].toFixed(4), coerencia: +coh.cxy[i].toFixed(6),
+            fase_rad: +coh.phaseRad[i].toFixed(6), imaginaria: +coh.imagCoherency[i].toFixed(6),
+            limiar_bin: coh.significanceThreshold, n_segmentos: coh.nSegments,
+            metodo_sync: al.method, deslocamento_ms: al.lagMs
+          }))), 'F24_coerencia.csv', 'text/csv')
+        }
+      ]));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Três armadilhas tratadas aqui.</b> ` +
+          `(1) Coerência é <b>inflada por poucos segmentos</b>: sob a nula ela vale 1/L, não zero — com ` +
+          `${coh.nSegmentsEffective} segmentos efetivos, dois ruídos independentes dariam ${f(coh.expectedNullCoherence, 3)}. ` +
+          `(2) Tomar o máximo sobre os bins da banda é comparação múltipla; o limiar corrigido acima já leva isso em conta. ` +
+          `(3) <b>Condução de volume e referência comum</b> produzem coerência de fase zero sem interação nenhuma — ` +
+          `por isso a parte imaginária vem sempre junto, porque só sobrevive nela o que teve atraso de propagação.`
+      }));
+    }
   }
 ];
 
@@ -10729,6 +11634,25 @@ async function renderAll(titulo) {
     if (proprio) Prog.fail(e);
     throw e;
   }
+}
+
+/* Carrega o CSV/TSV de um sinal externo (IMU, EMG, ECG) e reabre a F24. */
+async function carregaExterno(file) {
+  Prog.begin('Carregando sinal externo').expect(2);
+  try {
+    await Prog.step(`lendo ${file.name}`);
+    const texto = await lerTexto(file);
+    await Prog.step('interpretando colunas, tempo e frequência de amostragem');
+    const out = await Trabalhador.chamar('parseExternalCsv', [texto, {}]);
+    Instrumentacao.registra(`parseExternalCsv ${file.name}`, out.ms, out.ondeRodou);
+    S.external = { name: file.name, parsed: out.r };
+    await Prog.finish(out.r && out.r.ok ? 'sinal externo pronto' : 'arquivo não reconhecido');
+  } catch (e) {
+    Prog.fail(e);
+    S.external = { name: file.name, parsed: { ok: false, reason: String((e && e.message) || e) } };
+  }
+  _renderizadas.delete('F24');
+  renderFigureAsync('F24');
 }
 
 /* ---------------------------------------------------------- carregamento */
@@ -11230,7 +12154,7 @@ function init() {
 }
 document.addEventListener('DOMContentLoaded', init);
 /* hook de depuração (usado pela suíte de testes; inerte em produção) */
-window.__PLS__ = { FIGURES, buildProvenance, ds, invalidarDs, S, renderRail, renderFigure, renderFigureAsync, renderAllReady, handleFiles, offMin, exportBundle, exportBundleAsync, buildReportCover, Prog, proximoQuadro, setModo, modoAtual, figurasVisiveis, leiturasClinicas, leiturasClinicasAsync, PIPELINES, rodarPipeline, preencherSemaforo, inserirLeituras, Trabalhador, Instrumentacao };
+window.__PLS__ = { FIGURES, buildProvenance, carregaExterno, ds, invalidarDs, S, renderRail, renderFigure, renderFigureAsync, renderAllReady, handleFiles, offMin, exportBundle, exportBundleAsync, buildReportCover, Prog, proximoQuadro, setModo, modoAtual, figurasVisiveis, leiturasClinicas, leiturasClinicasAsync, PIPELINES, rodarPipeline, preencherSemaforo, inserirLeituras, Trabalhador, Instrumentacao };
 })();
 </script>
 </body>

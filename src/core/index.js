@@ -41,6 +41,9 @@ import { specparam, specparamCompare } from './dsp/specparam.js';
 import { morletCWT, waveletBandEnvelope, waveletBursts, aperiodicBurstThreshold, burstDurationSensitivity } from './dsp/wavelet.js';
 import { pacTort, tortMI, comodulogram, waveformAsymmetry, analytic } from './dsp/pac.js';
 import { detectGamma, confirmEntrainment } from './dsp/gamma.js';
+import { parseExternalCsv, resampleUniform } from './io/external.js';
+import { coherence, coherenceBand } from './dsp/coherence.js';
+import { alignByCrossCorrelation, alignByStimArtifact, alignByTimestamp, detectStimSteps } from './io/sync.js';
 import { assessEligibility, PREVALENCIA_BETA } from './adbs/eligibility.js';
 import { simulateAdbs, thresholdSweep, suggestThresholds } from './adbs/simulate.js';
 import { fitDoseResponse, MODELOS } from './adbs/doseresponse.js';
@@ -88,7 +91,10 @@ const API = {
   specparam, specparamCompare,
   morletCWT, waveletBandEnvelope, waveletBursts, aperiodicBurstThreshold, burstDurationSensitivity,
   pacTort, tortMI, comodulogram, waveformAsymmetry, analytic,
-  detectGamma, confirmEntrainment
+  detectGamma, confirmEntrainment,
+  /* sinais externos, sincronização e coerência (Onda 2.3) */
+  parseExternalCsv, resampleUniform, coherence, coherenceBand,
+  alignByCrossCorrelation, alignByStimArtifact, alignByTimestamp, detectStimSteps
 };
 
 export default API;
