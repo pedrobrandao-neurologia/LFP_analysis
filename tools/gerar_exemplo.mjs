@@ -210,21 +210,81 @@ function montagemTempo() {
   return out;
 }
 
-/* --------------------------------- streaming com rampa de estimulação (F7) -- */
-function streaming(segundos) {
-  const n = segundos * 2;                                    // 2 Hz
+/* --------------------------------- streaming com rampa de estimulação (F7) --
+   O bruto e a potência reportada têm de ser o MESMO fenômeno visto de dois
+   jeitos: o aparelho não inventa a potência, ele a calcula do próprio sinal.
+   Antes deste arranjo o LFP reportado era função só da amplitude de
+   estimulação, sem relação nenhuma com o traçado — o que fazia o painel de
+   paridade de dispositivo (F30b) comparar duas coisas independentes e concluir,
+   corretamente, que não batiam.                                             */
+const STREAM_SEG = 120;                       // segundos, bruto e potência
+const mAEm = t => +(Math.floor(t / (STREAM_SEG / 10)) * 0.3).toFixed(1);
+
+/* sinal bruto do streaming: mesmo gerador do traçado, com a amplitude de beta
+   suprimida pela estimulação em curso (exp(−0,42·mA), como na dose-resposta) */
+function brutoStreaming(segundos) {
+  const n = Math.round(segundos * FS);
+  const x = new Float64Array(n);
+  let r1 = 0, r2 = 0;
+  const picoHz = PICO.Right;
+  for (let i = 0; i < n; i++) {
+    const t = i / FS;
+    r1 = 0.985 * r1 + gauss();
+    r2 = 0.80 * r2 + gauss();
+    const supress = Math.exp(-0.42 * mAEm(t));
+    const env = Math.max(0, 0.55 + 0.9 * Math.sin(2 * Math.PI * 0.7 * t + 1.3) * Math.sin(2 * Math.PI * 0.17 * t));
+    x[i] = 0.9 * r1 + 0.5 * r2 + 2.2 * supress * env * Math.sin(2 * Math.PI * picoHz * t)
+      + 0.35 * Math.sin(2 * Math.PI * 6.4 * t + 0.7);
+    const fase = (t % 0.97) - 0.02;
+    if (Math.abs(fase) < 0.05) x[i] += 5.5 * Math.exp(-(fase ** 2) / (2 * 0.008 ** 2));
+  }
+  return x;
+}
+
+/* Potência de banda que o "aparelho" reporta, calculada DO PRÓPRIO SINAL: DFT
+   direta nos poucos bins da banda de sensing sobre uma janela de Hanning de 250
+   amostras. É de propósito uma rotina independente da emulação do software —
+   se o dado sintético fosse gerado chamando a mesma função que a figura confere,
+   a paridade seria tautologia e não teste. */
+function potenciaBandaDispositivo(x, centroHz, larguraHz, fimAmostra) {
+  const N = 250;
+  const ini = Math.max(0, fimAmostra - N);
+  if (fimAmostra - ini < N) return NaN;
+  let acc = 0, nb = 0;
+  const k0 = Math.max(1, Math.round((centroHz - larguraHz) * N / FS));
+  const k1 = Math.round((centroHz + larguraHz) * N / FS);
+  for (let k = k0; k <= k1; k++) {
+    let re = 0, im = 0;
+    for (let i = 0; i < N; i++) {
+      const w = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (N - 1));
+      const ang = -2 * Math.PI * k * i / N;
+      const v = x[ini + i] * w;
+      re += v * Math.cos(ang); im += v * Math.sin(ang);
+    }
+    acc += Math.hypot(re, im); nb++;
+  }
+  return nb ? acc / nb : NaN;
+}
+
+function streaming(segundos, bruto) {
+  const n = Math.round(segundos * 2);                        // 2 Hz
   const dados = [];
   for (let i = 0; i < n; i++) {
-    const passo = Math.floor(i / (n / 10));                  // 10 degraus de amplitude
-    const mA = +(passo * 0.3).toFixed(1);
-    /* supressão beta dose-dependente + ruído */
-    const base = 3400 * Math.exp(-0.42 * mA) + 320 * gauss();
+    const t = i / 2;
+    const mA = mAEm(t);
+    const pot = potenciaBandaDispositivo(bruto, PICO.Right, 2.5, Math.round((t + 0.5) * FS));
+    /* ganho arbitrário do firmware: a unidade interna do aparelho não é
+       documentada, e é exatamente esse fator que a F30b mede como inclinação */
+    const val = isFinite(pot) ? 46 * pot + 40 * Math.abs(gauss()) : 60;
     dados.push({ Seq: 2 + (i >> 3), TicksInMs: 331250 + i * 500, StatusBytes: '00 00 00 00',
-      Right: { LFP: Math.max(60, Math.round(base)), mA },
+      Right: { LFP: Math.max(60, Math.round(val)), mA },
       Left: { LFP: 0, mA: 0 } });
   }
   return dados;
 }
+
+/* O bruto do streaming é gerado UMA vez e serve às duas modalidades */
+const BRUTO_STREAM = brutoStreaming(STREAM_SEG);
 
 /* ============================================================ montagem final */
 function canalSensing(hemi, amp) {
@@ -308,7 +368,7 @@ const relatorio = {
   LfpMontageTimeDomain: montagemTempo(),
   BrainSenseTimeDomain: [{ Pass: '', GlobalSequences: '', GlobalPacketSizes: '', TicksInMses: '',
     Channel: 'ONE_THREE_RIGHT', Gain: 225, FirstPacketDateTime: iso(T0 - 20 * 60000),
-    SampleRateInHz: FS, TimeDomainData: sinalBruto(120, PICO.Right, 2.2, true) }],
+    SampleRateInHz: FS, TimeDomainData: Array.from(BRUTO_STREAM, v => +v.toFixed(4)) }],
   BrainSenseLfp: [{ Channel: 'ONE_THREE_RIGHT', FirstPacketDateTime: iso(T0 - 20 * 60000),
     SampleRateInHz: 2,
     TherapySnapshot: { ActiveGroup: 'GroupIdDef.GROUP_A', HighPassFilterInHertz: 1,
@@ -317,7 +377,7 @@ const relatorio = {
         PulseWidthInMicroSecond: 60, RateInHertz: 130, FrequencyInHertz: PICO.Right,
         FrequencyIndex: 16, UpperLfpThreshold: 43, LowerLfpThreshold: 33,
         AveragingDurationInMilliSeconds: 3000, DetectionBlankingDurationInMilliSeconds: 2000 } },
-    LfpData: streaming(300) }],
+    LfpData: streaming(STREAM_SEG, BRUTO_STREAM) }],
   MostRecentInSessionSignalCheck: ['Left', 'Right'].map(h => {
     const e = espectro(PICO[h], 2.9);
     return { Channel: `SensingChannelDef.ONE_THREE_${h.toUpperCase()}`,
@@ -360,6 +420,6 @@ const kb = (fs.statSync(destino).size / 1024).toFixed(0);
 console.log(`Gerado: ${destino} (${kb} KB)`);
 console.log(`  Timeline .......... 21 dias × 144 pontos × 2 hemisférios`);
 console.log(`  Sinal bruto ....... 120 s a ${FS} Hz (com artefato cardíaco)`);
-console.log(`  Streaming ......... 300 s a 2 Hz, rampa de 0 a 2,7 mA`);
+console.log(`  Streaming ......... ${STREAM_SEG} s a 250 Hz + potência a 2 Hz derivada dele, rampa de 0 a 2,7 mA`);
 console.log(`  Survey ............ 30 espectros + 12 séries brutas`);
 console.log(`  Snapshots ......... 32 eventos em 4 categorias`);

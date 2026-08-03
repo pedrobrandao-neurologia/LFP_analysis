@@ -28,7 +28,16 @@ const CMAPS = {
      só o que sobe acima da mediana do dia — é o oposto do viridis, que gasta
      contraste no meio da distribuição. */
   pretoazul: ramp([[0, 0, 0], [6, 14, 44], [10, 32, 88], [12, 56, 140],
-    [18, 88, 190], [48, 132, 226], [120, 186, 248]])
+    [18, 88, 190], [48, 132, 226], [120, 186, 248]]),
+  /* Jet: existe aqui para paridade VISUAL com o BRAVO e com a literatura antiga
+     de espectrogramas, não porque seja boa. Ela não é perceptualmente uniforme
+     — cria bordas de contraste onde o dado é liso (a faixa do ciano) e achata
+     diferenças onde o dado varia (o vermelho) —, e some na impressão em cinza.
+     O viridis continua sendo o padrão recomendado; jet é para quando a
+     comparação lado a lado com uma figura publicada é o objetivo.
+     Ver Borland & Taylor. IEEE Comput Graph Appl 2007;27:14-7. */
+  jet: ramp([[0, 0, 131], [0, 0, 255], [0, 128, 255], [0, 255, 255],
+    [128, 255, 128], [255, 255, 0], [255, 128, 0], [255, 0, 0], [128, 0, 0]])
 };
 
 /* ------------------------------------------------------------ formatação */

@@ -19,6 +19,10 @@ src/core/
     index.js                reexporta a camada io
   dsp/
     fft.js                  fft, nextPow2, hann, detrendLinear
+    bluestein.js            fftBluestein, fftAny, dftDireta (FFT de N arbitrário)
+    timefreq.js             spectrogramWelch/STFT/Percept/Wavelet/AR, timeFrequency,
+                            normalizeSpectrogram, removeAperiodicTrend, tfMatrix,
+                            levinsonDurbin, janelas periódicas e simétricas
     spectral.js             welchPSD, spectrogram, bandPower, bandTable, bandOf, BANDS
     filters.js              bandpassFFT, hilbertEnvelope
     bursts.js               detectBursts, burstHistogram
@@ -66,6 +70,8 @@ Estado atual (verificado):
 | `stats/cluster.js`, `stats/icc.js` | `stats` |
 | `metrics/control.js` | `io/parse`, `dsp/spectral`, `stats/cluster` |
 | `metrics/diary.js` | `io/parse`, `io/external` (leitor de CSV), `stats/states`, `stats/events` |
+| `dsp/bluestein.js` | `dsp/fft` (radix-2 como motor da convolução) |
+| `dsp/timefreq.js` | `dsp/fft`, `dsp/bluestein`, `dsp/wavelet`, `stats/descriptive` |
 | `metrics/longitudinal.js` | `stats`, `stats/icc`, `metrics/extract` |
 | `report/reading.js` | `profiles` (só o perfil; nenhuma dependência de DSP) |
 | `stats/optimize.js` | `stats` (Levenberg-Marquardt compartilhado por `dsp` e `adbs`) |

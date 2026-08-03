@@ -5325,6 +5325,7 @@ const DIC = {
     'Coorte — todos os registros carregados lado a lado': 'Cohort — all loaded records side by side',
     'Matriz hora × dia — estados ON/OFF ligados à sua integral': 'Hour × day matrix — ON/OFF states linked to their integral',
     'Resposta à levodopa alinhada às tomadas': 'Levodopa response aligned to intake marks',
+    'Espectrograma — análise tempo-frequência no padrão do BRAVO': 'Spectrogram — time-frequency analysis following BRAVO',
     '⤓ Relatório PDF': '⤓ PDF report', '⤓ Relatório clínico (PDF)': '⤓ Clinical report (PDF)',
     '⤓ JSON para estatística': '⤓ JSON for statistics',
     '⤓ CSV — métricas agudas': '⤓ CSV — acute metrics',
@@ -8424,6 +8425,719 @@ function clusterPermutation(A, B, opts) {
   };
 }
 
+/* ---------- core/dsp/bluestein.js ---------- */
+/* dsp/bluestein.js — FFT de tamanho ARBITRÁRIO (algoritmo de Bluestein).
+
+   POR QUE PRECISA EXISTIR. O espectrograma no padrão do BRAVO define a
+   resolução de frequência e deriva o tamanho da transformada dela:
+   `NFFT = round(fs / freq_res)`. Com o BrainSense a 250 Hz e resolução de
+   0,5 Hz isso dá NFFT = 500 — que não é potência de dois. A FFT radix-2 que o
+   resto do software usa não aceita 500.
+
+   AS DUAS SAÍDAS POSSÍVEIS, E POR QUE ESTA. Dava para completar com zeros até
+   512 e usar a radix-2; seria mais simples e mais rápido. Mas aí o eixo de
+   frequência passa a ser k·fs/512 em vez de k·fs/500, e nenhum bin coincide
+   com os do BRAVO — a comparação entre os dois softwares deixaria de ser
+   ponto a ponto e viraria interpolação. Como o objetivo declarado é paridade
+   numérica verificável, o eixo tem de ser idêntico, e por isso aqui está
+   Bluestein: ele calcula a DFT de QUALQUER N exatamente, ao custo de uma
+   convolução feita com três FFTs de tamanho potência de dois.
+
+   COMO FUNCIONA. Da identidade nk = (n² + k² − (k−n)²)/2 sai
+
+       X[k] = e^{−iπk²/N} · Σₙ ( x[n]·e^{−iπn²/N} ) · e^{+iπ(k−n)²/N}
+
+   que é uma convolução linear entre a sequência modulada `a` e o núcleo
+   quadrático `b`. A convolução linear vira circular completando ambas com
+   zeros até M ≥ 2N−1 potência de dois, e aí a radix-2 resolve.
+
+   PRECISÃO. O ângulo é πn²/N, e n² estoura a precisão de ponto flutuante
+   antes de N ficar grande. Reduzir n² módulo 2N antes de dividir mantém o
+   ângulo com erro de arredondamento constante em qualquer N.
+
+   Custo: O(M log M) com M = próxima potência de dois ≥ 2N−1. Para N = 500,
+   M = 1024 — três FFTs de 1024 por transformada.
+
+   Referência: Bluestein LI. IEEE Trans Audio Electroacoust 1970;18:451-5.
+   Rabiner LR, Schafer RW, Rader CM. Bell Syst Tech J 1969;48:1249-92 (chirp-z). */
+
+/* fftBluestein(re, im, inverse) — DFT no lugar, para N arbitrário.
+   Mesma convenção da `fft` radix-2: sinal negativo no expoente na direta, e a
+   inversa divide por N.                                                      */
+function fftBluestein(re, im, inverse) {
+  const N = re.length;
+  if (N < 2) return;
+  const sinal = inverse ? 1 : -1;
+  const M = nextPow2(2 * N - 1);
+
+  /* cos/sen de πn²/N, com n² reduzido módulo 2N para não perder dígitos */
+  const cosQ = new Float64Array(N), sinQ = new Float64Array(N);
+  for (let n = 0; n < N; n++) {
+    const q = (n * n) % (2 * N);
+    const ang = Math.PI * q / N;
+    cosQ[n] = Math.cos(ang); sinQ[n] = Math.sin(ang);
+  }
+
+  /* a[n] = x[n] · e^{sinal·iπn²/N} */
+  const ar = new Float64Array(M), ai = new Float64Array(M);
+  for (let n = 0; n < N; n++) {
+    const c = cosQ[n], s = sinal * sinQ[n];
+    ar[n] = re[n] * c - im[n] * s;
+    ai[n] = re[n] * s + im[n] * c;
+  }
+  /* b[n] = e^{−sinal·iπn²/N}, simétrico e periodizado em M */
+  const br = new Float64Array(M), bi = new Float64Array(M);
+  br[0] = cosQ[0]; bi[0] = -sinal * sinQ[0];
+  for (let n = 1; n < N; n++) {
+    const c = cosQ[n], s = -sinal * sinQ[n];
+    br[n] = c; bi[n] = s;
+    br[M - n] = c; bi[M - n] = s;
+  }
+
+  fft(ar, ai, false);
+  fft(br, bi, false);
+  for (let i = 0; i < M; i++) {
+    const r = ar[i] * br[i] - ai[i] * bi[i];
+    const m = ar[i] * bi[i] + ai[i] * br[i];
+    ar[i] = r; ai[i] = m;
+  }
+  fft(ar, ai, true);
+
+  /* desmodula e devolve os N primeiros */
+  for (let k = 0; k < N; k++) {
+    const c = cosQ[k], s = sinal * sinQ[k];
+    const r = ar[k] * c - ai[k] * s;
+    const m = ar[k] * s + ai[k] * c;
+    re[k] = inverse ? r / N : r;
+    im[k] = inverse ? m / N : m;
+  }
+}
+
+/* fftAny(re, im, inverse) — despacha: radix-2 quando N é potência de dois
+   (mais rápido e sem erro de convolução), Bluestein no resto.               */
+function fftAny(re, im, inverse) {
+  const N = re.length;
+  if (N > 1 && (N & (N - 1)) === 0) fft(re, im, inverse);
+  else fftBluestein(re, im, inverse);
+}
+
+/* dftDireta(re, im) — DFT O(N²) por definição. NÃO é usada no pipeline: existe
+   como referência independente contra a qual a Bluestein é conferida nos
+   testes. Uma FFT rápida errada e um teste escrito a partir dela concordariam
+   entre si; a definição não deixa. */
+function dftDireta(re, im) {
+  const N = re.length;
+  const or_ = new Float64Array(N), oi = new Float64Array(N);
+  for (let k = 0; k < N; k++) {
+    let sr = 0, si = 0;
+    for (let n = 0; n < N; n++) {
+      const ang = -2 * Math.PI * ((n * k) % N) / N;
+      const c = Math.cos(ang), s = Math.sin(ang);
+      sr += re[n] * c - im[n] * s;
+      si += re[n] * s + im[n] * c;
+    }
+    or_[k] = sr; oi[k] = si;
+  }
+  return { re: or_, im: oi };
+}
+
+/* ---------- core/dsp/timefreq.js ---------- */
+/* dsp/timefreq.js — análise tempo-frequência no padrão do BRAVO.
+
+   O QUE É E DE ONDE VEM. O BRAVO (Fixel Institute, v3.1.0-alpha) calcula os
+   espectrogramas em Python com `scipy`, num servidor, e desenha com Plotly.
+   Este módulo porta o mesmo conjunto de métodos para JavaScript de navegador
+   puro — sem servidor, sem rede, sem `scipy` — mantendo os parâmetros e as
+   convenções de escala para que a comparação entre os dois softwares seja
+   ponto a ponto, e não "parecida".
+
+   OS CINCO MÉTODOS, E A PERGUNTA QUE CADA UM RESPONDE
+     · welch    — periodograma de Welch por época. Padrão do BRAVO. Estimador
+                  de menor variância; é o que se usa quando a pergunta é
+                  "quanta potência há nesta banda ao longo do tempo".
+     · stft     — equivalente a `scipy.signal.spectrogram` com janela Hamming.
+                  Menos suavizado que o Welch, preserva melhor transientes.
+     · percept  — emulação do cálculo que o próprio neuroestimulador faz a
+                  bordo. É o único modo que permite conferir o que o aparelho
+                  reportou contra o que o sinal bruto diz.
+     · wavelet  — CWT de Morlet: resolução temporal que acompanha a
+                  frequência, apropriada para rajadas curtas de beta.
+     · ar       — modelo autorregressivo (Yule-Walker) com ordem por BIC.
+                  Espectro liso e picos estreitos com janelas curtas; a
+                  contrapartida é que a forma do espectro é imposta pelo
+                  modelo, não medida.
+
+   ESCALA. Todos os métodos paramétricos de FFT devolvem DENSIDADE espectral de
+   potência unilateral na convenção do `scipy.signal.welch`:
+
+       PSD[k] = |X[k]|² / (fs · Σₙ w[n]²)      × 2 para k ∉ {0, Nyquist}
+
+   O fator 2 recolhe a energia da frequência negativa; DC e Nyquist não têm par
+   e ficam sem ele. A soma dos quadrados da janela é sobre a JANELA (nperseg),
+   não sobre o comprimento com zeros — completar com zeros aumenta a resolução
+   aparente, não a energia.
+
+   JANELA PERIÓDICA vs SIMÉTRICA. O `scipy.signal.get_window` devolve janela
+   PERIÓDICA (`sym=False`) por padrão, que é a correta para análise espectral:
+   w[n] = 0,5 − 0,5·cos(2πn/N). A simétrica, w[n] = 0,5 − 0,5·cos(2πn/(N−1)),
+   é a do `numpy.hanning` e a que a Medtronic usa na emulação de bordo. As duas
+   estão aqui com nomes diferentes de propósito: trocar uma pela outra muda a
+   potência estimada em fração de porcento, o suficiente para uma comparação
+   entre softwares não fechar e ninguém descobrir por quê.
+
+   DADOS FALTANTES. Época que contém amostra faltante acima da tolerância NÃO é
+   calculada: sai NaN, marcada, e a fração faltante vai junto. Preencher a
+   lacuna com zero e desenhar o resultado como potência válida seria inventar
+   um número — e é justamente nas perdas de pacote que o espectro mente mais.
+
+   Unidades: entrada em µV; PSD em µV²/Hz; `percept` em magnitude (µV), não
+   potência, porque é o que o aparelho reporta.
+
+   Referências:
+     Welch PD. IEEE Trans Audio Electroacoust 1967;15:70-3.
+     Harris FJ. Proc IEEE 1978;66:51-83 (janelas e ganhos coerente/incoerente).
+     Kay SM. Modern Spectral Estimation, Prentice Hall 1988 (Yule-Walker, BIC).
+     Fixel Institute. BRAVO v3.1.0-alpha, SignalProcessingUtility.py.          */
+
+
+
+
+/* ------------------------------------------------------------- janelas --- */
+
+/* Periódicas — convenção do scipy.signal.get_window(sym=False) */
+function hannPeriodic(n) {
+  const w = new Float64Array(n);
+  for (let i = 0; i < n; i++) w[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / n);
+  return w;
+}
+function hammingPeriodic(n) {
+  const w = new Float64Array(n);
+  for (let i = 0; i < n; i++) w[i] = 0.54 - 0.46 * Math.cos(2 * Math.PI * i / n);
+  return w;
+}
+/* Simétrica — convenção do numpy.hanning, usada na emulação Medtronic */
+function hannSymmetric(n) {
+  const w = new Float64Array(n);
+  if (n === 1) { w[0] = 1; return w; }
+  for (let i = 0; i < n; i++) w[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (n - 1));
+  return w;
+}
+const WINDOWS = {
+  'hann-periodic': hannPeriodic, 'hamming-periodic': hammingPeriodic,
+  'hann-symmetric': hannSymmetric
+};
+
+/* ----------------------------------------------------- utilidades base --- */
+
+const contaFaltantes = (x, a, b) => {
+  let n = 0;
+  for (let i = a; i < b; i++) if (!isFinite(x[i])) n++;
+  return n / Math.max(1, b - a);
+};
+
+/* remove média e tendência linear ignorando não-finitos */
+function detrendEpoca(x, a, b, modo) {
+  const n = b - a;
+  const out = new Float64Array(n);
+  if (modo === 'none') { for (let i = 0; i < n; i++) out[i] = isFinite(x[a + i]) ? x[a + i] : 0; return out; }
+  let sx = 0, sy = 0, sxx = 0, sxy = 0, m = 0;
+  for (let i = 0; i < n; i++) {
+    const v = x[a + i];
+    if (!isFinite(v)) continue;
+    sx += i; sy += v; sxx += i * i; sxy += i * v; m++;
+  }
+  if (m < 2) return out;
+  if (modo === 'constant') {
+    const mu = sy / m;
+    for (let i = 0; i < n; i++) out[i] = isFinite(x[a + i]) ? x[a + i] - mu : 0;
+    return out;
+  }
+  const den = m * sxx - sx * sx;
+  const inc = den ? (m * sxy - sx * sy) / den : 0;
+  const b0 = (sy - inc * sx) / m;
+  for (let i = 0; i < n; i++) out[i] = isFinite(x[a + i]) ? x[a + i] - (b0 + inc * i) : 0;
+  return out;
+}
+
+/* Periodograma de UMA época com escala de densidade do scipy. */
+function periodograma(seg, w, nfft, fs, U) {
+  const nper = seg.length;
+  const re = new Float64Array(nfft), im = new Float64Array(nfft);
+  for (let i = 0; i < nper; i++) re[i] = seg[i] * w[i];
+  fftAny(re, im, false);
+  const nBins = Math.floor(nfft / 2) + 1;
+  const p = new Float64Array(nBins);
+  const par = nfft % 2 === 0;
+  for (let k = 0; k < nBins; k++) {
+    const mag = (re[k] * re[k] + im[k] * im[k]) / U;
+    const ultimo = par && k === nBins - 1;
+    p[k] = (k === 0 || ultimo) ? mag : 2 * mag;
+  }
+  return p;
+}
+
+const eixoFreq = (nfft, fs) => {
+  const nBins = Math.floor(nfft / 2) + 1;
+  const f = new Float64Array(nBins);
+  for (let k = 0; k < nBins; k++) f[k] = k * fs / nfft;
+  return f;
+};
+
+/* Resolve os parâmetros comuns e devolve a grade de épocas. */
+function grade(x, fs, opts) {
+  const janelaS = opts.windowS == null ? 1.0 : opts.windowS;
+  const sobrepS = opts.overlapS == null ? 0.5 : opts.overlapS;
+  const resHz = opts.freqRes == null ? 0.5 : opts.freqRes;
+  const nper = Math.max(8, Math.round(janelaS * fs));
+  const passo = Math.max(1, Math.round((janelaS - sobrepS) * fs));
+  /* NFFT = round(fs / resolução), como no BRAVO — nunca menor que a janela,
+     porque completar com zeros interpola, mas truncar perderia amostra */
+  const nfft = Math.max(nper, Math.round(fs / resHz));
+  const inicios = [];
+  for (let s = 0; s + nper <= x.length; s += passo) inicios.push(s);
+  return { janelaS, sobrepS, resHz, nper, passo, nfft, inicios };
+}
+
+/* --------------------------------------------------- 1. Welch por época --- */
+
+/* Welch dentro de cada época: a época é subdividida em segmentos de
+   `subWindowS` com 50% de sobreposição e as PSDs são promediadas. Com o padrão
+   do BRAVO (subjanela = janela) sobra um único segmento e o método degenera no
+   periodograma — que é exatamente o que o BRAVO faz. Subjanela menor troca
+   resolução de frequência por variância menor.                              */
+function spectrogramWelch(x, fs, opts) {
+  opts = opts || {};
+  const g = grade(x, fs, opts);
+  if (!g.inicios.length) return { ok: false, reason: `sinal curto demais: ${x.length} amostras para janela de ${g.nper}` };
+  const subN = Math.max(8, Math.min(g.nper, Math.round((opts.subWindowS || opts.windowS || 1.0) * fs)));
+  const subPasso = Math.max(1, Math.floor(subN / 2));
+  const w = hannPeriodic(subN);
+  let U = 0; for (let i = 0; i < subN; i++) U += w[i] * w[i];
+  U *= fs;
+  const f = eixoFreq(g.nfft, fs);
+  const tol = opts.maxMissingFrac == null ? 0 : opts.maxMissingFrac;
+  const cols = [], falta = new Float64Array(g.inicios.length), marca = new Uint8Array(g.inicios.length);
+  g.inicios.forEach((s, ci) => {
+    const fr = contaFaltantes(x, s, s + g.nper);
+    falta[ci] = fr;
+    if (fr > tol) { marca[ci] = 1; cols.push(new Float64Array(f.length).fill(NaN)); return; }
+    const acc = new Float64Array(f.length);
+    let nSeg = 0;
+    for (let o = 0; o + subN <= g.nper; o += subPasso) {
+      const seg = detrendEpoca(x, s + o, s + o + subN, opts.detrend || 'constant');
+      const p = periodograma(seg, w, g.nfft, fs, U);
+      for (let k = 0; k < p.length; k++) acc[k] += p[k];
+      nSeg++;
+    }
+    if (!nSeg) { marca[ci] = 1; cols.push(new Float64Array(f.length).fill(NaN)); return; }
+    for (let k = 0; k < acc.length; k++) acc[k] /= nSeg;
+    cols.push(acc);
+  });
+  return {
+    ok: true, method: 'welch', freqs: f, power: cols,
+    times: g.inicios.map(s => (s + g.nper / 2) / fs),
+    missing: falta, flagged: marca,
+    params: {
+      windowS: g.janelaS, overlapS: g.sobrepS, stepS: g.passo / fs, freqRes: fs / g.nfft,
+      nperseg: g.nper, nfft: g.nfft, subWindowS: subN / fs, window: 'hann-periodic',
+      scaling: 'density', detrend: opts.detrend || 'constant', maxMissingFrac: tol, fs
+    },
+    unit: 'µV²/Hz'
+  };
+}
+
+/* --------------------------------------------- 2. STFT (scipy spectrogram) */
+
+function spectrogramSTFT(x, fs, opts) {
+  opts = opts || {};
+  const g = grade(x, fs, opts);
+  if (!g.inicios.length) return { ok: false, reason: `sinal curto demais: ${x.length} amostras para janela de ${g.nper}` };
+  const w = hammingPeriodic(g.nper);
+  let U = 0; for (let i = 0; i < g.nper; i++) U += w[i] * w[i];
+  U *= fs;
+  const f = eixoFreq(g.nfft, fs);
+  const tol = opts.maxMissingFrac == null ? 0 : opts.maxMissingFrac;
+  const cols = [], falta = new Float64Array(g.inicios.length), marca = new Uint8Array(g.inicios.length);
+  g.inicios.forEach((s, ci) => {
+    const fr = contaFaltantes(x, s, s + g.nper);
+    falta[ci] = fr;
+    if (fr > tol) { marca[ci] = 1; cols.push(new Float64Array(f.length).fill(NaN)); return; }
+    cols.push(periodograma(detrendEpoca(x, s, s + g.nper, opts.detrend || 'constant'), w, g.nfft, fs, U));
+  });
+  return {
+    ok: true, method: 'stft', freqs: f, power: cols,
+    times: g.inicios.map(s => (s + g.nper / 2) / fs),
+    missing: falta, flagged: marca,
+    params: {
+      windowS: g.janelaS, overlapS: g.sobrepS, stepS: g.passo / fs, freqRes: fs / g.nfft,
+      nperseg: g.nper, noverlap: g.nper - g.passo, nfft: g.nfft, window: 'hamming-periodic',
+      scaling: 'density', detrend: opts.detrend || 'constant', maxMissingFrac: tol, fs
+    },
+    unit: 'µV²/Hz'
+  };
+}
+
+/* ------------------------------------- 3. emulação do PSD do Percept ------ */
+
+/* O QUE ISTO REPRODUZ. O neuroestimulador não guarda o espectro; ele calcula
+   uma FFT a bordo e reporta a potência de uma banda. A sequência abaixo é a
+   que o BRAVO usa para reproduzir esse cálculo:
+
+     janela de Hanning SIMÉTRICA de 250 amostras, multiplicada por 1/54;
+     zero-pad de 250 para 256; MAGNITUDE |FFT| (não potência);
+     avanço de 5 amostras por passo (tamanho do pacote no caminho de
+     streaming); primeiras 100 bins do eixo (k/256)·fs.
+
+   A CONSTANTE 1/54. É empírica: sai do ganho coerente da janela e da
+   normalização de ponto fixo do firmware, e não está documentada pelo
+   fabricante. Fica parametrizável e explícita porque é o número que faz esta
+   emulação bater — ou não — com o que o aparelho reportou, e ninguém deveria
+   descobrir depois que havia uma constante mágica escondida no meio.
+
+   POR QUE MAGNITUDE E NÃO POTÊNCIA. Porque é o que o aparelho reporta. Elevar
+   ao quadrado aqui tornaria a comparação com o valor do próprio Percept
+   incomparável, que é justamente o uso deste modo.                          */
+function spectrogramPercept(x, fs, opts) {
+  opts = opts || {};
+  const nper = opts.nperseg || 250;
+  const nfft = opts.nfft || 256;
+  const ganho = opts.gain == null ? 1 / 54 : opts.gain;
+  const passo = opts.packetSamples == null ? 5 : opts.packetSamples;
+  const nBinsSaida = opts.nBins || 100;
+  if (x.length < nper) return { ok: false, reason: `sinal curto demais: ${x.length} amostras para a janela de ${nper} do aparelho` };
+  const w = hannSymmetric(nper);
+  for (let i = 0; i < nper; i++) w[i] *= ganho;
+  const f = new Float64Array(nBinsSaida);
+  for (let k = 0; k < nBinsSaida; k++) f[k] = k * fs / nfft;
+  const tol = opts.maxMissingFrac == null ? 0 : opts.maxMissingFrac;
+  const cols = [], tempos = [], falta = [], marca = [];
+  for (let s = 0; s + nper <= x.length; s += passo) {
+    const fr = contaFaltantes(x, s, s + nper);
+    falta.push(fr);
+    if (fr > tol) { marca.push(1); cols.push(new Float64Array(nBinsSaida).fill(NaN)); tempos.push((s + nper / 2) / fs); continue; }
+    marca.push(0);
+    const re = new Float64Array(nfft), im = new Float64Array(nfft);
+    for (let i = 0; i < nper; i++) re[i] = (isFinite(x[s + i]) ? x[s + i] : 0) * w[i];
+    fft(re, im, false);                       /* 256 é potência de dois */
+    const col = new Float64Array(nBinsSaida);
+    for (let k = 0; k < nBinsSaida; k++) col[k] = Math.hypot(re[k], im[k]);
+    cols.push(col); tempos.push((s + nper / 2) / fs);
+  }
+  if (!cols.length) return { ok: false, reason: 'nenhuma janela completa' };
+  return {
+    ok: true, method: 'percept', freqs: f, power: cols, times: tempos,
+    missing: Float64Array.from(falta), flagged: Uint8Array.from(marca),
+    params: {
+      nperseg: nper, nfft, gain: ganho, packetSamples: passo, nBins: nBinsSaida,
+      stepS: passo / fs, window: 'hann-symmetric', scaling: 'magnitude', fs,
+      maxMissingFrac: tol
+    },
+    unit: 'µV (magnitude)',
+    caveat: 'este modo reproduz a aritmética de bordo do aparelho, não é densidade espectral: ' +
+      'a escala é magnitude |FFT| com ganho 1/54, e não deve ser comparada em dB com os outros métodos'
+  };
+}
+
+/* --------------------------------------------------- 4. wavelet (Morlet) -- */
+
+/* `widths = w·fs/(2·f·π)` do scipy.signal.morlet2 corresponde a uma wavelet de
+   aproximadamente `w` oscilações dentro do envelope — o mesmo parâmetro que a
+   nossa `morletCWT` chama de nCycles. A correspondência é declarada porque as
+   duas parametrizações são fáceis de confundir.                              */
+function spectrogramWavelet(x, fs, opts) {
+  opts = opts || {};
+  const w0 = opts.w == null ? 6 : opts.w;
+  const fMin = opts.fMin == null ? 1 : opts.fMin;
+  const fMax = opts.fMax == null ? Math.min(100, fs / 2 - 1) : opts.fMax;
+  const nF = opts.nFreqs || 80;
+  const freqs = [];
+  for (let i = 0; i < nF; i++) freqs.push(fMin + (fMax - fMin) * i / (nF - 1));
+  const limpo = Float64Array.from(x, v => isFinite(v) ? v : 0);
+  const cwt = morletCWT(limpo, fs, freqs, { nCycles: w0 });
+  if (!cwt) return { ok: false, reason: 'sinal curto demais para a wavelet' };
+  const passo = Math.max(1, Math.round((opts.stepS || 0.05) * fs));
+  const tempos = [], cols = [], falta = [], marca = [];
+  const suav = Math.max(1, Math.round((opts.smoothS || 0) * fs));
+  for (let i = 0; i < cwt.n; i += passo) {
+    const a = Math.max(0, i - Math.floor(suav / 2)), b = Math.min(cwt.n, a + suav);
+    const col = new Float64Array(freqs.length);
+    for (let k = 0; k < freqs.length; k++) {
+      let acc = 0, m = 0;
+      for (let j = a; j < b; j++) { const v = cwt.power[k][j]; if (isFinite(v)) { acc += v; m++; } }
+      col[k] = m ? acc / m : NaN;
+    }
+    const fr = contaFaltantes(x, a, b);
+    falta.push(fr); marca.push(fr > (opts.maxMissingFrac == null ? 0 : opts.maxMissingFrac) ? 1 : 0);
+    if (marca[marca.length - 1]) col.fill(NaN);
+    cols.push(col); tempos.push(i / fs);
+  }
+  return {
+    ok: true, method: 'wavelet', freqs: Float64Array.from(freqs), power: cols, times: tempos,
+    missing: Float64Array.from(falta), flagged: Uint8Array.from(marca),
+    params: { w: w0, nCycles: w0, fMin, fMax, nFreqs: nF, stepS: passo / fs, smoothS: suav / fs, scaling: 'power', fs },
+    unit: 'µV²',
+    caveat: 'a wavelet troca resolução de frequência por resolução temporal conforme a frequência: ' +
+      'a largura de banda cresce com f, então bandas altas ficam mais borradas em frequência e mais nítidas no tempo'
+  };
+}
+
+/* ------------------------------------- 5. autorregressivo (Yule-Walker) --- */
+
+/* Levinson-Durbin: resolve o sistema de Toeplitz das equações de Yule-Walker
+   em O(p²) e devolve os coeficientes e a variância residual de cada ordem.   */
+function levinsonDurbin(r, ordem) {
+  const a = new Float64Array(ordem + 1);
+  const varRes = new Float64Array(ordem + 1);
+  a[0] = 1; varRes[0] = r[0];
+  if (!(r[0] > 0)) return null;
+  let E = r[0];
+  const tmp = new Float64Array(ordem + 1);
+  for (let m = 1; m <= ordem; m++) {
+    let acc = r[m];
+    for (let i = 1; i < m; i++) acc -= a[i] * r[m - i];
+    const k = acc / E;
+    tmp.set(a);
+    a[m] = k;
+    for (let i = 1; i < m; i++) a[i] = tmp[i] - k * tmp[m - i];
+    E *= (1 - k * k);
+    if (!(E > 0)) { varRes[m] = E; return { a, varResidual: varRes, ordemMax: m - 1 }; }
+    varRes[m] = E;
+  }
+  return { a, varResidual: varRes, ordemMax: ordem };
+}
+
+/* PSD do modelo AR: σ²/(fs·|A(e^{jω})|²), unilateral com ×2 fora de DC/Nyquist */
+function psdAR(coef, sigma2, fs, freqs) {
+  const p = coef.length - 1;
+  const out = new Float64Array(freqs.length);
+  for (let i = 0; i < freqs.length; i++) {
+    const w = 2 * Math.PI * freqs[i] / fs;
+    let re = 1, im = 0;
+    for (let k = 1; k <= p; k++) { re -= coef[k] * Math.cos(w * k); im += coef[k] * Math.sin(w * k); }
+    const den = re * re + im * im;
+    const dobro = (freqs[i] > 0 && freqs[i] < fs / 2) ? 2 : 1;
+    out[i] = den > 0 ? dobro * sigma2 / (fs * den) : NaN;
+  }
+  return out;
+}
+
+function spectrogramAR(x, fs, opts) {
+  opts = opts || {};
+  const g = grade(x, fs, opts);
+  if (!g.inicios.length) return { ok: false, reason: `sinal curto demais: ${x.length} amostras para janela de ${g.nper}` };
+  const ordemMax = Math.min(opts.maxOrder || 30, Math.floor(g.nper / 3));
+  const f = eixoFreq(g.nfft, fs);
+  const tol = opts.maxMissingFrac == null ? 0 : opts.maxMissingFrac;
+  const cols = [], falta = new Float64Array(g.inicios.length), marca = new Uint8Array(g.inicios.length);
+  const ordens = [];
+  g.inicios.forEach((s, ci) => {
+    const fr = contaFaltantes(x, s, s + g.nper);
+    falta[ci] = fr;
+    if (fr > tol) { marca[ci] = 1; cols.push(new Float64Array(f.length).fill(NaN)); return; }
+    const seg = detrendEpoca(x, s, s + g.nper, opts.detrend || 'constant');
+    const n = seg.length;
+    /* autocorrelação enviesada (divisor n) — a que garante Toeplitz positiva */
+    const r = new Float64Array(ordemMax + 1);
+    for (let k = 0; k <= ordemMax; k++) {
+      let acc = 0;
+      for (let i = 0; i + k < n; i++) acc += seg[i] * seg[i + k];
+      r[k] = acc / n;
+    }
+    const lev = levinsonDurbin(r, ordemMax);
+    if (!lev) { marca[ci] = 1; cols.push(new Float64Array(f.length).fill(NaN)); return; }
+    /* ordem por BIC: n·ln(σ²ₚ) + p·ln(n) — penaliza mais que o AIC e evita a
+       ordem inflada que faz o espectro AR criar picos que não existem */
+    let melhor = 1, bicMin = Infinity;
+    for (let p = 1; p <= lev.ordemMax; p++) {
+      const s2 = lev.varResidual[p];
+      if (!(s2 > 0)) break;
+      const bic = n * Math.log(s2) + p * Math.log(n);
+      if (bic < bicMin) { bicMin = bic; melhor = p; }
+    }
+    const lev2 = levinsonDurbin(r, melhor);
+    ordens.push(melhor);
+    cols.push(psdAR(lev2.a, lev2.varResidual[melhor], fs, f));
+  });
+  return {
+    ok: true, method: 'ar', freqs: f, power: cols,
+    times: g.inicios.map(s => (s + g.nper / 2) / fs),
+    missing: falta, flagged: marca,
+    params: {
+      windowS: g.janelaS, overlapS: g.sobrepS, stepS: g.passo / fs, freqRes: fs / g.nfft,
+      nperseg: g.nper, nfft: g.nfft, maxOrder: ordemMax,
+      medianOrder: ordens.length ? median(ordens) : NaN,
+      orderCriterion: 'BIC', scaling: 'density', detrend: opts.detrend || 'constant', fs, maxMissingFrac: tol
+    },
+    unit: 'µV²/Hz',
+    caveat: 'o espectro AR é IMPOSTO pelo modelo: a suavidade e a largura dos picos vêm da ordem escolhida, ' +
+      'não da medida. Ordem alta demais cria picos que não existem; baixa demais funde picos vizinhos'
+  };
+}
+
+/* ------------------------------------------------ normalização e 1/f ----- */
+
+/* normalizeSpectrogram(spec, opts) → divide ou subtrai a média de uma janela
+   de tempo de referência, por frequência. `log:true` opera em 10·log10.     */
+function normalizeSpectrogram(spec, opts) {
+  opts = opts || {};
+  const modo = opts.mode || 'divide';
+  const [t0, t1] = opts.baseline || [spec.times[0], spec.times[Math.min(spec.times.length - 1, 4)]];
+  const idx = [];
+  spec.times.forEach((t, i) => { if (t >= t0 && t <= t1 && !spec.flagged[i]) idx.push(i); });
+  if (idx.length < 1) return { ok: false, reason: `a janela de referência ${t0}–${t1} s não contém nenhuma época válida` };
+  const nF = spec.freqs.length;
+  const base = new Float64Array(nF);
+  for (let k = 0; k < nF; k++) {
+    let acc = 0, m = 0;
+    idx.forEach(i => { const v = spec.power[i][k]; if (isFinite(v) && v > 0) { acc += opts.log ? 10 * Math.log10(v) : v; m++; } });
+    base[k] = m ? acc / m : NaN;
+  }
+  const cols = spec.power.map(col => {
+    const out = new Float64Array(nF);
+    for (let k = 0; k < nF; k++) {
+      const v = opts.log ? (col[k] > 0 ? 10 * Math.log10(col[k]) : NaN) : col[k];
+      out[k] = !isFinite(v) || !isFinite(base[k]) ? NaN
+        : modo === 'subtract' ? v - base[k] : (base[k] !== 0 ? v / base[k] : NaN);
+    }
+    return out;
+  });
+  return Object.assign({}, spec, {
+    power: cols, baseline: Array.from(base),
+    normalization: { mode: modo, baselineWindowS: [t0, t1], log: !!opts.log, nEpochs: idx.length },
+    unit: modo === 'subtract' ? (opts.log ? 'dB vs. referência' : 'Δ vs. referência') : '× a referência'
+  });
+}
+
+/* removeAperiodicTrend(spec, opts) → divide cada coluna pelo componente
+   aperiódico 1/f.
+
+   DIFERENÇA DECLARADA EM RELAÇÃO AO FOOOF. O FOOOF ajusta simultaneamente o
+   componente aperiódico e gaussianas de pico, iterando para que os picos não
+   contaminem o ajuste do fundo. Aqui o ajuste é uma regressão linear ROBUSTA
+   em log-log (log10 P = a − b·log10 f), com poda dos resíduos positivos — que
+   são justamente os picos. É mais simples, mais rápido e suficiente para
+   remover a inclinação; NÃO é FOOOF, e não estima largura nem altura de pico.
+
+   O ajuste é feito sobre o espectro MÉDIO no tempo, não coluna a coluna: com
+   uma época de 1 s o espectro individual é ruidoso demais para estimar uma
+   inclinação estável, e uma inclinação instável vira artefato temporal.     */
+function removeAperiodicTrend(spec, opts) {
+  opts = opts || {};
+  const lo = opts.fitLo == null ? 2 : opts.fitLo;
+  const hi = opts.fitHi == null ? Math.min(45, spec.freqs[spec.freqs.length - 1]) : opts.fitHi;
+  const nF = spec.freqs.length;
+  const medio = new Float64Array(nF);
+  for (let k = 0; k < nF; k++) {
+    const v = [];
+    spec.power.forEach(col => { if (isFinite(col[k]) && col[k] > 0) v.push(col[k]); });
+    medio[k] = v.length ? median(v) : NaN;
+  }
+  const X = [], Y = [], K = [];
+  for (let k = 0; k < nF; k++) {
+    const f = spec.freqs[k];
+    if (f < Math.max(lo, 1e-6) || f > hi || !isFinite(medio[k]) || !(medio[k] > 0)) continue;
+    X.push(Math.log10(f)); Y.push(Math.log10(medio[k])); K.push(k);
+  }
+  if (X.length < 6) return { ok: false, reason: `só ${X.length} bins entre ${lo} e ${hi} Hz — insuficiente para ajustar a inclinação 1/f` };
+  let usar = X.map((_, i) => i);
+  let a = 0, b = 0;
+  for (let it = 0; it < 4; it++) {
+    let sx = 0, sy = 0, sxx = 0, sxy = 0;
+    usar.forEach(i => { sx += X[i]; sy += Y[i]; sxx += X[i] * X[i]; sxy += X[i] * Y[i]; });
+    const n = usar.length, den = n * sxx - sx * sx;
+    if (!den) break;
+    b = (n * sxy - sx * sy) / den; a = (sy - b * sx) / n;
+    /* poda: resíduo positivo é pico, e pico não é fundo. O piso de 50% impede
+       a poda de encolher a amostra até a regressão degenerar. */
+    const res = X.map((x, i) => Y[i] - (a + b * x));
+    const corte = quantile(usar.map(i => res[i]), 0.75);
+    const novo = X.map((_, i) => i).filter(i => res[i] <= corte);
+    if (novo.length < Math.max(6, X.length * 0.5)) break;
+    usar = novo;
+  }
+  const r2 = (() => {
+    const yy = usar.map(i => Y[i]);
+    const mu = mean(yy);
+    let sse = 0, sst = 0;
+    usar.forEach(i => { const e = Y[i] - (a + b * X[i]); sse += e * e; sst += (Y[i] - mu) ** 2; });
+    return sst > 0 ? 1 - sse / sst : NaN;
+  })();
+  const fundo = new Float64Array(nF);
+  for (let k = 0; k < nF; k++) {
+    const f = spec.freqs[k];
+    fundo[k] = f > 0 ? Math.pow(10, a + b * Math.log10(f)) : NaN;
+  }
+  const cols = spec.power.map(col => {
+    const out = new Float64Array(nF);
+    for (let k = 0; k < nF; k++) out[k] = (isFinite(col[k]) && isFinite(fundo[k]) && fundo[k] > 0) ? col[k] / fundo[k] : NaN;
+    return out;
+  });
+  return Object.assign({}, spec, {
+    power: cols, aperiodic: { exponent: -b, offset: a, r2, fitLo: lo, fitHi: hi, nBins: usar.length, method: 'regressão log-log robusta (não é FOOOF)' },
+    unit: '× o fundo 1/f',
+    caveat: 'o fundo aperiódico foi ajustado por regressão log-log robusta sobre o espectro médio no tempo, ' +
+      'não pelo FOOOF completo — remove a inclinação, mas não separa picos do fundo com o mesmo rigor'
+  });
+}
+
+/* ------------------------------------------------------- orquestrador ---- */
+
+const TF_METHODS = [
+  { id: 'welch', label: 'Welch por época', unit: 'µV²/Hz', db: true },
+  { id: 'stft', label: 'STFT (Hamming)', unit: 'µV²/Hz', db: true },
+  { id: 'percept', label: 'PSD do Percept (emulação de bordo)', unit: 'µV', db: false },
+  { id: 'wavelet', label: 'Wavelet de Morlet', unit: 'µV²', db: true },
+  { id: 'ar', label: 'Autorregressivo (Yule-Walker)', unit: 'µV²/Hz', db: true }
+];
+
+/* timeFrequency(x, fs, opts) → espectrograma pronto para desenhar.
+   Aplica, na ordem declarada: método → normalização → remoção de 1/f.       */
+function timeFrequency(x, fs, opts) {
+  opts = opts || {};
+  const metodo = opts.method || 'welch';
+  const fn = { welch: spectrogramWelch, stft: spectrogramSTFT, percept: spectrogramPercept, wavelet: spectrogramWavelet, ar: spectrogramAR }[metodo];
+  if (!fn) return { ok: false, reason: `método desconhecido: ${metodo}` };
+  let spec = fn(x, fs, opts);
+  if (!spec.ok) return spec;
+  const passos = [metodo];
+  if (opts.detrendAperiodic) {
+    const r = removeAperiodicTrend(spec, opts);
+    if (r.ok !== false) { spec = r; passos.push('remoção de 1/f'); }
+    else spec = Object.assign({}, spec, { aperiodicReason: r.reason });
+  }
+  if (opts.normalize) {
+    const r = normalizeSpectrogram(spec, opts);
+    if (r.ok !== false) { spec = r; passos.push(`normalização ${opts.mode || 'divide'}`); }
+    else spec = Object.assign({}, spec, { normalizeReason: r.reason });
+  }
+  /* estatísticas do que sobrou, para a figura poder declarar cobertura */
+  const validas = spec.flagged ? Array.from(spec.flagged).filter(v => !v).length : spec.times.length;
+  return Object.assign({}, spec, {
+    pipeline: passos,
+    nEpochs: spec.times.length, nEpochsValid: validas,
+    pctEpochsFlagged: spec.times.length ? +(100 * (spec.times.length - validas) / spec.times.length).toFixed(2) : 0
+  });
+}
+
+/* matrizParaHeat(spec, opts) → matriz [frequência][tempo] em dB (ou linear),
+   já recortada em fMax, pronta para `Chart.heat` com origin 'bottom'.       */
+function tfMatrix(spec, opts) {
+  opts = opts || {};
+  const fMax = opts.fMax == null ? Infinity : opts.fMax;
+  const dB = opts.dB !== false;
+  const ks = [];
+  for (let k = 0; k < spec.freqs.length; k++) if (spec.freqs[k] <= fMax) ks.push(k);
+  const M = ks.map(k => {
+    const linha = new Float64Array(spec.times.length);
+    for (let i = 0; i < spec.times.length; i++) {
+      const v = spec.power[i][k];
+      linha[i] = !isFinite(v) ? NaN : dB ? (v > 0 ? 10 * Math.log10(v) : NaN) : v;
+    }
+    return linha;
+  });
+  return { matrix: M, freqs: ks.map(k => spec.freqs[k]), times: spec.times, dB };
+}
+
 /* ---------- core/metrics/control.js ---------- */
 /* metrics/control.js — banda-controle e actograma.
 
@@ -10195,6 +10909,8 @@ function fitDoseResponse(ma, power, opts) {
 
 
 
+
+
 const API = {
   parsePercept, parsePerceptText, MODALITIES, BANDS, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId,
   fft, nextPow2, welchPSD, spectrogram, bandpassFFT, hilbertEnvelope, detectBursts, fitAperiodic,
@@ -10245,6 +10961,11 @@ const API = {
   alignByCrossCorrelation, alignByStimArtifact, alignByTimestamp, detectStimSteps,
   /* actograma, banda-controle e cluster (Onda 4.1) */
   clusterPermutation, controlBandDiurnal, actogram,
+  /* tempo-frequência no padrão do BRAVO (Onda 10) */
+  fftBluestein, fftAny, dftDireta,
+  hannPeriodic, hammingPeriodic, hannSymmetric, WINDOWS, TF_METHODS,
+  spectrogramWelch, spectrogramSTFT, spectrogramPercept, spectrogramWavelet, spectrogramAR,
+  levinsonDurbin, normalizeSpectrogram, removeAperiodicTrend, timeFrequency, tfMatrix,
   /* diário de Hauser, matriz hora × dia e resposta à levodopa (Onda 9) */
   DIARY_STATES, LFP_STATES, stateById, normalizeState, parseDiaryCsv, diaryGrid,
   dailyComposition, compareConditions, circadianStateProfile, timelineGrid,
@@ -10285,7 +11006,16 @@ const CMAPS = {
      só o que sobe acima da mediana do dia — é o oposto do viridis, que gasta
      contraste no meio da distribuição. */
   pretoazul: ramp([[0, 0, 0], [6, 14, 44], [10, 32, 88], [12, 56, 140],
-    [18, 88, 190], [48, 132, 226], [120, 186, 248]])
+    [18, 88, 190], [48, 132, 226], [120, 186, 248]]),
+  /* Jet: existe aqui para paridade VISUAL com o BRAVO e com a literatura antiga
+     de espectrogramas, não porque seja boa. Ela não é perceptualmente uniforme
+     — cria bordas de contraste onde o dado é liso (a faixa do ciano) e achata
+     diferenças onde o dado varia (o vermelho) —, e some na impressão em cinza.
+     O viridis continua sendo o padrão recomendado; jet é para quando a
+     comparação lado a lado com uma figura publicada é o objetivo.
+     Ver Borland & Taylor. IEEE Comput Graph Appl 2007;27:14-7. */
+  jet: ramp([[0, 0, 131], [0, 0, 255], [0, 128, 255], [0, 255, 255],
+    [128, 255, 128], [255, 255, 0], [255, 128, 0], [255, 0, 0], [128, 0, 0]])
 };
 
 /* ------------------------------------------------------------ formatação */
@@ -11599,6 +12329,98 @@ function painelMatriz(parent, cfg) {
     P.downloadCanvas(fora, nome);
   };
   return bx;
+}
+
+/* ---------------------------------------- cache do espectrograma (F30) ----
+   Mexer só no limite de cor ou no colormap não pode recalcular a FFT: em 60 s
+   de sinal a 250 Hz o Welch são ~120 épocas de FFT de 500, e recomputar isso a
+   cada arrastada de controle trava a interface. A chave carrega TODOS os
+   parâmetros que mudam o número — quem não muda (cor, escala do eixo) fica de
+   fora e por isso reaproveita. Guarda poucos resultados: cada um é uma matriz
+   de centenas de milhares de floats. */
+const _tfCache = new Map();
+const _tfEmCurso = new Set();
+function tfGuarda(chave, r) {
+  _tfCache.set(chave, r);
+  if (_tfCache.size > 6) _tfCache.delete(_tfCache.keys().next().value);
+  return r;
+}
+/* Calcula no trabalhador e redesenha a figura quando o resultado chega. Duas
+   chamadas para a mesma chave não disparam dois cálculos. */
+async function calculaEspectrograma(chave, td, params) {
+  if (_tfEmCurso.has(chave)) return;
+  _tfEmCurso.add(chave);
+  try {
+    const out = await Trabalhador.chamar('timeFrequency', [td.data, td.fsEff || td.fs, params]);
+    Instrumentacao.registra(`timeFrequency ${params.method} ${td.label}`, out.ms, out.ondeRodou);
+    tfGuarda(chave, out.r);
+  } catch (e) {
+    tfGuarda(chave, { ok: false, reason: String((e && e.message) || e) });
+  } finally {
+    _tfEmCurso.delete(chave);
+    _renderizadas.delete('F30');
+    renderFigureAsync('F30');
+  }
+}
+
+/* Bloco de metadados do método, em comentário no topo do CSV. Sem ele o
+   arquivo exportado é irreproduzível: a mesma gravação com outra janela ou
+   outra escala dá outros números, e seis meses depois ninguém lembra qual foi. */
+/* O identificador pseudonimizado do registro ativo. `S.subject` só é
+   preenchido quando o usuário TROCA de registro, então ler direto dele deixaria
+   a exportação sem identificador no caso comum de um arquivo só. */
+function sujeitoAtual() {
+  const f = activeFiles()[0];
+  return (f && f.parsed && f.parsed.patient && f.parsed.patient.idHash) || S.subject || '';
+}
+function metaEspectrograma(spec, td) {
+  const p = spec.params;
+  return [
+    'Percept LFP Studio — time-frequency export',
+    `generated_at=${new Date().toISOString()}`,
+    `subject=${sujeitoAtual()}`,
+    `channel=${td.label}  hemisphere=${td.hemisphere}`,
+    `method=${spec.method}  pipeline=${(spec.pipeline || []).join(' > ')}`,
+    `fs_hz=${p.fs}  fs_nominal_hz=${td.fs}`,
+    `window_samples=${p.nperseg || ''}  window_s=${p.nperseg ? (p.nperseg / p.fs).toFixed(4) : ''}  window_fn=${p.window || ''}`,
+    `step_s=${p.stepS}  noverlap_samples=${p.noverlap == null ? '' : p.noverlap}`,
+    `nfft=${p.nfft || ''}  freq_resolution_hz=${p.nfft ? (p.fs / p.nfft).toFixed(4) : ''}`,
+    `scaling=${p.scaling}  unit=${spec.unit}`,
+    `detrend=${p.detrend || 'none'}  max_missing_fraction_per_epoch=${p.maxMissingFrac == null ? '' : p.maxMissingFrac}`,
+    `epochs_total=${spec.nEpochs}  epochs_flagged_missing=${spec.nEpochs - spec.nEpochsValid}`,
+    p.gain != null ? `medtronic_gain=${p.gain}  packet_samples=${p.packetSamples}  n_bins=${p.nBins}` : '',
+    p.maxOrder != null ? `ar_max_order=${p.maxOrder}  ar_order_criterion=${p.orderCriterion}  ar_median_order=${p.medianOrder}` : '',
+    spec.aperiodic ? `aperiodic_exponent=${spec.aperiodic.exponent}  aperiodic_r2=${spec.aperiodic.r2}  aperiodic_fit_hz=${spec.aperiodic.fitLo}-${spec.aperiodic.fitHi}  aperiodic_method=${spec.aperiodic.method}` : '',
+    spec.normalization ? `normalization=${spec.normalization.mode}  baseline_s=${spec.normalization.baselineWindowS.join('-')}  log=${spec.normalization.log}` : '',
+    'note=power is in the unit declared above; logPower_dB = 10*log10(Power)',
+    'NOT A MEDICAL DEVICE — research and decision-support use only'
+  ].filter(Boolean);
+}
+
+/* Formato longo com cabeçalhos em INGLÊS: é o que os scripts em R do projeto
+   consomem, e trocar o idioma da coluna quebraria todos eles de uma vez. */
+function csvEspectrograma(spec, tm, td, dB) {
+  const linhas = ['# ' + metaEspectrograma(spec, td).join('\n# ')];
+  linhas.push('Time_s,Frequency_Hz,Power,logPower_dB,Channel,Missing');
+  const canal = String(td.label).replace(/[",;\n]/g, ' ');
+  for (let i = 0; i < spec.times.length; i++) {
+    const falt = spec.flagged[i] ? 1 : 0;
+    /* tm.freqs é o prefixo de spec.freqs até fMax (o eixo é crescente), então
+       o índice k vale nos dois — a potência LINEAR sai sempre do spec, para
+       que o CSV não dependa de a figura estar em dB naquele momento */
+    for (let k = 0; k < tm.freqs.length; k++) {
+      const lin = spec.power[i][k];
+      const emDb = isFinite(lin) && lin > 0 ? 10 * Math.log10(lin) : NaN;
+      linhas.push([
+        spec.times[i].toFixed(4), tm.freqs[k].toFixed(4),
+        isFinite(lin) ? lin.toExponential(6) : '',
+        isFinite(emDb) ? emDb.toFixed(4) : '',
+        canal, falt
+      ].join(','));
+    }
+  }
+  void dB;
+  return linhas.join('\n');
 }
 
 /* Selo de qualidade do dado (Onda 1): toda figura que consome série bruta
@@ -14624,6 +15446,274 @@ const FIGURES = [
     }
   },
 
+  /* ----------------------------------------------------------------- F30 */
+  {
+    id: 'F30', title: 'Espectrograma — análise tempo-frequência no padrão do BRAVO',
+    sub: 'Welch · STFT · emulação do PSD de bordo · wavelet · autorregressivo, com escala de densidade do scipy',
+    has: d => d.bsTimeDomain.length || d.montageTD.length,
+    render(node, d) {
+      const tds = d.bsTimeDomain.concat(d.montageTD);
+      if (!tds.length) return node.appendChild(el('div', { class: 'empty', text: 'Sem sinal bruto no tempo neste registro.' }));
+
+      const iSinal = Math.min(opt('F30', 'sig', 0), tds.length - 1);
+      const td = tds[iSinal];
+      const metodo = opt('F30', 'met', 'welch');
+      const janela = opt('F30', 'win', 1.0);
+      const sobrep = opt('F30', 'ovl', 0.5);
+      const resHz = opt('F30', 'res', 0.5);
+      const fMax = opt('F30', 'fmax', 100);
+      const cmin = opt('F30', 'cmin', -20), cmax = opt('F30', 'cmax', 20);
+      const paleta = opt('F30', 'cmap', 'jet');
+      const normalizar = opt('F30', 'norm', false);
+      const modoNorm = opt('F30', 'nmode', 'divide');
+      const semUmSobreF = opt('F30', 'aper', false);
+      const auto = opt('F30', 'auto', true);
+      const info = C.TF_METHODS.find(m => m.id === metodo) || C.TF_METHODS[0];
+
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('sinal', tds.map((t, i) => ({ value: i, label: `${t.label} (${hname(t.hemisphere)}) · ${(t.data.length / t.fs).toFixed(0)} s` })), iSinal, v => setOpt('F30', 'sig', +v)),
+        ctrlSelect('método', C.TF_METHODS.map(m => ({ value: m.id, label: m.label })), metodo, v => setOpt('F30', 'met', v)),
+        ctrlNumber('janela (s)', janela, 0.125, 8, 0.125, v => setOpt('F30', 'win', v)),
+        ctrlNumber('sobreposição (s)', sobrep, 0, 7.875, 0.125, v => setOpt('F30', 'ovl', v)),
+        ctrlNumber('resolução (Hz)', resHz, 0.1, 5, 0.1, v => setOpt('F30', 'res', v)),
+        ctrlNumber('f máx (Hz)', fMax, 10, 125, 5, v => setOpt('F30', 'fmax', v)),
+        ctrlSelect('cores', [{ value: 'jet', label: 'Jet (paridade com o BRAVO)' }, { value: 'viridis', label: 'Viridis (recomendado)' }, { value: 'magma', label: 'Magma' }, { value: 'pretoazul', label: 'Preto → azul' }], paleta, v => setOpt('F30', 'cmap', v)),
+        ctrlCheck('limites automáticos', auto, v => setOpt('F30', 'auto', v)),
+        auto ? el('span') : ctrlNumber('mín (dB)', cmin, -120, 60, 5, v => setOpt('F30', 'cmin', v)),
+        auto ? el('span') : ctrlNumber('máx (dB)', cmax, -60, 120, 5, v => setOpt('F30', 'cmax', v)),
+        ctrlCheck('remover tendência 1/f', semUmSobreF, v => setOpt('F30', 'aper', v)),
+        ctrlCheck('normalizar por linha de base', normalizar, v => setOpt('F30', 'norm', v)),
+        normalizar ? ctrlSelect('normalização', [{ value: 'divide', label: 'divisão' }, { value: 'subtract', label: 'subtração (log)' }], modoNorm, v => setOpt('F30', 'nmode', v)) : el('span')
+      ]));
+
+      qualitySeal(node, td);
+
+      const params = {
+        method: metodo, windowS: janela, overlapS: sobrep, freqRes: resHz,
+        detrendAperiodic: semUmSobreF, normalize: normalizar,
+        mode: modoNorm, log: modoNorm === 'subtract',
+        fMax: Math.min(fMax, td.fs / 2)
+      };
+      const chave = `${S.subject}|${iSinal}|${JSON.stringify(params)}`;
+      const spec = _tfCache.get(chave);
+      if (!spec) {
+        /* ainda não calculado: dispara no trabalhador e redesenha quando voltar.
+           O cálculo não pode acontecer aqui — `render` é síncrono, e uma FFT por
+           época em minutos de sinal congelaria a aba. */
+        calculaEspectrograma(chave, td, params);
+        return node.appendChild(el('div', {
+          class: 'calc', html: `calculando o espectrograma <b>${info.label}</b> em segundo plano…<br>` +
+            `<b>a interface não travou:</b> o cálculo roda num trabalhador e a figura aparece sozinha quando terminar`
+        }));
+      }
+      if (!spec.ok) return node.appendChild(el('div', { class: 'empty', text: spec.reason }));
+
+      const dB = info.db && !(normalizar && modoNorm === 'subtract');
+      const tm = C.tfMatrix(spec, { fMax: Math.min(fMax, td.fs / 2), dB });
+      const planos = tm.matrix.flatMap(l => Array.from(l)).filter(isFinite).sort((a, b) => a - b);
+      if (!planos.length) return node.appendChild(el('div', { class: 'empty', text: 'todas as épocas foram descartadas por dados faltantes' }));
+      const zmin = auto ? planos[Math.floor(planos.length * 0.02)] : cmin;
+      const zmax = auto ? planos[Math.floor(planos.length * 0.98)] : cmax;
+
+      /* ---------------- (a) o espectrograma ---------------------------- */
+      const box = plotBox(node, 340, 'svbox');
+      const tip = el('div', { class: 'svtip' });
+      if (box.box && box.box.appendChild) box.box.appendChild(tip);
+      const dur = spec.times[spec.times.length - 1];
+      const ch = new P.Chart(box.canvas, {
+        width: box.width, height: 340, xlim: [spec.times[0], dur], ylim: [tm.freqs[0], tm.freqs[tm.freqs.length - 1]],
+        xlabel: 'tempo (s)', ylabel: 'frequência (Hz)',
+        title: `${info.label} — ${td.label} (${hname(td.hemisphere)}) · ${spec.nEpochsValid} de ${spec.nEpochs} épocas`,
+        pad: { l: 72, r: 76, t: 26, b: 44 }
+      });
+      ch.heat(tm.matrix, { cmap: paleta, zmin, zmax, smooth: opt('F30', 'suave', true) });
+      ch.axes({ grid: false });
+      ch.colorbar({ label: dB ? `10·log₁₀(${spec.unit}) [dB]` : spec.unit });
+
+      /* épocas descartadas por perda de pacote: hachura, não potência falsa */
+      const passoT = spec.times.length > 1 ? spec.times[1] - spec.times[0] : 0.5;
+      let nHach = 0;
+      spec.times.forEach((t, i) => {
+        if (!spec.flagged[i]) return;
+        nHach++;
+        ch.span(t - passoT / 2, t + passoT / 2, { color: '#FFFFFF', alpha: .55 });
+      });
+
+      /* estimulação e eventos sobre o eixo do tempo, como no BRAVO */
+      const lfpPar = (d.bsLfp || []).find(r => r.startISO && td.t0 && Math.abs(new Date(r.startISO) - new Date(td.t0)) < 5000
+        && r.series && r.series[td.hemisphere]);
+      if (lfpPar) {
+        const s = lfpPar.series[td.hemisphere];
+        const mas = s.ma.filter(isFinite);
+        if (mas.length) {
+          const lo = Math.min.apply(null, mas), hi = Math.max.apply(null, mas);
+          if (hi > lo + 1e-6) {
+            /* a amplitude vira uma linha no topo do painel, na escala do eixo */
+            const y0 = tm.freqs[tm.freqs.length - 1] * 0.86, y1 = tm.freqs[tm.freqs.length - 1] * 0.98;
+            const ys = s.ma.map(v => isFinite(v) ? y0 + (v - lo) / (hi - lo) * (y1 - y0) : NaN);
+            ch.line(s.t, ys, { color: '#FFFFFF', width: 2.2 });
+            ch.line(s.t, ys, { color: COL.ink, width: 1.1, label: `estimulação ${f(lo, 1)}–${f(hi, 1)} mA` });
+            ch.legend({ x: ch.x0 + 8, y: ch.y1 + 4 });
+          }
+          /* degraus de amplitude: linha vertical onde a corrente muda */
+          for (let i = 1; i < s.ma.length; i++) {
+            if (isFinite(s.ma[i]) && isFinite(s.ma[i - 1]) && Math.abs(s.ma[i] - s.ma[i - 1]) > 0.05)
+              ch.vline(s.t[i], { color: '#FFFFFF', width: 1.4, dash: [3, 3] });
+          }
+        }
+      }
+
+      /* eventos marcados pelo paciente que caem dentro deste segmento */
+      let nEventos = 0;
+      if (td.t0) {
+        const base = new Date(td.t0).getTime();
+        (d.snapshots || []).forEach(evn => {
+          const rel = (evn.t - base) / 1000;
+          if (!(rel >= spec.times[0] && rel <= dur)) return;
+          nEventos++;
+          ch.vline(rel, { color: '#FFFFFF', width: 2.4, dash: null });
+          ch.vline(rel, { color: COL.warn, width: 1.3, dash: null, label: evn.name });
+        });
+      }
+
+      /* hover: frequência, tempo e potência do bin sob o cursor */
+      const achaIdx = (arr, v) => { let b = 0, dist = Infinity; for (let i = 0; i < arr.length; i++) { const dd = Math.abs(arr[i] - v); if (dd < dist) { dist = dd; b = i; } } return b; };
+      box.canvas.addEventListener('mousemove', ev => {
+        const r = box.canvas.getBoundingClientRect();
+        const px = ev.clientX - r.left, py = ev.clientY - r.top;
+        const t = ch.invX(px), fq = ch.invY(py);
+        if (t < spec.times[0] || t > dur || fq < tm.freqs[0] || fq > tm.freqs[tm.freqs.length - 1]) { tip.style.display = 'none'; return; }
+        const it = achaIdx(spec.times, t), ifq = achaIdx(tm.freqs, fq);
+        const v = tm.matrix[ifq][it];
+        tip.innerHTML = `<b>${f(tm.freqs[ifq], 2)} Hz</b> · ${f(spec.times[it], 2)} s<br>` +
+          (isFinite(v) ? `${f(v, 2)} ${dB ? 'dB' : spec.unit}` : '<i>época descartada</i>') +
+          (spec.missing[it] > 0 ? `<br><i>${f(100 * spec.missing[it], 1)}% de amostras faltantes</i>` : '');
+        tip.style.display = 'block';
+        tip.style.left = Math.max(4, Math.min(px + 14, box.width - 180)) + 'px';
+        tip.style.top = Math.max(4, py - 46) + 'px';
+      });
+      box.canvas.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+
+      /* ---------------- método declarado ------------------------------- */
+      const p = spec.params;
+      node.appendChild(table(['parâmetro', 'valor', 'o que significa'], [
+        ['método', info.label, spec.pipeline.join(' → ')],
+        ['janela', p.nperseg ? `${p.nperseg} amostras (${f(p.nperseg / p.fs, 3)} s)` : '—', p.window ? `janela ${p.window}` : '—'],
+        ['passo entre épocas', `${f(p.stepS, 3)} s`, p.noverlap != null ? `sobreposição de ${p.noverlap} amostras` : `sobreposição de ${f(janela - p.stepS, 3)} s`],
+        ['NFFT', p.nfft ? String(p.nfft) : '—', p.nfft ? `resolução ${f(p.fs / p.nfft, 3)} Hz${p.nfft !== p.nperseg ? ` · zero-pad de ${p.nperseg} para ${p.nfft}` : ''}` : '—'],
+        ['escala', p.scaling === 'density' ? 'densidade (µV²/Hz)' : p.scaling === 'magnitude' ? 'magnitude |FFT| (µV)' : 'potência (µV²)',
+          p.scaling === 'density' ? 'convenção do scipy.signal.welch: |X|²/(fs·Σw²), ×2 fora de DC e Nyquist' : 'sem normalização por densidade'],
+        ['fs usada', `${f(p.fs, 4)} Hz`, td.fsEff && Math.abs(td.fsEff - td.fs) > 0.001 ? `efetiva medida pelos ticks (nominal ${td.fs} Hz)` : 'nominal'],
+        ['épocas descartadas', `${spec.nEpochs - spec.nEpochsValid} de ${spec.nEpochs} (${f(spec.pctEpochsFlagged, 1)}%)`,
+          `tolerância de dados faltantes: ${f(100 * (p.maxMissingFrac || 0), 0)}% por época`],
+        ['limites de cor', `${f(zmin, 1)} a ${f(zmax, 1)} ${dB ? 'dB' : spec.unit}`,
+          auto ? 'percentis 2 e 98 do próprio registro — desligue "limites automáticos" para os −20 a +20 dB fixos do BRAVO'
+            : 'fixos, como no BRAVO (padrão −20 a +20 dB)'],
+        ['mapa de cores', paleta === 'jet' ? 'Jet' : paleta === 'viridis' ? 'Viridis' : paleta,
+          paleta === 'jet' ? 'paridade visual com o BRAVO; não é perceptualmente uniforme e some na impressão em cinza'
+            : 'perceptualmente uniforme — o recomendado quando a figura não precisa parear com uma publicação antiga']
+      ].concat(metodo === 'ar' ? [['ordem AR mediana', String(p.medianOrder), `escolhida por ${p.orderCriterion}, máximo ${p.maxOrder}`]] : [])
+        .concat(spec.aperiodic ? [['expoente 1/f', f(spec.aperiodic.exponent, 3), `R² = ${f(spec.aperiodic.r2, 3)} em ${spec.aperiodic.fitLo}–${spec.aperiodic.fitHi} Hz · ${spec.aperiodic.method}`]] : [])
+        .concat(spec.normalization ? [['linha de base', `${f(spec.normalization.baselineWindowS[0], 1)}–${f(spec.normalization.baselineWindowS[1], 1)} s`, `${spec.normalization.nEpochs} épocas · modo ${spec.normalization.mode}`]] : [])));
+
+      if (spec.caveat) node.appendChild(el('div', { class: 'warnbox', html: `<b>Limite deste método.</b> ${spec.caveat}.` }));
+      if (nHach) node.appendChild(el('div', {
+        class: 'warnbox', html: `<b>${nHach} época(s) com perda de pacote</b> aparecem como faixa branca, não como potência. ` +
+          `Preencher a lacuna com zero e desenhar o resultado seria inventar um número — e é justamente na perda de pacote que o espectro mais mente.`
+      }));
+      const potDois = p.nfft && (p.nfft & (p.nfft - 1)) === 0;
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Paridade com o BRAVO.</b> O BRAVO calcula estes espectrogramas em Python com <code>scipy</code>, num servidor. ` +
+          `Aqui o mesmo cálculo roda no seu navegador, sem rede e sem <code>scipy</code>. ` +
+          (p.scaling === 'density'
+            ? `A escala é a densidade do <code>scipy.signal.welch</code> — <b>|X|²/(fs·Σw²)</b>, com fator 2 fora de DC e de Nyquist — e as janelas são periódicas, ` +
+              `como o <code>scipy.signal.get_window</code> devolve por padrão. Conferido contra a identidade de Parseval: a integral da densidade sobre a ` +
+              `frequência devolve a potência do sinal com erro de arredondamento. `
+            : '') +
+          (p.nfft && !potDois
+            ? `<b>NFFT = round(fs/resolução) = ${p.nfft}</b> não é potência de dois, e por isso a FFT usa o algoritmo de <b>Bluestein</b>: ` +
+              `completar com zeros até ${C.nextPow2(p.nfft)} seria mais rápido, mas mudaria o eixo de frequência e nenhum bin coincidiria com os do BRAVO.`
+            : p.nfft
+              ? `Com NFFT = ${p.nfft}, que é potência de dois, a transformada usa a FFT radix-2 direta — o Bluestein só entra quando a resolução pedida gera um NFFT arbitrário.`
+              : 'Este método não passa por FFT de janela: a resolução vem da própria wavelet.')
+      }));
+
+      /* ---------------- (b) paridade com o próprio aparelho ------------- */
+      if (lfpPar && metodo === 'percept') {
+        node.appendChild(el('h4', { class: 'qc-title', html: '<b>(b) O que o aparelho reportou vs. o que o sinal bruto diz</b>' }));
+        const s = lfpPar.series[td.hemisphere];
+        const centro = ((lfpPar.therapy.perHemi || {})[td.hemisphere] || {}).centerFreq;
+        if (!isFinite(centro)) node.appendChild(el('div', { class: 'empty', text: 'a frequência central de sensing não está declarada neste registro' }));
+        else {
+          const lo = centro - 2.5, hi = centro + 2.5;
+          const ks = [];
+          spec.freqs.forEach((fq, k) => { if (fq >= lo && fq <= hi) ks.push(k); });
+          const emul = spec.times.map((t, i) => {
+            let acc = 0, m = 0;
+            ks.forEach(k => { const v = spec.power[i][k]; if (isFinite(v)) { acc += v; m++; } });
+            return m ? acc / m : NaN;
+          });
+          /* o aparelho reporta a 2 Hz; a emulação a 50 Hz — compara no tempo do aparelho */
+          const pares = [];
+          s.t.forEach((t, j) => {
+            if (!isFinite(s.lfp[j])) return;
+            const i = achaIdx(spec.times, t);
+            if (Math.abs(spec.times[i] - t) > 0.3 || !isFinite(emul[i])) return;
+            pares.push({ t, dispositivo: s.lfp[j], emulado: emul[i] });
+          });
+          if (pares.length < 10) node.appendChild(el('div', { class: 'empty', text: `só ${pares.length} pontos comparáveis` }));
+          else {
+            const r = C.pearson(pares.map(x => x.emulado), pares.map(x => x.dispositivo));
+            const reg = C.linreg(pares.map(x => x.emulado), pares.map(x => x.dispositivo));
+            const b2 = plotBox(node, 260);
+            const xs = pares.map(x => x.emulado), ys = pares.map(x => x.dispositivo);
+            const ch2 = new P.Chart(b2.canvas, {
+              width: b2.width, height: 260,
+              xlim: [0, Math.max.apply(null, xs) * 1.05], ylim: [0, Math.max.apply(null, ys) * 1.05],
+              xlabel: `emulação de bordo — média |FFT| em ${f(lo, 1)}–${f(hi, 1)} Hz`, ylabel: 'potência reportada pelo aparelho',
+              title: `(b) paridade de dispositivo — ${pares.length} pontos pareados`, pad: { l: 76, r: 14, t: 26, b: 46 }
+            });
+            ch2.axes();
+            ch2.scatter(xs, ys, { color: hcol(td.hemisphere), size: 2.4, alpha: .5 });
+            const x0 = 0, x1 = Math.max.apply(null, xs);
+            ch2.line([x0, x1], [reg.intercept, reg.intercept + reg.slope * x1], { color: COL.ink, width: 1.8, label: `y = ${f(reg.slope, 2)}·x + ${f(reg.intercept, 1)}` });
+            ch2.legend({ x: ch2.x0 + 8, y: ch2.y1 + 6 });
+            node.appendChild(table(['medida', 'valor', 'leitura'], [
+              ['correlação de Pearson', f(r, 4), r > 0.9 ? 'a emulação reproduz a dinâmica do que o aparelho reportou' : r > 0.7 ? 'concordância parcial — verifique a banda e o ganho' : 'a emulação NÃO reproduz o valor do aparelho neste registro'],
+              ['R² da regressão', f(reg.r2, 4), 'quanto da variação do valor do aparelho a emulação explica'],
+              ['inclinação', f(reg.slope, 3), 'o fator de escala que falta entre a emulação e a unidade interna do aparelho'],
+              ['ganho usado', f(spec.params.gain, 6), 'constante 1/54 do BRAVO — empírica, sem documentação do fabricante'],
+              ['banda comparada', `${f(lo, 1)}–${f(hi, 1)} Hz`, `centro de sensing declarado: ${f(centro, 2)} Hz`]
+            ]));
+            node.appendChild(el('div', {
+              class: r > 0.9 ? 'note' : 'warnbox',
+              html: `<b>O que esta comparação estabelece e o que não estabelece.</b> Uma correlação alta mostra que a emulação segue a ` +
+                `mesma <i>dinâmica</i> do cálculo de bordo. Ela <b>não</b> valida a escala absoluta: a inclinação de ${f(reg.slope, 2)} é o fator que ` +
+                `sobra entre a magnitude |FFT| com ganho 1/54 e a unidade interna que o aparelho reporta, e essa unidade não é documentada. ` +
+                `Use a emulação para comparar épocas entre si, não para afirmar um valor absoluto de potência.`
+            }));
+          }
+        }
+      } else if (lfpPar) node.appendChild(el('div', {
+        class: 'note', html: `<b>Paridade com o aparelho.</b> Este registro tem, além do sinal bruto, a potência que o próprio Percept calculou a bordo. ` +
+          `Escolha o método <b>PSD do Percept</b> acima para comparar os dois — é a única verificação possível de que a emulação reproduz o cálculo do firmware.`
+      }));
+
+      /* ---------------- exportações ------------------------------------ */
+      node.appendChild(exportRow([
+        { label: '⤓ PNG', fn: () => P.downloadCanvas(box.canvas, `F30_espectrograma_${metodo}`) },
+        { label: '⤓ CSV (formato longo)', fn: () => P.downloadText(csvEspectrograma(spec, tm, td, dB), `F30_spectrogram_${metodo}.csv`, 'text/csv') },
+        {
+          label: '⤓ CSV (formato largo)', fn: () => P.downloadText(
+            '# ' + metaEspectrograma(spec, td).join('\n# ') + '\n' +
+            ['Time_s'].concat(tm.freqs.map(x => 'f_' + x.toFixed(3))).join(',') + '\n' +
+            spec.times.map((t, i) => [t.toFixed(4)].concat(tm.matrix.map(l => isFinite(l[i]) ? l[i].toFixed(6) : '')).join(',')).join('\n'),
+            `F30_spectrogram_wide_${metodo}.csv`, 'text/csv')
+        }
+      ]));
+    }
+  },
+
   /* ----------------------------------------------------------------- F29 */
   {
     id: 'F29', title: 'Resposta à levodopa alinhada às tomadas',
@@ -15954,7 +17044,7 @@ function init() {
 }
 document.addEventListener('DOMContentLoaded', init);
 /* hook de depuração (usado pela suíte de testes; inerte em produção) */
-window.__PLS__ = { FIGURES, buildProvenance, carregaExterno, carregaDiario, painelMatriz, exportarPacote, gerarPdfNativo, setIdioma, ds, invalidarDs, S, renderRail, renderFigure, renderFigureAsync, renderAllReady, handleFiles, offMin, exportBundle, exportBundleAsync, buildReportCover, Prog, proximoQuadro, setModo, modoAtual, figurasVisiveis, leiturasClinicas, leiturasClinicasAsync, PIPELINES, rodarPipeline, preencherSemaforo, inserirLeituras, Trabalhador, Instrumentacao };
+window.__PLS__ = { FIGURES, buildProvenance, carregaExterno, carregaDiario, painelMatriz, csvEspectrograma, metaEspectrograma, calculaEspectrograma, exportarPacote, gerarPdfNativo, setIdioma, ds, invalidarDs, S, renderRail, renderFigure, renderFigureAsync, renderAllReady, handleFiles, offMin, exportBundle, exportBundleAsync, buildReportCover, Prog, proximoQuadro, setModo, modoAtual, figurasVisiveis, leiturasClinicas, leiturasClinicasAsync, PIPELINES, rodarPipeline, preencherSemaforo, inserirLeituras, Trabalhador, Instrumentacao };
 })();
 </script>
 </body>

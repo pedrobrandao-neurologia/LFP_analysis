@@ -50,6 +50,12 @@ import { parseExternalCsv, resampleUniform } from './io/external.js';
 import { coherence, coherenceBand } from './dsp/coherence.js';
 import { alignByCrossCorrelation, alignByStimArtifact, alignByTimestamp, detectStimSteps } from './io/sync.js';
 import { clusterPermutation } from './stats/cluster.js';
+import { fftBluestein, fftAny, dftDireta } from './dsp/bluestein.js';
+import {
+  hannPeriodic, hammingPeriodic, hannSymmetric, WINDOWS, TF_METHODS,
+  spectrogramWelch, spectrogramSTFT, spectrogramPercept, spectrogramWavelet, spectrogramAR,
+  levinsonDurbin, normalizeSpectrogram, removeAperiodicTrend, timeFrequency, tfMatrix
+} from './dsp/timefreq.js';
 import { controlBandDiurnal, actogram } from './metrics/control.js';
 import {
   DIARY_STATES, LFP_STATES, stateById, normalizeState, parseDiaryCsv, diaryGrid,
@@ -113,6 +119,11 @@ const API = {
   alignByCrossCorrelation, alignByStimArtifact, alignByTimestamp, detectStimSteps,
   /* actograma, banda-controle e cluster (Onda 4.1) */
   clusterPermutation, controlBandDiurnal, actogram,
+  /* tempo-frequência no padrão do BRAVO (Onda 10) */
+  fftBluestein, fftAny, dftDireta,
+  hannPeriodic, hammingPeriodic, hannSymmetric, WINDOWS, TF_METHODS,
+  spectrogramWelch, spectrogramSTFT, spectrogramPercept, spectrogramWavelet, spectrogramAR,
+  levinsonDurbin, normalizeSpectrogram, removeAperiodicTrend, timeFrequency, tfMatrix,
   /* diário de Hauser, matriz hora × dia e resposta à levodopa (Onda 9) */
   DIARY_STATES, LFP_STATES, stateById, normalizeState, parseDiaryCsv, diaryGrid,
   dailyComposition, compareConditions, circadianStateProfile, timelineGrid,
