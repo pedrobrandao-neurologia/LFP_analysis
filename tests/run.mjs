@@ -2112,6 +2112,133 @@ sec('actograma, banda-controle, cluster, ICC e longitudinal (Ondas 4.1 e 4.3)');
   });
 }
 
+/* ------------- coorte, EDF, BIDS-like, pacote e CLI (Onda 6) -------------- */
+sec('coorte, EDF, BIDS-like e linha de comando');
+{
+  const FSE = 250, NE = FSE * 10;
+  const xa = new Float64Array(NE), xb = new Float64Array(NE);
+  for (let i = 0; i < NE; i++) { xa[i] = 100 * Math.sin(2 * Math.PI * 20 * i / FSE); xb[i] = 50 * Math.sin(2 * Math.PI * 6 * i / FSE); }
+  for (let i = 500; i < 650; i++) xa[i] = NaN;
+  const edf = C.writeEdf([
+    { label: 'STN L 0-2', data: xa, fs: FSE, unit: 'uV' },
+    { label: 'STN R 0-2', data: xb, fs: FSE, unit: 'uV' }
+  ], { startMs: Date.parse('2026-03-01T14:30:00Z'), patientId: 'sub-abc' });
+
+  t('EDF: cabeçalho tem a estrutura e os deslocamentos do formato', () => {
+    assert(edf, 'não gerou');
+    const td = new TextDecoder('ascii');
+    const h = td.decode(edf.bytes.slice(0, 256));
+    assert(h.slice(0, 8) === '0       ', 'versão: ' + JSON.stringify(h.slice(0, 8)));
+    assert(h.slice(168, 176) === '01.03.26', 'data: ' + h.slice(168, 176));
+    assert(h.slice(176, 184) === '14.30.00', 'hora: ' + h.slice(176, 184));
+    assert(h.slice(192, 197) === 'EDF+C', 'reservado: ' + JSON.stringify(h.slice(192, 197)));
+    assert(parseInt(h.slice(184, 192), 10) === edf.meta.headerBytes, 'tamanho do cabeçalho declarado errado');
+    assert(parseInt(h.slice(252, 256), 10) === 2, 'número de sinais');
+    assert(edf.bytes.length === edf.meta.headerBytes + edf.meta.nRecords * 2 * FSE * 2, 'tamanho total inconsistente');
+    /* o cabeçalho é ASCII puro: um byte fora disso desloca o arquivo inteiro */
+    const cab = edf.bytes.slice(0, edf.meta.headerBytes);
+    assert(cab.every(b => b >= 0x20 && b <= 0x7E), 'há byte não-ASCII no cabeçalho');
+    return `${edf.meta.headerBytes} bytes de cabeçalho, ${edf.meta.nRecords} registros, ${edf.meta.totalBytes} bytes`;
+  });
+
+  t('EDF: o sinal reconstrói dentro do erro de quantização', () => {
+    const dv = new DataView(edf.bytes.buffer);
+    const cab = edf.meta.headerBytes, spr = FSE;
+    const leia = (canal, amostra) => {
+      const rec = Math.floor(amostra / spr), dentro = amostra % spr;
+      return dv.getInt16(cab + (rec * spr * 2 + canal * spr + dentro) * 2, true);
+    };
+    const c0 = edf.meta.channels[0];
+    const rec = d => c0.physicalMin + (d + 32768) * (c0.physicalMax - c0.physicalMin) / 65535;
+    let pior = 0;
+    for (let i = 0; i < NE; i++) if (isFinite(xa[i])) pior = Math.max(pior, Math.abs(rec(leia(0, i)) - xa[i]));
+    const passo = (c0.physicalMax - c0.physicalMin) / 65535;
+    assert(pior <= passo, `erro ${pior.toExponential(2)} maior que um passo de quantização ${passo.toExponential(2)}`);
+    return `erro máximo ${pior.toExponential(2)} µV (passo de quantização ${passo.toExponential(2)})`;
+  });
+
+  t('EDF: lacuna vira mínimo digital, e nenhuma amostra válida colide com ele', () => {
+    const dv = new DataView(edf.bytes.buffer);
+    const cab = edf.meta.headerBytes, spr = FSE;
+    const leia = (canal, amostra) => {
+      const rec = Math.floor(amostra / spr), dentro = amostra % spr;
+      return dv.getInt16(cab + (rec * spr * 2 + canal * spr + dentro) * 2, true);
+    };
+    [500, 575, 649].forEach(i => assert(leia(0, i) === -32768, `amostra ${i} da lacuna não foi marcada`));
+    let colisoes = 0;
+    for (let i = 0; i < NE; i++) if (isFinite(xa[i]) && leia(0, i) === -32768) colisoes++;
+    assert(colisoes === 0, `${colisoes} amostras válidas colidiram com a marca de ausente`);
+    assert(edf.meta.gaps.length === 1 && edf.meta.gaps[0].nSamples === 150, 'lacunas: ' + JSON.stringify(edf.meta.gaps));
+    assert(/MÍNIMO DIGITAL/.test(edf.meta.missingSamplePolicy), 'a política não está declarada');
+    return `lacuna de ${edf.meta.gaps[0].durationSec} s registrada; 0 colisões em ${NE} amostras`;
+  });
+
+  t('BIDS-like declara que NÃO é conforme e marca o que falta como n/a', () => {
+    const b = C.buildBidsLike(parsed, { includeSignalTsv: false });
+    assert(b && b.length, 'não gerou');
+    const dd = JSON.parse(b.find(a => a.path === 'dataset_description.json').content);
+    assert(/NÃO um dataset BIDS conforme/.test(dd.ConformanceNote), 'não declara a não conformidade');
+    const part = b.find(a => a.path === 'participants.tsv').content.split('\n');
+    assert(part[0].split('\t')[0] === 'participant_id', 'participants.tsv sem a coluna obrigatória');
+    const ieeg = b.find(a => /ieeg\.json$/.test(a.path));
+    assert(ieeg, 'sem sidecar ieeg.json');
+    const j = JSON.parse(ieeg.content);
+    assert(j.iEEGReference && /bipolar/.test(j.iEEGReference), 'referência não descrita');
+    assert(/não constam do/.test(j.NonConformanceNote), 'o sidecar não diz o que falta');
+    assert(/NaN/.test(j.MissingDataPolicy), 'a política de dado ausente não está no sidecar');
+    return `${b.length} arquivos · ${b.filter(a => a.path.includes('/ieeg/')).length} por sessão`;
+  });
+
+  t('coorte: prevalência com IC de Wilson e acrofase tratada como circular', () => {
+    const b = C.extractMetrics(parsed, -180, { profileId: 'pd' });
+    const co = C.cohortSummary([b], {});
+    assert(co, 'sem resumo');
+    assert(co.descriptiveOnly, 'com 1 sujeito deveria ser marcado como descritivo');
+    assert(/DESCRITIVO/.test(co.note), 'não avisa que é descritivo');
+    const pv = co.prevalence.byHemisphere;
+    assert(pv.ci95[0] >= 0 && pv.ci95[1] <= 1, 'IC fora de [0,1]: ' + JSON.stringify(pv.ci95));
+    /* Wald daria [1,1] para 2/2; Wilson tem de ser largo */
+    if (pv.k === pv.n && pv.n <= 3) assert(pv.ci95[0] < 0.6, 'IC otimista demais para n pequeno: ' + JSON.stringify(pv.ci95));
+    const acro = co.stats.find(e => e.field === 'acrophase_24h');
+    if (acro && acro.all) assert(acro.all.circular === true, 'acrofase não foi tratada como circular');
+    return `${pv.k}/${pv.n} com pico · IC de Wilson [${(100 * pv.ci95[0]).toFixed(1)}; ${(100 * pv.ci95[1]).toFixed(1)}]%`;
+  });
+
+  t('IC de Wilson não escapa de [0,1] nem colapsa em proporção extrema', () => {
+    [[0, 5], [5, 5], [1, 3], [50, 100]].forEach(([k, n]) => {
+      const ci = C.wilsonCI(k, n);
+      assert(ci[0] >= 0 && ci[1] <= 1 && ci[0] <= ci[1], `k=${k}, n=${n} → ${JSON.stringify(ci)}`);
+      if (k === 0) assert(ci[0] === 0 && ci[1] > 0, 'k=0 deveria ter limite superior positivo');
+      if (k === n) assert(ci[1] === 1 && ci[0] < 1, 'k=n deveria ter limite inferior menor que 1');
+    });
+    return '0/5, 5/5, 1/3 e 50/100 todos dentro de [0,1] e sem colapso';
+  });
+
+  await ta('a CLI processa uma pasta e escreve métricas, EDF, BIDS e coorte', async () => {
+    const { execFileSync } = await import('child_process');
+    const os = await import('os');
+    const destino = fs.mkdtempSync(path.join(os.tmpdir(), 'pls-cli-'));
+    execFileSync(process.execPath, [path.join(RAIZ, 'tools/cli.mjs'), PASTA, '--out', destino, '--quiet'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const achados = [];
+    (function varre(dir) {
+      fs.readdirSync(dir, { withFileTypes: true }).forEach(e => {
+        const q = path.join(dir, e.name);
+        if (e.isDirectory()) varre(q); else achados.push(path.relative(destino, q));
+      });
+    })(destino);
+    ['execucao.json', 'coorte/coorte.json'].forEach(f => assert(achados.includes(f), 'faltou ' + f));
+    assert(achados.some(f => /metricas_agudas\.csv$/.test(f)), 'sem CSV de métricas agudas');
+    assert(achados.some(f => /\.edf$/.test(f)), 'sem EDF');
+    assert(achados.some(f => /^bids\/dataset_description\.json$/.test(f)), 'sem estrutura BIDS');
+    const exec = JSON.parse(fs.readFileSync(path.join(destino, 'execucao.json'), 'utf8'));
+    assert(exec.nParsed >= 1 && exec.nSubjects >= 1, 'execucao.json sem contagens');
+    assert(/figuras não são geradas/.test(exec.note), 'a CLI não declara o que não faz');
+    fs.rmSync(destino, { recursive: true, force: true });
+    return `${achados.length} arquivos escritos · ${exec.nParsed} lido(s), ${exec.nSubjects} sujeito(s), ${exec.edfWritten} EDF`;
+  });
+}
+
 /* ------------------------------------------------------------- resultado -- */
 console.log(`\n${'='.repeat(58)}`);
 console.log(`  ${ok} passaram   ${falhas} falharam   ${pulados} sem dados`);

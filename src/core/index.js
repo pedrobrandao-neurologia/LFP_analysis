@@ -24,11 +24,14 @@ import { peakInBand, pickSpectrum, spectralMetrics, burstMetrics, doseResponse, 
 import { mergeTrend, collectThresholds, chronicMetrics, thresholdSummary } from './metrics/chronic.js';
 import { extractMetrics, daysSince } from './metrics/extract.js';
 import { rankSurveyChannels } from './metrics/survey.js';
+import { cohortSummary, wilsonCI } from './metrics/cohort.js';
 import { PROFILES, PROFILE_IDS, getProfile, suggestProfile, bandsOf, normalizeSpectrum, detectTremorFrequency, spearman, movingAverageDays } from './profiles/index.js';
 import { createProvenance, verifyManifest, sha256Hex, canonical } from './provenance/index.js';
 import { generateChecklist, checklistDocx, CHECKLIST_ITEMS } from './report/checklist.js';
 import { clinicalReadings, qcTrafficLight } from './report/reading.js';
 import { makeZip, makeDocx, crc32 } from './export/zip.js';
+import { writeEdf } from './export/edf.js';
+import { buildBidsLike } from './export/bids.js';
 import { inferDeviceState, statesComparable } from './io/devicestate.js';
 import { dstTransitions, detectOffsetBreaks, resolveOffsets, segmentByOffset } from './io/timezone.js';
 import { detectRampArtifacts, removeRampArtifact, detectPolyphasic } from './artifact/ramp.js';
@@ -63,7 +66,7 @@ const API = {
   peakInBand, daysSince, pickSpectrum, spectralMetrics, burstMetrics, doseResponse, ecgMetrics, deviceStateMetrics,
   mergeTrend, collectThresholds, chronicMetrics, extractMetrics,
   /* ranking dos pares bipolares do Survey (F1) */
-  rankSurveyChannels,
+  rankSurveyChannels, cohortSummary, wilsonCI,
   detectStates, betaEnvelopeSeries, streamOnOff, bimodalityCoefficient,
   /* integridade do sinal bruto (Onda 1 — L01, L02, L05, L07) */
   parseIntList, unwrapCounter, unwrapTicks, analyzePackets, insertNaNGaps, effectiveFs, stitchStreams,
@@ -79,7 +82,7 @@ const API = {
   generateChecklist, checklistDocx, CHECKLIST_ITEMS,
   /* leituras em linguagem clínica e semáforo de QC (Onda 8.1) */
   clinicalReadings, qcTrafficLight,
-  makeZip, makeDocx, crc32,
+  makeZip, makeDocx, crc32, writeEdf, buildBidsLike,
   /* fidelidade e QC (Ondas 1.3 e 2.2 — L03, L04, L06, L13–L17, L19) */
   inferDeviceState, statesComparable,
   dstTransitions, detectOffsetBreaks, resolveOffsets, segmentByOffset,
