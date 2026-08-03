@@ -30,7 +30,7 @@ src/core/
                             linreg, pearson, histogram, ecdf, bimodalityCoefficient
     distributions.js        logGamma, betacf, ibeta, fPValue, tPValue, normCDF, erf
     circadian.js            cosinor, olsSolve, cosinorBootstrap, circCI, rayleigh,
-                            varianceByHour, diurnalProfile
+                            varianceByHour, diurnalProfile (unidade % ou razão)
     events.js               eventAligned, permutationTest, permutationTwoSample
     states.js               detectStates, enforceMinDur, betaEnvelopeSeries, streamOnOff
   metrics/

@@ -21,7 +21,14 @@ const CMAPS = {
   ice: ramp([[8, 24, 44], [17, 61, 92], [24, 104, 128], [46, 148, 148], [110, 188, 168],
     [186, 219, 199], [240, 244, 240]]),
   divergent: ramp([[33, 62, 110], [72, 116, 166], [146, 180, 210], [238, 238, 238],
-    [230, 172, 150], [190, 96, 80], [130, 30, 40]])
+    [230, 172, 150], [190, 96, 80], [130, 30, 40]]),
+  /* preto→azul: a escala convencional dos heatmaps de potência beta ao longo
+     dos dias na literatura de ritmo circadiano em DBS (van Rheede 2022). O
+     preto no fundo faz o mapa ficar escuro na maior parte do tempo e destaca
+     só o que sobe acima da mediana do dia — é o oposto do viridis, que gasta
+     contraste no meio da distribuição. */
+  pretoazul: ramp([[0, 0, 0], [6, 14, 44], [10, 32, 88], [12, 56, 140],
+    [18, 88, 190], [48, 132, 226], [120, 186, 248]])
 };
 
 /* ------------------------------------------------------------ formatação */
@@ -261,7 +268,15 @@ class Chart {
     if (o.label) this._legend.push({ label: o.label, color: typeof o.color === 'function' ? '#333' : o.color });
     return this;
   }
-  /* matrix: array de linhas (cada linha = array de valores). rows→y, cols→x */
+  /* matrix: array de linhas (cada linha = array de valores). rows→y, cols→x.
+
+     ORIENTAÇÃO. `drawImage` desenha a linha 0 da imagem no TOPO, mas o eixo Y
+     cresce para CIMA — então, sem tratamento, a linha 0 da matriz cai no topo
+     enquanto o rótulo do valor 0 do eixo fica embaixo, e a figura sai
+     espelhada. O padrão aqui é `origin:'bottom'`: a linha 0 vai para BAIXO, que
+     é o que concorda com um eixo ascendente (frequência, época, canal).
+     `origin:'top'` é para matriz de dias, onde a convenção é o primeiro dia no
+     topo — e aí o rótulo do valor v do eixo se refere à linha `n - ceil(v)`. */
   heat(matrix, o) {
     o = o || {};
     const rows = matrix.length, cols = matrix[0].length;
@@ -276,8 +291,9 @@ class Chart {
     off.width = cols; off.height = rows;
     const octx = off.getContext('2d');
     const img = octx.createImageData(cols, rows);
+    const topo = o.origin === 'top';
     for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
-      const v = matrix[r][c], k = (r * cols + c) * 4;
+      const v = matrix[r][c], k = ((topo ? r : rows - 1 - r) * cols + c) * 4;
       if (!isFinite(v)) { img.data[k + 3] = 0; continue; }
       const t = (v - zmin) / (zmax - zmin || 1);
       const rgb = cm(t).match(/\d+/g);
@@ -302,8 +318,21 @@ class Chart {
     }
     x.strokeStyle = this.theme.rule; x.strokeRect(bx + .5, by0 + .5, bw, by1 - by0);
     x.fillStyle = this.theme.muted; x.font = this.theme.mono;
-    x.textAlign = 'left'; x.textBaseline = 'top'; x.fillText(fmt(z.zmax), bx + bw + 4, by0);
-    x.textBaseline = 'bottom'; x.fillText(fmt(z.zmin), bx + bw + 4, by1);
+    if (o.ticks && o.ticks.length) {
+      /* marcas em valores escolhidos: o leitor precisa saber onde fica o "1",
+         não só onde a barra começa e termina */
+      o.ticks.forEach(v => {
+        if (!isFinite(v) || v < z.zmin || v > z.zmax) return;
+        const py = by1 - (v - z.zmin) / ((z.zmax - z.zmin) || 1) * (by1 - by0);
+        x.beginPath(); x.strokeStyle = this.theme.muted; x.lineWidth = 1; x.setLineDash([]);
+        x.moveTo(bx + bw, py); x.lineTo(bx + bw + 3, py); x.stroke();
+        x.textAlign = 'left'; x.textBaseline = 'middle';
+        x.fillText(o.fmt ? o.fmt(v) : fmt(v), bx + bw + 5, py);
+      });
+    } else {
+      x.textAlign = 'left'; x.textBaseline = 'top'; x.fillText(fmt(z.zmax), bx + bw + 4, by0);
+      x.textBaseline = 'bottom'; x.fillText(fmt(z.zmin), bx + bw + 4, by1);
+    }
     if (o.label) {
       x.save(); x.translate(bx + bw + 34, (by0 + by1) / 2); x.rotate(-Math.PI / 2);
       x.textAlign = 'center'; x.textBaseline = 'top'; x.fillText(o.label, 0, 0); x.restore();
