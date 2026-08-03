@@ -72,6 +72,14 @@ class Chart {
     this.ctx.fillStyle = this.theme.panel;
     this.ctx.fillRect(0, 0, this.w, this.h);
     this._legend = [];
+    /* Acessibilidade: um <canvas> é opaco para leitor de tela. O título do
+       gráfico e os eixos viram o texto alternativo — não substitui a figura,
+       mas diz o que ela é, e é o que o WCAG pede como mínimo. */
+    try {
+      canvas.setAttribute('role', 'img');
+      const partes = [this.title, this.xlabel ? 'eixo x: ' + this.xlabel : '', this.ylabel ? 'eixo y: ' + this.ylabel : ''];
+      canvas.setAttribute('aria-label', partes.filter(Boolean).join(' — ') || 'gráfico');
+    } catch (e) { /* ambiente sem DOM (testes) */ }
   }
   get x0() { return this.pad.l; }
   get x1() { return this.w - this.pad.r; }
@@ -346,6 +354,13 @@ class Chart {
 /* ====================================================== GRÁFICO POLAR ==== */
 function polarBars(canvas, values, o) {
   o = o || {};
+  /* mesma acessibilidade dos gráficos cartesianos: o polar também é um canvas
+     opaco para leitor de tela */
+  try {
+    canvas.setAttribute('role', 'img');
+    canvas.setAttribute('aria-label', (o.title || 'gráfico polar') +
+      (isFinite(o.acrophaseHours) ? ` — acrofase em ${(+o.acrophaseHours).toFixed(1)} h` : ''));
+  } catch (e) { }
   const dpr = Math.min(root.devicePixelRatio || 1, 2);
   const W = o.width || canvas.getBoundingClientRect().width || 320;
   const H = o.height || W;

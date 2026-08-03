@@ -8,7 +8,8 @@ class Ctx {
   putImageData(){}
 }
 class Canvas {
-  constructor(){ this.style={}; this.width=600; this.height=300; this._ctx=new Ctx(); }
+  constructor(){ this.style={}; this.width=600; this.height=300; this._ctx=new Ctx(); this.attrs={}; }
+  setAttribute(k,v){ this.attrs[k]=v; } getAttribute(k){ return this.attrs[k]; } removeAttribute(k){ delete this.attrs[k]; }
   getContext(){ return this._ctx; }
   addEventListener(){} removeEventListener(){}
   get parentNode(){ return this._parent || null; }

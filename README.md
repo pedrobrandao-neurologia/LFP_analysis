@@ -164,6 +164,46 @@ Cada figura exporta PNG e os dados subjacentes em CSV.
 
 ---
 
+## Relatório em PDF, idiomas e acessibilidade
+
+**PDF escrito byte a byte.** Até aqui o relatório saía por `window.print()`: o resultado dependia do
+navegador, da impressora virtual e das margens configuradas, e num mesmo computador dois cliques
+podiam produzir arquivos diferentes. Um relatório que vai para prontuário ou para material
+suplementar precisa ser **o mesmo arquivo sempre**. `src/core/export/pdf.js` escreve PDF 1.4 sem
+biblioteca nenhuma: páginas A4, Helvetica e Helvetica-Bold (fontes base-14, que não precisam ser
+embutidas), quebra de linha com as **larguras reais dos glifos**, tabelas, e figuras embutidas como
+JPEG via `DCTDecode` — o canvas já entrega JPEG, então a imagem entra sem recodificação.
+
+Texto em **WinAnsiEncoding**, que cobre o Latin-1 inteiro e portanto todo o português. Os sinais
+fora do Latin-1 que o software usa (travessão, aspas curvas, ρ, χ, η, ≥, ↔ …) são mapeados, e há
+teste que **varre todos os textos que podem ir para o PDF** e falha se algum caractere ficaria sem
+representação — a lacuna do mapa é mensurável em teste, não descoberta por alguém lendo o arquivo.
+
+Não estão implementados: compressão de fluxo (exigiria *deflate*), fontes embutidas, PDF/A. O
+arquivo é maior do que precisaria ser; em troca, é escrito sem nenhuma dependência. Medido: um
+relatório completo com 13 figuras sai com **16 páginas e 406 KB**.
+
+**Dois idiomas, com o escopo declarado.** Estão traduzidos a moldura da interface, os títulos e
+subtítulos das 26 figuras, os rótulos de exportação e as mensagens de estado. **Não** estão: os
+textos metodológicos dentro de cada figura, as leituras em linguagem clínica e as ressalvas — são
+centenas de parágrafos com terminologia que muda de sentido em tradução apressada, e uma tradução
+ruim num texto que explica limitação metodológica é pior do que texto em outro idioma. A interface
+avisa isso ao trocar de idioma. Há teste que falha se qualquer título de figura ficar sem tradução.
+
+**Acessibilidade.** Todo gráfico recebe `role="img"` e um `aria-label` construído a partir do título
+e dos eixos — um `<canvas>` é opaco para leitor de tela, e essa é a exigência mínima do WCAG. Além
+disso: link de salto para as figuras, `aria-label` nas regiões, `aria-live` no painel de processo,
+`<details>` nativos (que já são navegáveis por teclado), estilos de `:focus-visible` e respeito a
+`prefers-reduced-motion`.
+
+**Robustez.** Erro não tratado em qualquer lugar do aplicativo agora aparece **no painel de
+processo**, com a mensagem e a origem, em vez de sumir no console — falha visível é corrigível,
+falha silenciosa vira "o programa não fez nada". E há teste que joga JSON vazio, truncado, não-JSON
+e com modalidades de tipo errado, e verifica que cada caso é recusado com motivo ou lido com
+`0 modalidades`, sem jamais produzir métrica sobre nada.
+
+---
+
 ## Coorte, pacote único e linha de comando
 
 **Ingestão de pasta.** O botão `+ pasta` lê todos os `.json` de um diretório, incluindo subpastas, e
