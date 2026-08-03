@@ -26,6 +26,147 @@ const COL = {
 const hcol = h => COL[h] || COL.accent;
 const hname = h => h === 'Left' ? 'esquerdo' : h === 'Right' ? 'direito' : h;
 
+/* ============================================ trabalho em segundo plano ====
+   POR QUE. Mesmo depois de a Onda 8.0 tornar cada etapa visível, o cálculo
+   continua na thread principal: enquanto ele roda, a página não repinta e nada
+   responde ao clique. Um Web Worker move o trabalho pesado para outra thread e
+   a interface segue viva — a barra de progresso anima de verdade, e o usuário
+   pode rolar a página enquanto o registro é processado.
+
+   COMO, SEM QUEBRAR O INVARIANTE DO ARQUIVO ÚNICO. O worker não vem de um
+   arquivo separado: o código do NÚCLEO já está no primeiro <script> da página,
+   e é lido de volta em tempo de execução (`document.scripts[0].textContent`),
+   concatenado a um pequeno despachante e transformado em Blob. Nenhuma
+   requisição de rede, nenhum arquivo adicional, nenhuma duplicação do bundle.
+
+   QUANDO NÃO DÁ. Em `file://` alguns navegadores recusam worker de blob, e há
+   ambientes que desabilitam Worker. Nesse caso NÃO há degradação silenciosa: o
+   motivo é registrado, aparece no manifesto de proveniência e no painel de
+   processo, e o cálculo roda na thread principal exatamente como antes.
+
+   O que o worker executa é sempre uma função do núcleo, nomeada — ele não
+   avalia código vindo da interface. */
+const Trabalhador = (() => {
+  let w = null, seq = 0, estado = 'não iniciado', motivo = '';
+  const pendentes = new Map();
+
+  const DESPACHANTE = `
+self.onmessage = function (ev) {
+  var d = ev.data || {};
+  var t0 = Date.now();
+  try {
+    var api = self.PerceptCore;
+    /* só propriedades PRÓPRIAS do núcleo: sem isso, 'constructor', 'toString' e
+       companhia passariam pelo teste de "é função" e virariam ponto de entrada */
+    var proprio = api && Object.prototype.hasOwnProperty.call(api, d.fn);
+    var fn = proprio ? api[d.fn] : null;
+    if (typeof fn !== 'function') throw new Error('funcao desconhecida no trabalhador: ' + d.fn);
+    var r = fn.apply(null, d.args || []);
+    self.postMessage({ id: d.id, ok: true, ms: Date.now() - t0, r: r });
+  } catch (e) {
+    self.postMessage({ id: d.id, ok: false, ms: Date.now() - t0, erro: String((e && e.message) || e) });
+  }
+};
+self.postMessage({ pronto: true });
+`;
+
+  function inicia() {
+    if (w || estado === 'indisponível') return w;
+    try {
+      if (typeof Worker !== 'function' || typeof Blob !== 'function' || !URL.createObjectURL)
+        throw new Error('Worker ou Blob indisponível neste navegador');
+      const nucleo = document.scripts && document.scripts[0] && document.scripts[0].textContent;
+      if (!nucleo || nucleo.indexOf('PerceptCore') < 0)
+        throw new Error('não foi possível ler o núcleo da própria página');
+      const blob = new Blob([nucleo + '\n' + DESPACHANTE], { type: 'text/javascript' });
+      const url = URL.createObjectURL(blob);
+      w = new Worker(url);
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+      w.onmessage = ev => {
+        const d = ev.data || {};
+        if (d.pronto) { estado = 'ativo'; return; }
+        const p = pendentes.get(d.id);
+        if (!p) return;
+        pendentes.delete(d.id);
+        if (d.ok) p.resolve({ r: d.r, ms: d.ms }); else p.reject(new Error(d.erro));
+      };
+      w.onerror = e => {
+        estado = 'indisponível';
+        motivo = String((e && e.message) || 'erro no trabalhador');
+        pendentes.forEach(p => p.reject(new Error(motivo)));
+        pendentes.clear();
+        try { w.terminate(); } catch (x) { }
+        w = null;
+      };
+      estado = 'iniciando';
+    } catch (e) {
+      estado = 'indisponível';
+      motivo = String((e && e.message) || e);
+      w = null;
+    }
+    return w;
+  }
+
+  return {
+    get estado() { return estado; },
+    get motivo() { return motivo; },
+    disponivel() { inicia(); return estado !== 'indisponível' && !!w; },
+
+    /* Executa `fn` do núcleo no worker. Se o worker não estiver disponível, ou
+       falhar, cai para a thread principal — e devolve `ondeRodou` para que a
+       proveniência registre onde o número foi calculado. */
+    async chamar(fn, args, opts) {
+      opts = opts || {};
+      const local = () => {
+        if (!Object.prototype.hasOwnProperty.call(C, fn) || typeof C[fn] !== 'function')
+          throw new Error('função desconhecida no núcleo: ' + fn);
+        const t0 = Date.now();
+        const r = C[fn].apply(null, args || []);
+        return { r, ms: Date.now() - t0, ondeRodou: 'thread principal' };
+      };
+      if (!this.disponivel()) return local();
+      const id = ++seq;
+      try {
+        const p = new Promise((resolve, reject) => {
+          pendentes.set(id, { resolve, reject });
+          if (opts.timeoutMs) setTimeout(() => {
+            if (pendentes.has(id)) { pendentes.delete(id); reject(new Error('tempo esgotado no trabalhador')); }
+          }, opts.timeoutMs);
+        });
+        w.postMessage({ id, fn, args: args || [] });
+        const out = await p;
+        return { r: out.r, ms: out.ms, ondeRodou: 'trabalhador (Web Worker)' };
+      } catch (e) {
+        /* falhou no worker: refaz na thread principal em vez de perder o passo */
+        motivo = String((e && e.message) || e);
+        const out = local();
+        out.ondeRodou = 'thread principal (o trabalhador falhou: ' + motivo + ')';
+        return out;
+      }
+    }
+  };
+})();
+
+/* Registro do que rodou onde e em quanto tempo — vai para o manifesto de
+   proveniência, porque "quanto custou" e "onde foi calculado" fazem parte de
+   descrever a análise. */
+const Instrumentacao = {
+  passos: [],
+  registra(nome, ms, onde) { this.passos.push({ step: nome, ms: Math.round(ms), where: onde }); },
+  limpa() { this.passos = []; },
+  resumo() {
+    const total = this.passos.reduce((a, p) => a + p.ms, 0);
+    const noWorker = this.passos.filter(p => /trabalhador/.test(p.where)).length;
+    return {
+      steps: this.passos.slice(),
+      totalMs: total, nSteps: this.passos.length,
+      nInWorker: noWorker,
+      workerState: Trabalhador.estado,
+      workerReason: Trabalhador.motivo || null
+    };
+  }
+};
+
 /* =================================================== retorno de processo ==
    POR QUE ISTO EXISTE. Um Session Report com meses de Timeline e minutos de
    streaming leva segundos para ser processado, e o cálculo roda na thread
@@ -2906,6 +3047,7 @@ async function renderFigures() {
     if (Prog.ativo) await Prog.step('leituras em linguagem clínica e semáforo de qualidade');
     else await proximoQuadro();
     try {
+      await leiturasClinicasAsync();
       preencherSemaforo();
       abrir.forEach(fig => inserirLeituras(fig.id));
     } catch (e) { Prog.falhaEtapa(String(e && e.message || e)); }
@@ -3038,6 +3180,7 @@ async function handleFiles(fileList) {
   const mb = t => isFinite(t) ? ` (${(t / 1048576).toFixed(1)} MB)` : '';
   /* 2 etapas por arquivo (ler do disco, interpretar) + agregação + painel;
      as figuras acrescentam suas próprias etapas quando souberem quantas são */
+  Instrumentacao.limpa();
   Prog.begin(`Carregando ${files.length} arquivo${files.length > 1 ? 's' : ''}`).expect(files.length * 2 + 2);
   try {
     for (const file of files) {
@@ -3047,7 +3190,11 @@ async function handleFiles(fileList) {
       catch (e) { Prog.falhaEtapa(e.message); continue; }
       await Prog.step(`interpretando ${file.name} — JSON e modalidades do Percept`);
       try {
-        const parsed = C.parsePercept(JSON.parse(texto), file.name);
+        /* o texto vai inteiro para o trabalhador: JSON.parse e extração saem da
+           thread principal, e a interface continua respondendo */
+        const out = await Trabalhador.chamar('parsePerceptText', [texto, file.name]);
+        Instrumentacao.registra(`parse ${file.name}`, out.ms, out.ondeRodou);
+        const parsed = out.r;
         const dup = S.files.findIndex(x => x.name === file.name);
         if (dup >= 0) S.files.splice(dup, 1);
         S.files.push({ name: file.name, parsed });
@@ -3063,9 +3210,12 @@ async function handleFiles(fileList) {
     const nTrend = Object.keys(d.trend).reduce((a, h) => a + d.trend[h].length, 0);
     const nBruto = d.bsTimeDomain.concat(d.montageTD).reduce((a, td) => a + (td.data ? td.data.length : 0), 0);
     const rod = document.getElementById('procFoot');
+    const ondeCalcula = Trabalhador.estado === 'indisponível'
+      ? `na <b>thread principal</b>${Trabalhador.motivo ? ` (trabalhador indisponível: ${Trabalhador.motivo})` : ''}`
+      : 'em um <b>trabalhador de segundo plano</b>, com a interface livre';
     if (rod) rod.innerHTML = `Registro com <b>${nTrend.toLocaleString('pt-BR')}</b> pontos de Timeline e ` +
-      `<b>${nBruto.toLocaleString('pt-BR')}</b> amostras de sinal bruto. Todo o cálculo acontece neste navegador — ` +
-      `etapas anunciadas acima estão <b>calculando</b>, não travadas.`;
+      `<b>${nBruto.toLocaleString('pt-BR')}</b> amostras de sinal bruto. Todo o cálculo acontece neste navegador, ` +
+      `${ondeCalcula} — etapas anunciadas acima estão <b>calculando</b>, não travadas.`;
     await Prog.step('montando painel do registro');
     renderRail();
     await renderFigures();
@@ -3108,6 +3258,21 @@ function exportBundle() {
   return _bundleCache;
 }
 
+/* Versão assíncrona: calcula no trabalhador e AQUECE o mesmo cache que
+   `exportBundle()` consulta. Quem chama de dentro de um fluxo assíncrono
+   (exportações, relatório, leituras clínicas) usa esta; os pontos síncronos que
+   vierem depois acertam o cache e não recalculam nada. */
+async function exportBundleAsync() {
+  const ps = activeFiles().map(x => x.parsed);
+  if (!ps.length) return null;
+  const chave = chaveAnalise();
+  if (_bundleCache && _bundleChave === chave) return _bundleCache;
+  const out = await Trabalhador.chamar('extractMetrics', [ps, offMin(), { profileId: activeProfileId() }]);
+  Instrumentacao.registra('extractMetrics', out.ms, out.ondeRodou);
+  _bundleCache = out.r; _bundleChave = chave;
+  return _bundleCache;
+}
+
 /* Leituras em linguagem clínica + semáforo de QC. Também memoizadas: o painel
    de QC roda detecção de picos R e validação de artefato, e não pode ser
    refeito a cada figura. */
@@ -3125,6 +3290,25 @@ function leiturasClinicas() {
   _leiturasChave = chave;
   return _leiturasCache;
 }
+
+/* Mesma coisa, com o painel de QC (caro) e as métricas no trabalhador. */
+async function leiturasClinicasAsync() {
+  const ps = activeFiles().map(x => x.parsed);
+  if (!ps.length) return null;
+  const chave = chaveAnalise();
+  if (_leiturasCache && _leiturasChave === chave) return _leiturasCache;
+  const b = await exportBundleAsync();
+  const pb = activeProfile().primaryBand;
+  let painel = null;
+  try {
+    const out = await Trabalhador.chamar('qcPanel', [ps, { band: [pb.lo, pb.hi] }]);
+    Instrumentacao.registra('qcPanel', out.ms, out.ondeRodou);
+    painel = out.r;
+  } catch (e) { painel = null; }
+  _leiturasCache = C.clinicalReadings(b, { profileId: activeProfileId(), qcPanel: painel });
+  _leiturasChave = chave;
+  return _leiturasCache;
+}
 function unionKeys(rows) {
   const seen = new Set(), out = [];
   rows.forEach(r => Object.keys(r).forEach(k => { if (!seen.has(k)) { seen.add(k); out.push(k); } }));
@@ -3132,7 +3316,7 @@ function unionKeys(rows) {
 }
 async function exportJSON() {
   if (!S.files.length) return alert('Carregue ao menos um arquivo antes de exportar.');
-  const b = await comEtapa('Exportando JSON', 'calculando métricas de todas as sessões', exportBundle);
+  const b = await comEtapa('Exportando JSON', 'calculando métricas de todas as sessões', exportBundleAsync);
   if (!b) return alert('Carregue ao menos um arquivo antes de exportar.');
   const doc = {
     export: {
@@ -3146,14 +3330,14 @@ async function exportJSON() {
 }
 async function exportAcuteCSV() {
   if (!S.files.length) return alert('Carregue ao menos um arquivo antes de exportar.');
-  const b = await comEtapa('Exportando CSV de métricas agudas', 'calculando espectro, aperiódico e bursts por sessão', exportBundle);
+  const b = await comEtapa('Exportando CSV de métricas agudas', 'calculando espectro, aperiódico e bursts por sessão', exportBundleAsync);
   if (!b) return alert('Carregue ao menos um arquivo antes de exportar.');
   if (!b.acute.length) return alert('Nenhuma métrica aguda (espectro ou sinal bruto) nos arquivos carregados.');
   P.downloadText(P.toCSV(b.acute, unionKeys(b.acute)), `percept_${b.subject.id}_metricas_agudas.csv`, 'text/csv');
 }
 async function exportChronicCSV() {
   if (!S.files.length) return alert('Carregue ao menos um arquivo antes de exportar.');
-  const b = await comEtapa('Exportando CSV de métricas crônicas', 'ajustando cosinor e limiares sobre o Timeline', exportBundle);
+  const b = await comEtapa('Exportando CSV de métricas crônicas', 'ajustando cosinor e limiares sobre o Timeline', exportBundleAsync);
   if (!b) return alert('Carregue ao menos um arquivo antes de exportar.');
   if (!b.chronic.length) return alert('Nenhum dado de Timeline (crônico) nos arquivos carregados.');
   P.downloadText(P.toCSV(b.chronic, unionKeys(b.chronic)), `percept_${b.subject.id}_metricas_cronicas.csv`, 'text/csv');
@@ -3206,13 +3390,24 @@ async function downloadAllFigures() {
    objetos parseados e das opções efetivamente usadas nas figuras. */
 async function buildProvenance() {
   const perfil = activeProfile();
+  const inst = Instrumentacao.resumo();
   const prov = C.createProvenance({
-    appVersion: '0.5.0',
+    appVersion: '0.6.0',
     now: new Date().toISOString(),
     profileId: perfil.id, profileLabel: perfil.label,
     timezoneOffsetMin: offMin(),
     timezoneBreaks: []
   });
+  /* instrumentação: onde cada passo pesado foi calculado e quanto levou.
+     Não é enfeite — é o que permite dizer, meses depois, que o número saiu de
+     um cálculo completo e não de um caminho degradado. */
+  prov.record('runtime.instrumentation', {
+    workerState: inst.workerState,
+    workerUnavailableReason: inst.workerReason,
+    stepsInWorker: inst.nInWorker, stepsTotal: inst.nSteps,
+    totalComputeMs: inst.totalMs,
+    steps: inst.steps
+  }, { note: 'tempos medidos nesta sessão do navegador; não afetam os valores, apenas os documentam' });
   for (const fl of activeFiles()) {
     const p = fl.parsed;
     prov.file({
@@ -3278,7 +3473,7 @@ async function exportChecklist(formato) {
   await Prog.step('reunindo a proveniência da análise');
   const prov = await buildProvenance();
   await Prog.step('calculando as métricas do registro');
-  const b = exportBundle();
+  const b = await exportBundleAsync();
   await Prog.step('preenchendo os itens do checklist');
   const ck = C.generateChecklist(prov.manifest(), b, activeProfile());
   const nome = `PERCEPT-REPORT_${(b && b.subject.id) || 'analise'}`;
@@ -3415,9 +3610,9 @@ async function generateReport() {
   await renderAllReady();
   Prog.expect(3);
   await Prog.step('calculando o resumo de métricas da capa');
-  const bundle = exportBundle();
+  const bundle = await exportBundleAsync();
   await Prog.step('escrevendo as leituras em linguagem clínica');
-  try { leiturasClinicas(); } catch (e) { Prog.falhaEtapa(String(e && e.message || e)); }
+  try { await leiturasClinicasAsync(); } catch (e) { Prog.falhaEtapa(String(e && e.message || e)); }
   await Prog.step('montando a capa e abrindo a caixa de impressão');
   const main = $('#figs');
   const old = document.getElementById('report-cover'); if (old) old.remove();
@@ -3468,5 +3663,5 @@ function init() {
 }
 document.addEventListener('DOMContentLoaded', init);
 /* hook de depuração (usado pela suíte de testes; inerte em produção) */
-window.__PLS__ = { FIGURES, ds, invalidarDs, S, renderRail, renderFigure, renderFigureAsync, renderAllReady, handleFiles, offMin, exportBundle, buildReportCover, Prog, proximoQuadro, setModo, modoAtual, figurasVisiveis, leiturasClinicas, PIPELINES, rodarPipeline, preencherSemaforo, inserirLeituras };
+window.__PLS__ = { FIGURES, buildProvenance, ds, invalidarDs, S, renderRail, renderFigure, renderFigureAsync, renderAllReady, handleFiles, offMin, exportBundle, exportBundleAsync, buildReportCover, Prog, proximoQuadro, setModo, modoAtual, figurasVisiveis, leiturasClinicas, leiturasClinicasAsync, PIPELINES, rodarPipeline, preencherSemaforo, inserirLeituras, Trabalhador, Instrumentacao };
 })();

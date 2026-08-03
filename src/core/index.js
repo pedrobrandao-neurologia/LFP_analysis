@@ -3,7 +3,7 @@
    do refactor modular (Prompt 0.1), para que app.js e a suíte de testes não mudem.
    Ver docs/arquitetura.md para o mapa de módulos e a regra de dependência. */
 
-import { parsePercept, MODALITIES, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId } from './io/parse.js';
+import { parsePercept, parsePerceptText, MODALITIES, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId } from './io/parse.js';
 import { parseIntList, unwrapCounter, unwrapTicks, analyzePackets, insertNaNGaps, effectiveFs, stitchStreams } from './io/packets.js';
 import { nanStats, segmentsWithoutNan, interpolateForFilter, detrendLinearNaN } from './dsp/nan.js';
 import { fft, nextPow2 } from './dsp/fft.js';
@@ -47,7 +47,7 @@ import { fitDoseResponse, MODELOS } from './adbs/doseresponse.js';
 import { levenbergMarquardt, solveGaussJordan } from './stats/optimize.js';
 
 const API = {
-  parsePercept, MODALITIES, BANDS, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId,
+  parsePercept, parsePerceptText, MODALITIES, BANDS, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId,
   fft, nextPow2, welchPSD, spectrogram, bandpassFFT, hilbertEnvelope, detectBursts, fitAperiodic,
   ecgTemplateSubtract, bandPower, bandTable, bandOf,
   mean, median, sd, variance, quantile, mad, removeOutliersMAD, linreg, pearson,

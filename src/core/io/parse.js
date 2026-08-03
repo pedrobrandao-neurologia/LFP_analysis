@@ -50,6 +50,16 @@ export const MODALITIES = [
   ['annotations',   'Anotações / histórico de programação']
 ];
 
+/* Variante que recebe o TEXTO do arquivo e faz o JSON.parse aqui dentro.
+
+   Existe para o trabalhador de segundo plano (Web Worker): enviar uma string
+   para o worker custa uma cópia barata, enquanto enviar o objeto já parseado
+   custa uma clonagem estruturada de milhões de nós. Com esta função, tanto o
+   JSON.parse quanto a extração saem da thread principal. */
+export function parsePerceptText(texto, nomeArquivo) {
+  return parsePercept(JSON.parse(texto), nomeArquivo);
+}
+
 export function parsePercept(json, fileName) {
   const d = json || {};
   const offMin = parseUtcOffsetMin(d.ProgrammerUtcOffset);
