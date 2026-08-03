@@ -1114,7 +1114,7 @@ const FIGURES = [
         width: b2.width, height: b2.height, xlim: [0, labels.length], ylim: [0, labels.length],
         xlabel: 'contato', ylabel: 'contato', title: `(b) bipolar — STN ${hname(hSel)} (Ω)`, pad: { l: 46, r: 62, t: 24, b: 40 }
       });
-      ch2.heat(M.slice().reverse(), { cmap: 'ice', smooth: false });
+      ch2.heat(M, { cmap: 'ice', smooth: false });
       ch2.axes({ grid: false, xticks: labels.map((_, i) => i + .5), yticks: labels.map((_, i) => i + .5), xfmt: v => labels[Math.floor(v)] || '', yfmt: v => labels[labels.length - 1 - Math.floor(v)] || '' });
       ch2.colorbar({ label: 'Ω' });
 
@@ -1207,7 +1207,7 @@ const FIGURES = [
           width: box.width, height: box.height, xlim: [0, fmax], ylim: [0, rows.length],
           xlabel: 'frequência (Hz)', title: `STN ${hname(h)} — ${rows.length} canais`, pad: { l: 62, r: 60, t: 24, b: 40 }
         });
-        ch.heat(M.slice().reverse(), { cmap: 'magma', smooth: true });
+        ch.heat(M, { cmap: 'magma', smooth: true });
         ch.axes({ grid: false, yticks: rows.map((_, i) => i + .5), yfmt: v => (rows[rows.length - 1 - Math.floor(v)] || {}).label || '' });
         ch.colorbar({ label: norm ? 'norm.' : 'µVp' });
         /* marca a banda PRIMÁRIA do perfil ativo (beta em DP, teta-alfa em
@@ -1290,7 +1290,7 @@ const FIGURES = [
         width: b2.width, height: b2.height, xlim: [sg.t[0], sg.t[sg.t.length - 1]], ylim: [0, 60],
         xlabel: 'tempo (s)', ylabel: 'frequência (Hz)', title: '(b) espectrograma (dB)', pad: { l: 58, r: 62, t: 24, b: 38 }
       });
-      ch2.heat(Mt.slice().reverse(), { cmap: 'viridis', zmin, zmax, smooth: true });
+      ch2.heat(Mt, { cmap: 'viridis', zmin, zmax, smooth: true });
       ch2.axes({ grid: false });
       ch2.colorbar({ label: 'dB' });
 
@@ -1562,34 +1562,69 @@ const FIGURES = [
       const binMin = opt('F9', 'bin', 30);
       const harm = opt('F9', 'harm', '24+12');
       const nBoot = opt('F9', 'boot', 200);
+      /* Escala de cor e unidade do detrending são ESCOLHA, e mudam o que o olho
+         vê sem mudar um único número. O padrão preto→azul com a mediana do dia
+         em 1 é a convenção da literatura de ritmo circadiano de beta; o
+         divergente com a mediana em 100 é mais direto para leitura clínica. */
+      const escalaCor = opt('F9', 'cmap', detr ? 'pretoazul' : 'viridis');
+      const unidade = opt('F9', 'unidade', 'ratio');
+      const rotuloDia = opt('F9', 'rotulo', 'data');
+      const razao = detr && unidade === 'ratio';
+      const uni = !detr ? 'u.a.' : razao ? '× a mediana do dia' : '% da mediana do dia';
       node.appendChild(el('div', { class: 'ctrls' }, [
         ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: 'STN ' + hname(x) })), h, v => setOpt('F9', 'hemi', v)),
-        ctrlCheck('detrending diário (% da mediana do dia)', detr, v => setOpt('F9', 'detrend', v)),
+        ctrlCheck('detrending diário (cada dia pela própria mediana)', detr, v => setOpt('F9', 'detrend', v)),
+        detr ? ctrlSelect('unidade', [{ value: 'ratio', label: '× da mediana (1 = mediana)' }, { value: 'percent', label: '% da mediana (100 = mediana)' }], unidade, v => setOpt('F9', 'unidade', v)) : el('span'),
+        ctrlSelect('escala de cor', [
+          { value: 'pretoazul', label: 'preto → azul' }, { value: 'divergent', label: 'divergente (azul-branco-vermelho)' },
+          { value: 'viridis', label: 'viridis' }, { value: 'magma', label: 'magma' }, { value: 'ice', label: 'gelo' }
+        ], escalaCor, v => setOpt('F9', 'cmap', v)),
+        ctrlSelect('eixo dos dias', [{ value: 'data', label: 'data' }, { value: 'numero', label: 'número do dia' }], rotuloDia, v => setOpt('F9', 'rotulo', v)),
         ctrlSelect('bin', [{ value: 15, label: '15 min' }, { value: 30, label: '30 min' }, { value: 60, label: '60 min' }], binMin, v => setOpt('F9', 'bin', +v)),
         ctrlSelect('harmônicos', ['24', '24+12'], harm, v => setOpt('F9', 'harm', v)),
         ctrlNumber('bootstrap', nBoot, 50, 2000, 50, v => setOpt('F9', 'boot', v))
       ]));
       const clean = C.removeOutliersMAD(d.trend[h], 'lfp', 4).kept;
-      const dp = C.diurnalProfile(clean, offMin(), binMin, detr);
+      const dp = C.diurnalProfile(clean, offMin(), binMin, { detrend: detr, unit: unidade });
       if (dp.days.length < 2) return node.appendChild(el('div', { class: 'empty', text: 'São necessários ao menos 2 dias de registro.' }));
 
       /* heatmap dia × hora */
-      const box = plotBox(node, Math.max(180, 46 + dp.days.length * 4.4));
+      /* altura por dia: linha fina demais e o padrão diurno de um dia vira um
+         fio; a altura total fica aproximadamente constante e o registro longo
+         só comprime até o limite em que ainda se distingue uma linha da outra */
+      const alturaDia = Math.max(4, Math.min(14, 300 / Math.max(1, dp.days.length)));
+      const box = plotBox(node, Math.max(190, Math.round(50 + dp.days.length * alturaDia)));
       const M = dp.matrix.map(m => m.values);
       const flat = M.flat().filter(isFinite).sort((a, b) => a - b);
       const ch = new P.Chart(box.canvas, {
         width: box.width, height: box.height, xlim: [0, 24], ylim: [0, dp.days.length],
-        xlabel: 'hora local', ylabel: 'dia', title: `(a) dia × hora — STN ${hname(h)}${detr ? ' (normalizado pela mediana diária)' : ''}`,
-        pad: { l: 76, r: 62, t: 24, b: 40 }
+        xlabel: 'hora local', ylabel: rotuloDia === 'numero' ? 'dia do registro' : 'dia',
+        title: `(a) dia × hora — STN ${hname(h)}${detr ? ' (cada dia normalizado pela própria mediana)' : ''}`,
+        pad: { l: 76, r: 70, t: 24, b: 40 }
       });
-      ch.heat(M, { cmap: detr ? 'divergent' : 'viridis', zmin: flat[Math.floor(flat.length * .02)], zmax: flat[Math.floor(flat.length * .98)], smooth: false });
+      ch.heat(M, {
+        cmap: escalaCor, origin: 'top',
+        zmin: flat[Math.floor(flat.length * .02)], zmax: flat[Math.floor(flat.length * .98)], smooth: false
+      });
       const step = Math.max(1, Math.ceil(dp.days.length / 12));
+      const nDias = dp.days.length;
+      /* com origin 'top' a primeira linha fica em cima: o rótulo do valor v do
+         eixo se refere ao dia de índice nDias - ceil(v) */
+      const diaDe = v => dp.days[nDias - Math.ceil(v)];
       ch.axes({
         grid: false, xticks: [0, 3, 6, 9, 12, 15, 18, 21, 24], xfmt: v => String(v).padStart(2, '0') + 'h',
-        yticks: dp.days.map((_, i) => i + .5).filter((_, i) => i % step === 0),
-        yfmt: v => (dp.days[Math.floor(v)] || '').slice(5).split('-').reverse().join('/')
+        yticks: dp.days.map((_, i) => nDias - i - .5).filter((_, i) => i % step === 0),
+        yfmt: v => rotuloDia === 'numero'
+          ? String(nDias - Math.ceil(v) + 1)
+          : (diaDe(v) || '').slice(5).split('-').reverse().join('/')
       });
-      ch.colorbar({ label: detr ? '% mediana do dia' : 'u.a.' });
+      ch.colorbar({
+        label: uni,
+        /* marcar a mediana do dia na barra: sem ela o leitor não sabe onde fica
+           o "sem variação", que é a referência de toda a figura */
+        ticks: detr ? [ch._z.zmin, razao ? 1 : 100, ch._z.zmax] : null,
+        fmt: v => razao ? v.toFixed(2) : v.toFixed(0)
+      });
 
       /* perfil + polar */
       const grid = el('div', { class: 'plotgrid two' }); node.appendChild(grid);
@@ -1604,7 +1639,7 @@ const FIGURES = [
       const ch2 = new P.Chart(b2.canvas, {
         width: b2.width, height: b2.height, xlim: [0, 24],
         ylim: [Math.min(...dp.q1.filter(isFinite)) * .96, Math.max(...dp.q3.filter(isFinite)) * 1.04],
-        xlabel: 'hora local', ylabel: detr ? '% da mediana do dia' : 'potência LFP',
+        xlabel: 'hora local', ylabel: detr ? uni : 'potência LFP',
         title: '(b) perfil diurno (mediana entre dias, IQR)', pad: { l: 62, r: 14, t: 24, b: 42 }
       });
       ch2.axes({ xticks: [0, 4, 8, 12, 16, 20, 24], xfmt: v => String(v).padStart(2, '0') + 'h' });
@@ -1654,11 +1689,14 @@ const FIGURES = [
         { label: '⤓ PNG heatmap', fn: () => P.downloadCanvas(box.canvas, 'F9a_heatmap_dia_hora') },
         { label: '⤓ PNG perfil', fn: () => P.downloadCanvas(b2.canvas, 'F9b_perfil_diurno') },
         { label: '⤓ PNG polar', fn: () => P.downloadCanvas(b3.canvas, 'F9c_polar') },
-        { label: '⤓ CSV perfil', fn: () => P.downloadText(P.toCSV(dp.hours.map((x, i) => ({ hora: x, mediana: dp.profile[i], q1: dp.q1[i], q3: dp.q3[i] }))), 'F9_perfil.csv', 'text/csv') },
-        { label: '⤓ CSV matriz', fn: () => P.downloadText(P.toCSV(dp.matrix.flatMap(m => m.values.map((v, i) => ({ dia: m.day, hora: dp.hours[i], valor: v })))), 'F9_matriz.csv', 'text/csv') }
+        { label: '⤓ CSV perfil', fn: () => P.downloadText(P.toCSV(dp.hours.map((x, i) => ({ hora: x, mediana: dp.profile[i], q1: dp.q1[i], q3: dp.q3[i], unidade: dp.unit, bin_min: dp.binMin }))), 'F9_perfil.csv', 'text/csv') },
+        { label: '⤓ CSV matriz', fn: () => P.downloadText(P.toCSV(dp.matrix.flatMap(m => m.values.map((v, i) => ({ dia: m.day, hora: dp.hours[i], valor: v, unidade: dp.unit, mediana_do_dia: m.dayMedian, n_do_dia: m.n, bin_min: dp.binMin })))), 'F9_matriz.csv', 'text/csv') }
       ]));
       node.appendChild(el('div', {
-        class: 'note', html: `<b>Método.</b> Normalização de cada dia pela própria mediana antes do heatmap (obrigatória: deriva entre dias mascara o ritmo). ` +
+        class: 'note', html: `<b>Método.</b> Normalização de cada dia pela própria mediana antes do heatmap (obrigatória: deriva entre dias mascara o ritmo), ` +
+          `em <b>${uni}</b> — a unidade sai junto no CSV. A escala de cor é escolha de apresentação e não muda nenhum número: ` +
+          `o preto→azul deixa o mapa escuro na maior parte do tempo e destaca só o que sobe acima da mediana do dia, que é a convenção ` +
+          `da literatura de ritmo circadiano de beta; o divergente separa melhor o que está <i>abaixo</i> da mediana. ` +
           `Perfil = mediana por bin de ${binMin} min dentro de cada dia, depois mediana entre dias. Cosinor por mínimos quadrados com harmônicos de ${periods.join(' e ')} h; ` +
           `IC por bootstrap de blocos com reamostragem <b>de dias inteiros</b> (preserva a autocorrelação intradiária).`
       }));
@@ -3143,13 +3181,14 @@ const FIGURES = [
             title: `(a) actograma duplo-plot — STN ${hname(h)}, ${ac.days.length} dias`,
             pad: { l: 76, r: 62, t: 24, b: 42 }
           });
-          ch.heat(M, { cmap: norm ? 'divergent' : 'viridis', zmin: ac.zmin, zmax: ac.zmax, smooth: false });
+          ch.heat(M, { cmap: norm ? 'divergent' : 'viridis', origin: 'top', zmin: ac.zmin, zmax: ac.zmax, smooth: false });
           const passo = Math.max(1, Math.ceil(ac.days.length / 14));
+          const nDiasA = ac.days.length;
           ch.axes({
             grid: false, xticks: [0, 6, 12, 18, 24, 30, 36, 42, 48],
             xfmt: v => String(v % 24).padStart(2, '0') + 'h',
-            yticks: ac.days.map((_, i) => i + .5).filter((_, i) => i % passo === 0),
-            yfmt: v => (ac.days[Math.floor(v)] || '').slice(5).split('-').reverse().join('/')
+            yticks: ac.days.map((_, i) => nDiasA - i - .5).filter((_, i) => i % passo === 0),
+            yfmt: v => (ac.days[nDiasA - Math.ceil(v)] || '').slice(5).split('-').reverse().join('/')
           });
           ch.vline(24, { color: COL.ink, width: 1.2, dash: [4, 3] });
           ch.colorbar({ label: norm ? '% mediana do dia' : 'u.a.' });

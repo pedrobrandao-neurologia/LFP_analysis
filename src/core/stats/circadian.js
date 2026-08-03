@@ -222,8 +222,21 @@ export function varianceByHour(rows, offMin, nBins) {
 
 /* Perfil diurno: mediana por bin dentro do dia, depois mediana entre dias */
 
+/* diurnalProfile(rows, offMin, binMin, detrendDaily)
+
+   O 4º argumento aceita a forma antiga (booleano de detrending) ou um objeto
+   `{ detrend, unit }`. A unidade do detrending é escolha de apresentação com
+   consequência de leitura: `'percent'` põe a mediana do dia em 100 e é o que o
+   clínico lê sem converter; `'ratio'` põe a mediana em 1, que é a convenção da
+   literatura de ritmo circadiano de beta (van Rheede JJ, et al. npj Parkinsons
+   Dis 2022;8:88, onde a barra de cor vai de 1 a 2). São o MESMO número em
+   escalas diferentes, e a unidade usada sai no resultado para que a exportação
+   não fique ambígua.                                                          */
 export function diurnalProfile(rows, offMin, binMin, detrendDaily) {
   binMin = binMin || 30;
+  const opts = (detrendDaily && typeof detrendDaily === 'object') ? detrendDaily : { detrend: !!detrendDaily };
+  detrendDaily = !!opts.detrend;
+  const escala = opts.unit === 'ratio' ? 1 : 100;
   const nBins = Math.round(24 * 60 / binMin);
   const byDay = {};
   rows.forEach(r => { const d = localDayKey(r.t, offMin); (byDay[d] = byDay[d] || []).push(r); });
@@ -234,7 +247,7 @@ export function diurnalProfile(rows, offMin, binMin, detrendDaily) {
     const buckets = Array.from({ length: nBins }, () => []);
     byDay[day].forEach(r => buckets[Math.min(nBins - 1, Math.floor(localHour(r.t, offMin) * 60 / binMin))].push(r.lfp));
     const dayMed = median(byDay[day].map(r => r.lfp));
-    buckets.forEach((b, i) => { if (b.length) arr[i] = detrendDaily ? 100 * median(b) / dayMed : median(b); });
+    buckets.forEach((b, i) => { if (b.length) arr[i] = detrendDaily ? escala * median(b) / dayMed : median(b); });
     matrix.push({ day, values: arr, dayMedian: dayMed, n: byDay[day].length });
   });
   const profile = [], q1 = [], q3 = [];
@@ -244,7 +257,12 @@ export function diurnalProfile(rows, offMin, binMin, detrendDaily) {
     q1.push(col.length ? quantile(col, 0.25) : NaN);
     q3.push(col.length ? quantile(col, 0.75) : NaN);
   }
-  return { binMin, nBins, days, matrix, profile, q1, q3, hours: Array.from({ length: nBins }, (_, i) => (i + 0.5) * binMin / 60) };
+  return {
+    binMin, nBins, days, matrix, profile, q1, q3,
+    detrended: detrendDaily, unit: detrendDaily ? (escala === 1 ? 'ratio' : 'percent') : 'raw',
+    baseline: detrendDaily ? escala : NaN,
+    hours: Array.from({ length: nBins }, (_, i) => (i + 0.5) * binMin / 60)
+  };
 }
 
 /* Média alinhada a evento */

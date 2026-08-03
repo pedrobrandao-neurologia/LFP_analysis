@@ -2242,6 +2242,99 @@ sec('coorte, EDF, BIDS-like e linha de comando');
   });
 }
 
+/* ------ heatmap: orientação, unidade do detrending e escala de cor -------- */
+sec('heatmap dia × hora — orientação, unidade e escala de cor');
+{
+  /* A armadilha: `drawImage` põe a linha 0 da imagem no TOPO, mas o eixo Y
+     cresce para CIMA. Sem tratamento a matriz sai espelhada em relação aos
+     rótulos, e o leitor atribui o padrão de um dia à data errada. Este teste
+     amarra a convenção nas duas direções. */
+  t('heat respeita a origem declarada, nos dois sentidos', () => {
+    const cv = document.createElement('canvas');
+    const registradas = [];
+    const ctxOrig = cv.getContext('2d');
+    /* intercepta a tela auxiliar onde o heat pinta a imagem */
+    const criarOrig = document.createElement;
+    document.createElement = tag => {
+      const n = criarOrig.call(document, tag);
+      if (tag === 'canvas') {
+        const g = n.getContext('2d');
+        const put = g.putImageData.bind(g);
+        g.putImageData = (img, x, y) => { registradas.push(img); return put(img, x, y); };
+      }
+      return n;
+    };
+    const M = [[9, 9], [0, 0], [0, 0]];              // linha 0 = valor alto
+    const lerLinha = (img, cols, r) => img.data[(r * cols) * 4];   // canal R
+    try {
+      const ch = new P.Chart(cv, { width: 200, height: 120, xlim: [0, 2], ylim: [0, 3] });
+      registradas.length = 0;
+      ch.heat(M, { cmap: 'viridis', zmin: 0, zmax: 9 });
+      const imgBase = registradas[registradas.length - 1];
+      registradas.length = 0;
+      ch.heat(M, { cmap: 'viridis', zmin: 0, zmax: 9, origin: 'top' });
+      const imgTopo = registradas[registradas.length - 1];
+      /* viridis: t=1 → (253,231,37) canal R alto; t=0 → (68,1,84) canal R baixo */
+      assert(lerLinha(imgBase, 2, 2) > 200, 'origin padrão: a linha 0 não foi para a última linha da imagem (base do gráfico)');
+      assert(lerLinha(imgBase, 2, 0) < 100, 'origin padrão: linha 0 vazou para o topo');
+      assert(lerLinha(imgTopo, 2, 0) > 200, "origin 'top': a linha 0 não ficou no topo");
+      assert(lerLinha(imgTopo, 2, 2) < 100, "origin 'top': linha 0 vazou para a base");
+      return "padrão = linha 0 na base (eixo ascendente); origin:'top' = linha 0 no topo";
+    } finally { document.createElement = criarOrig; void ctxOrig; }
+  });
+
+  t('unidade do detrending muda a escala, não o padrão', () => {
+    const linhas = [];
+    const t0 = Date.UTC(2025, 0, 1, 0, 0, 0);
+    for (let k = 0; k < 3 * 144; k++) {
+      const tt = t0 + k * 6e5, hora = (tt / 36e5) % 24;
+      linhas.push({ t: tt, lfp: 40 * (1 + 0.3 * Math.cos(2 * Math.PI * (hora - 9) / 24)) });
+    }
+    const pct = C.diurnalProfile(linhas, 0, 30, { detrend: true, unit: 'percent' });
+    const raz = C.diurnalProfile(linhas, 0, 30, { detrend: true, unit: 'ratio' });
+    const antigo = C.diurnalProfile(linhas, 0, 30, true);         // forma booleana
+    assert(pct.unit === 'percent' && raz.unit === 'ratio', 'unidade não declarada no resultado');
+    assert(antigo.unit === 'percent', 'a forma booleana antiga mudou de unidade');
+    for (let i = 0; i < pct.profile.length; i++) {
+      if (!isFinite(pct.profile[i])) continue;
+      assert(Math.abs(pct.profile[i] - 100 * raz.profile[i]) < 1e-9, 'as duas escalas não são o mesmo número');
+      assert(Math.abs(pct.profile[i] - antigo.profile[i]) < 1e-12, 'a forma booleana divergiu de percent');
+    }
+    /* o pico está no mesmo bin nas duas escalas */
+    const arg = a => a.reduce((b, v, i) => (isFinite(v) && v > a[b] ? i : b), 0);
+    assert(arg(pct.profile) === arg(raz.profile), 'a escala deslocou o horário do pico');
+    return `pico às ${pct.hours[arg(pct.profile)]} h nas duas · ${pct.profile[arg(pct.profile)].toFixed(1)}% = ${raz.profile[arg(raz.profile)].toFixed(3)}×`;
+  });
+
+  t('a escala preto→azul existe e vai de preto a azul', () => {
+    const cm = P.CMAPS.pretoazul;
+    assert(cm, 'colormap pretoazul não registrado');
+    const rgb = t => cm(t).match(/\d+/g).map(Number);
+    const ini = rgb(0), fim = rgb(1);
+    assert(ini[0] < 12 && ini[1] < 12 && ini[2] < 12, 'não começa em preto: ' + ini);
+    assert(fim[2] > 200 && fim[2] > fim[0] + 80, 'não termina em azul: ' + fim);
+    /* monotônica no azul — uma escala sequencial não pode voltar atrás */
+    let ant = -1;
+    for (let i = 0; i <= 20; i++) { const b = rgb(i / 20)[2]; assert(b >= ant - 1, 'o azul não é monotônico'); ant = b; }
+    return `${ini.join(',')} → ${fim.join(',')} · monotônica`;
+  });
+
+  t('a barra de cor marca a mediana do dia quando pedida', () => {
+    const cv = document.createElement('canvas');
+    const escritos = [];
+    const ch = new P.Chart(cv, { width: 220, height: 140, xlim: [0, 2], ylim: [0, 2] });
+    const g = cv.getContext('2d');
+    const orig = g.fillText.bind(g);
+    g.fillText = (s, x, y) => { escritos.push(String(s)); return orig(s, x, y); };
+    ch.heat([[0.6, 1.4], [1.0, 1.9]], { cmap: 'pretoazul', zmin: 0.6, zmax: 1.9 });
+    ch.colorbar({ label: '× a mediana do dia', ticks: [0.6, 1, 1.9], fmt: v => v.toFixed(2) });
+    g.fillText = orig;
+    assert(escritos.includes('1.00'), 'a marca da mediana (1,00) não foi escrita: ' + escritos.join('|'));
+    assert(escritos.some(x => /mediana do dia/.test(x)), 'o rótulo da barra não saiu');
+    return escritos.filter(x => /^\d/.test(x)).join(' · ');
+  });
+}
+
 /* ---- diário de Hauser, matriz hora × dia e resposta à levodopa (Onda 9) --- */
 sec('diário de Hauser, matriz hora × dia e resposta à levodopa');
 {

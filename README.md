@@ -499,6 +499,17 @@ autoriza concluir: um cluster significativo diz que há diferença em algum luga
 que ela vale para cada ponto, nem que as bordas do cluster são as bordas do efeito
 (Sassenhagen & Draschkow 2019).
 
+**Heatmap dia × hora (F9a)** — a potência beta ao longo das 24 h, uma linha por dia de todo o período
+de registro, com **cada dia normalizado pela própria mediana** (sem isso a deriva lenta entre dias
+mascara o ritmo). O Dia 1 fica no topo, e a barra de cor marca onde está a mediana do dia — sem essa
+marca o leitor não sabe onde fica o "sem variação", que é a referência de toda a figura. Duas escolhas
+de apresentação, que mudam o que o olho vê sem mudar um único número:
+
+- **Unidade**: `×` da mediana (1 = mediana do dia), a convenção da literatura de ritmo circadiano de
+  beta, ou `%` (100 = mediana), mais direto para leitura clínica. A unidade usada sai no CSV.
+- **Escala de cor**: **preto → azul** por padrão, que deixa o mapa escuro na maior parte do tempo e
+  destaca só o que sobe acima da mediana; ou divergente, que separa melhor o que está *abaixo* dela.
+
 **Matriz hora × dia (F28)** — o desfecho primário de praticamente todo ensaio em Parkinson avançado
 é "horas OFF em vigília", e ele é publicado como barra empilhada. A barra destrói exatamente a
 informação que muda a conduta: 6 h de OFF concentradas na manhã (*delayed-on*) pedem outra coisa que
