@@ -69,6 +69,7 @@ const DIC = {
     'Coorte — todos os registros carregados lado a lado': 'Cohort — all loaded records side by side',
     'Matriz hora × dia — estados ON/OFF ligados à sua integral': 'Hour × day matrix — ON/OFF states linked to their integral',
     'Resposta à levodopa alinhada às tomadas': 'Levodopa response aligned to intake marks',
+    'Espectrograma — análise tempo-frequência no padrão do BRAVO': 'Spectrogram — time-frequency analysis following BRAVO',
     '⤓ Relatório PDF': '⤓ PDF report', '⤓ Relatório clínico (PDF)': '⤓ Clinical report (PDF)',
     '⤓ JSON para estatística': '⤓ JSON for statistics',
     '⤓ CSV — métricas agudas': '⤓ CSV — acute metrics',

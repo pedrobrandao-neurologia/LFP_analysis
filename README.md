@@ -162,6 +162,7 @@ A coluna **Leitura clínica** resume, em uma frase, o que cada figura diz ao mé
 | **F27** | **Coorte — todos os registros lado a lado** | ≥ 1 registro | Prevalência de pico com **IC de Wilson**, tabela por sujeito e estatísticas de grupo. |
 | **F28** | **Matriz hora × dia — ON/OFF ligados à sua integral** | `LFPTrendLogs` e/ou diário de Hauser em CSV | **Onde no dia** o OFF cai — OFF matinal, wearing-off vespertino ou flutuação picada —, o que a barra empilhada apaga. |
 | **F29** | **Resposta à levodopa alinhada às tomadas** | `LFPTrendLogs` + eventos de medicação marcados no aparelho | Se o beta **cai depois da dose**, com que latência e por quanto tempo — ou se isso não se separa do ritmo diurno. |
+| **F30** | **Espectrograma — tempo-frequência no padrão do BRAVO** | `BrainSenseTimeDomain` ou `LfpMontageTimeDomain` | Como o espectro **muda ao longo do registro**, por cinco métodos, com a escala de densidade do `scipy` e a emulação do cálculo de bordo do aparelho. |
 
 Cada figura exporta PNG e os dados subjacentes em CSV.
 
@@ -498,6 +499,37 @@ contígua** de diferença maior do que o acaso produziria?". E registra, junto d
 autoriza concluir: um cluster significativo diz que há diferença em algum lugar dentro dele, não
 que ela vale para cada ponto, nem que as bordas do cluster são as bordas do efeito
 (Sassenhagen & Draschkow 2019).
+
+**Espectrograma (F30)** — porta para o navegador o conjunto de espectrogramas do
+[BRAVO](https://github.com/Fixel-Institute/BRAVO) (Fixel Institute), que os calcula em Python com
+`scipy` num servidor. Aqui tudo roda offline, sem `scipy` e sem rede, com os mesmos parâmetros:
+
+- **Cinco métodos**: Welch por época (o padrão do BRAVO), STFT com janela Hamming
+  (`scipy.signal.spectrogram`), **emulação do PSD de bordo do Percept**, wavelet de Morlet e
+  autorregressivo de Yule-Walker com ordem por BIC.
+- **FFT de tamanho arbitrário por Bluestein.** O BRAVO define `NFFT = round(fs/resolução)`, o que
+  com 250 Hz e 0,5 Hz dá **500** — não é potência de dois. Completar com zeros até 512 seria mais
+  rápido, mas mudaria o eixo de frequência e nenhum bin coincidiria com os do BRAVO; por isso a
+  transformada é exata para qualquer N. A implementação é conferida contra a **definição** da DFT,
+  não contra outra FFT.
+- **Escala de densidade do `scipy`**: `|X|²/(fs·Σw²)`, com fator 2 fora de DC e de Nyquist, e
+  janelas **periódicas** como o `get_window` devolve por padrão. Verificado por **Parseval**: a
+  integral da densidade sobre a frequência devolve a potência do sinal — uma senóide de amplitude 3
+  dá exatamente 4,5.
+- **Emulação de bordo**: Hann simétrica de 250 amostras × 1/54, zero-pad para 256, magnitude
+  `|FFT|`, avanço de 5 amostras por passo, 100 bins. A constante 1/54 é empírica e não documentada
+  pelo fabricante — fica parametrizável e **explícita**, porque é ela que faz a emulação bater com o
+  que o aparelho reportou. Quando o registro traz o sinal bruto *e* a potência que o Percept
+  calculou, a figura **mede a concordância entre os dois** e diz o que ela estabelece (a dinâmica) e
+  o que não estabelece (a escala absoluta, cuja unidade interna o fabricante não publica).
+- **Perda de pacote não vira potência.** Época com amostra faltante acima da tolerância sai NaN,
+  marcada, e aparece como faixa branca — não como um número plausível.
+- **Normalização** por janela de referência (divisão ou subtração em log) e **remoção da tendência
+  1/f** por regressão log-log robusta — declarada como *não sendo* o FOOOF completo.
+- **Jet** para paridade visual com o BRAVO e **Viridis** como recomendação científica; sobreposição
+  da amplitude de estimulação, dos degraus de corrente e dos eventos marcados; exportação em PNG e
+  em CSV **longo e largo com cabeçalhos em inglês** (`Time_s,Frequency_Hz,Power,logPower_dB,Channel,Missing`),
+  precedidos de um bloco de metadados que permite refazer o cálculo.
 
 **Heatmap dia × hora (F9a)** — a potência beta ao longo das 24 h, uma linha por dia de todo o período
 de registro, com **cada dia normalizado pela própria mediana** (sem isso a deriva lenta entre dias

@@ -2242,6 +2242,235 @@ sec('coorte, EDF, BIDS-like e linha de comando');
   });
 }
 
+/* ------- tempo-frequência no padrão do BRAVO (Onda 10) -------------------- */
+sec('espectrogramas — FFT arbitrária, escala do scipy e emulação de bordo');
+{
+  const FS = 250;
+  const semente = (s0) => { let s = s0 >>> 0; return () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; }; };
+  const ruidoBranco = (n, sigma, s0) => {
+    const r = semente(s0), x = new Float64Array(n);
+    for (let i = 0; i < n; i++) x[i] = sigma * Math.sqrt(-2 * Math.log(1 - r())) * Math.cos(2 * Math.PI * r());
+    return x;
+  };
+  const senoide = (n, fs, f0, A) => { const x = new Float64Array(n); for (let i = 0; i < n; i++) x[i] = A * Math.sin(2 * Math.PI * f0 * i / fs); return x; };
+
+  t('Bluestein bate com a DEFINIÇÃO da DFT em N não potência de dois', () => {
+    /* contra a definição, não contra outra FFT: uma implementação rápida errada
+       e um teste escrito a partir dela concordariam entre si */
+    let pior = 0;
+    for (const N of [3, 7, 61, 250, 500]) {
+      const re = new Float64Array(N), im = new Float64Array(N);
+      for (let i = 0; i < N; i++) { re[i] = Math.sin(i * 0.7) + 0.3 * Math.cos(i * 2.1); im[i] = 0.1 * Math.sin(i * 1.3); }
+      const ref = C.dftDireta(re, im);
+      const a = Float64Array.from(re), b = Float64Array.from(im);
+      C.fftBluestein(a, b, false);
+      let err = 0, esc = 0;
+      for (let k = 0; k < N; k++) { err = Math.max(err, Math.hypot(a[k] - ref.re[k], b[k] - ref.im[k])); esc = Math.max(esc, Math.hypot(ref.re[k], ref.im[k])); }
+      pior = Math.max(pior, err / esc);
+    }
+    assert(pior < 1e-11, 'erro relativo ' + pior.toExponential(2));
+    return `N ∈ {3,7,61,250,500} · erro relativo máx ${pior.toExponential(1)}`;
+  });
+
+  t('Bluestein concorda com a radix-2 quando N é potência de dois, e a inversa desfaz', () => {
+    const N = 512, re = new Float64Array(N), im = new Float64Array(N);
+    for (let i = 0; i < N; i++) re[i] = Math.sin(i * 0.31) + Math.cos(i * 0.077);
+    const a = Float64Array.from(re), b = Float64Array.from(im); C.fft(a, b, false);
+    const c = Float64Array.from(re), d2 = Float64Array.from(im); C.fftBluestein(c, d2, false);
+    let e1 = 0, esc = 0;
+    for (let k = 0; k < N; k++) { e1 = Math.max(e1, Math.hypot(c[k] - a[k], d2[k] - b[k])); esc = Math.max(esc, Math.hypot(a[k], b[k])); }
+    assert(e1 / esc < 1e-11, 'divergiu da radix-2: ' + (e1 / esc).toExponential(2));
+    /* ida e volta em N ímpar */
+    const M = 375, p = new Float64Array(M), q = new Float64Array(M);
+    for (let i = 0; i < M; i++) p[i] = Math.cos(i * 0.19);
+    const p0 = Float64Array.from(p);
+    C.fftBluestein(p, q, false); C.fftBluestein(p, q, true);
+    let e2 = 0; for (let i = 0; i < M; i++) e2 = Math.max(e2, Math.abs(p[i] - p0[i]));
+    assert(e2 < 1e-10, 'ida e volta não fecha: ' + e2.toExponential(2));
+    return `radix-2: ${(e1 / esc).toExponential(1)} · ida-e-volta N=375: ${e2.toExponential(1)}`;
+  });
+
+  t('a escala de densidade obedece Parseval: a integral da PSD é a potência do sinal', () => {
+    /* É o teste que amarra a convenção do scipy inteira de uma vez: |X|²/(fs·Σw²)
+       com ×2 unilateral. Senóide de amplitude A tem potência A²/2, exatamente. */
+    const A = 3, F0 = 20;
+    const x = senoide(FS * 20, FS, F0, A);
+    const saidas = [];
+    ['welch', 'stft'].forEach(met => {
+      const sp = C.timeFrequency(x, FS, { method: met, windowS: 1, overlapS: 0.5, freqRes: 0.5 });
+      assert(sp.ok, met + ': ' + sp.reason);
+      assert(sp.params.nfft === 500, `${met}: NFFT deveria ser round(250/0.5)=500, veio ${sp.params.nfft}`);
+      const df = sp.freqs[1] - sp.freqs[0];
+      const col = sp.power[Math.floor(sp.power.length / 2)];
+      let integral = 0; for (let k = 0; k < col.length; k++) integral += col[k] * df;
+      assert(Math.abs(integral - A * A / 2) < 0.02, `${met}: integral ${integral.toFixed(4)} ≠ A²/2 = ${(A * A / 2).toFixed(4)}`);
+      let bi = 0; for (let k = 0; k < col.length; k++) if (col[k] > col[bi]) bi = k;
+      assert(Math.abs(sp.freqs[bi] - F0) < 1e-9, `${met}: pico em ${sp.freqs[bi]} Hz, esperado ${F0}`);
+      saidas.push(`${met} ∫PSD=${integral.toFixed(4)}`);
+    });
+    return `A²/2 = ${(A * A / 2).toFixed(2)} · ${saidas.join(' · ')} · pico exatamente em 20 Hz`;
+  });
+
+  t('ruído branco devolve PSD plana em σ²/(fs/2), nos três métodos paramétricos', () => {
+    const sigma = 2, x = ruidoBranco(FS * 60, sigma, 12345);
+    const esperado = sigma * sigma / (FS / 2);
+    const linhas = [];
+    ['welch', 'stft', 'ar'].forEach(met => {
+      const sp = C.timeFrequency(x, FS, { method: met, windowS: 1, overlapS: 0.5, freqRes: 0.5 });
+      assert(sp.ok, met + ': ' + sp.reason);
+      let acc = 0, m = 0;
+      for (let i = 0; i < sp.power.length; i++) for (let k = 5; k < sp.freqs.length - 5; k++) { const v = sp.power[i][k]; if (isFinite(v)) { acc += v; m++; } }
+      const razao = acc / m / esperado;
+      assert(Math.abs(razao - 1) < 0.05, `${met}: PSD média ${(acc / m).toExponential(3)} vs esperado ${esperado.toExponential(3)} (razão ${razao.toFixed(3)})`);
+      linhas.push(`${met} ${razao.toFixed(3)}×`);
+    });
+    return `σ²/(fs/2) = ${esperado.toFixed(4)} · razões: ${linhas.join(' · ')}`;
+  });
+
+  t('janela periódica e simétrica são diferentes — e cada método usa a sua', () => {
+    const n = 8;
+    const hp = C.hannPeriodic(n), hs = C.hannSymmetric(n), mp = C.hammingPeriodic(n);
+    assert(hp[0] === 0 && hs[0] === 0, 'Hann deveria começar em zero');
+    assert(hs[n - 1] === 0, 'Hann simétrica deveria terminar em zero');
+    assert(hp[n - 1] > 0.1, 'Hann periódica não deveria terminar em zero (é a diferença toda)');
+    assert(Math.abs(hp[n / 2] - 1) < 1e-12, 'Hann periódica deveria valer 1 no meio');
+    assert(Math.abs(mp[0] - 0.08) < 1e-12, 'Hamming periódica deveria começar em 0,08: ' + mp[0]);
+    /* e o método certo usa a janela certa */
+    const x = senoide(FS * 5, FS, 20, 1);
+    assert(C.spectrogramWelch(x, FS, {}).params.window === 'hann-periodic', 'Welch não usou Hann periódica');
+    assert(C.spectrogramSTFT(x, FS, {}).params.window === 'hamming-periodic', 'STFT não usou Hamming periódica');
+    assert(C.spectrogramPercept(x, FS, {}).params.window === 'hann-symmetric', 'a emulação Medtronic não usou Hann simétrica');
+    return `Hann periódica termina em ${hp[n - 1].toFixed(3)}, simétrica em ${hs[n - 1].toFixed(3)} · Hamming[0] = ${mp[0]}`;
+  });
+
+  t('emulação do Percept reproduz a aritmética de bordo declarada', () => {
+    const x = senoide(FS * 6, FS, 20, 2);
+    const sp = C.spectrogramPercept(x, FS, {});
+    assert(sp.ok, sp.reason);
+    const p = sp.params;
+    assert(p.nperseg === 250 && p.nfft === 256, `janela/NFFT: ${p.nperseg}/${p.nfft}`);
+    assert(Math.abs(p.gain - 1 / 54) < 1e-12, 'ganho não é 1/54: ' + p.gain);
+    assert(p.packetSamples === 5, 'passo de pacote: ' + p.packetSamples);
+    assert(sp.freqs.length === 100, 'deveria devolver 100 bins, veio ' + sp.freqs.length);
+    assert(Math.abs(sp.freqs[1] - FS / 256) < 1e-12, 'eixo não é k·fs/256');
+    assert(p.scaling === 'magnitude', 'a escala deveria ser magnitude, não potência: ' + p.scaling);
+    assert(Math.abs(sp.times[1] - sp.times[0] - 5 / FS) < 1e-12, 'o passo temporal não é de 5 amostras');
+    /* o pico cai no bin do aparelho, que é grosseiro: 20 Hz → bin 20 → 19,53 Hz */
+    let bi = 0; const col = sp.power[10];
+    for (let k = 1; k < col.length; k++) if (col[k] > col[bi]) bi = k;
+    assert(bi === 20, 'pico no bin ' + bi + ', esperado 20');
+    /* a magnitude escala LINEARMENTE com a amplitude — se estivesse ao quadrado, dobraria ao quadrado */
+    const sp2 = C.spectrogramPercept(senoide(FS * 6, FS, 20, 4), FS, {});
+    const razao = sp2.power[10][20] / col[20];
+    assert(Math.abs(razao - 2) < 0.02, 'dobrar a amplitude deveria dobrar a magnitude, e deu ' + razao.toFixed(3));
+    return `bin ${bi} = ${sp.freqs[bi].toFixed(2)} Hz · passo ${p.stepS}s · ganho 1/54 · dobrar A dobra |FFT| (${razao.toFixed(3)}×)`;
+  });
+
+  t('época com perda de pacote NÃO vira potência: sai NaN e marcada', () => {
+    const x = senoide(FS * 10, FS, 20, 2);
+    for (let i = FS * 3; i < FS * 3 + 40; i++) x[i] = NaN;      // lacuna de 160 ms
+    ['welch', 'stft', 'ar', 'percept'].forEach(met => {
+      const sp = C.timeFrequency(x, FS, { method: met, windowS: 1, overlapS: 0.5 });
+      assert(sp.ok, met + ': ' + sp.reason);
+      const marcadas = Array.from(sp.flagged).filter(Boolean).length;
+      assert(marcadas > 0, met + ': a lacuna não foi marcada');
+      sp.flagged.forEach((fl, i) => {
+        if (!fl) return;
+        assert(Array.from(sp.power[i]).every(v => !isFinite(v)), met + ': época marcada saiu com potência numérica');
+      });
+      assert(sp.nEpochsValid < sp.nEpochs, met + ': a contabilidade de épocas não fecha');
+      /* e a fração faltante é reportada, não só o sinalizador */
+      const comFalta = Array.from(sp.missing).filter(v => v > 0).length;
+      assert(comFalta >= marcadas, met + ': fração faltante não reportada');
+    });
+    const sp = C.timeFrequency(x, FS, { method: 'welch', windowS: 1, overlapS: 0.5 });
+    return `${sp.nEpochs - sp.nEpochsValid} de ${sp.nEpochs} épocas descartadas (${sp.pctEpochsFlagged}%) nos quatro métodos`;
+  });
+
+  t('normalização por linha de base e remoção de 1/f fazem o que dizem', () => {
+    /* sinal com 1/f conhecido: ruído filtrado por integração dá inclinação ~2 */
+    const n = FS * 40, br = ruidoBranco(n, 1, 777), x = new Float64Array(n);
+    let acc = 0;
+    for (let i = 0; i < n; i++) { acc = 0.98 * acc + br[i]; x[i] = acc; }
+    const sp = C.timeFrequency(x, FS, { method: 'welch', windowS: 1, overlapS: 0.5, detrendAperiodic: true, fitLo: 5, fitHi: 60 });
+    assert(sp.ok && sp.aperiodic, 'não ajustou o fundo aperiódico');
+    assert(sp.aperiodic.exponent > 1 && sp.aperiodic.exponent < 3.2, 'expoente 1/f fora do plausível: ' + sp.aperiodic.exponent);
+    assert(sp.aperiodic.r2 > 0.9, 'R² do ajuste baixo: ' + sp.aperiodic.r2);
+    assert(/não é FOOOF/.test(sp.aperiodic.method) && /FOOOF completo/.test(sp.caveat),
+      'não declara que o ajuste NÃO é o FOOOF: ' + sp.aperiodic.method);
+    /* depois de dividir pelo fundo, a média por frequência fica perto de 1 */
+    const nF = sp.freqs.length;
+    let soma = 0, m = 0;
+    for (let k = 10; k < nF - 10; k++) { const v = C.median(sp.power.map(c => c[k]).filter(isFinite)); if (isFinite(v)) { soma += v; m++; } }
+    assert(Math.abs(soma / m - 1) < 0.6, 'a divisão pelo fundo não achatou o espectro: média ' + (soma / m).toFixed(2));
+
+    /* normalização por divisão: a janela de referência vira ~1 */
+    const sp2 = C.timeFrequency(x, FS, { method: 'welch', windowS: 1, overlapS: 0.5, normalize: true, mode: 'divide', baseline: [0, 5] });
+    assert(sp2.normalization && sp2.normalization.mode === 'divide', 'normalização não declarada');
+    const iRef = sp2.times.findIndex(t2 => t2 >= 0 && t2 <= 5);
+    const medRef = C.median(Array.from(sp2.power[iRef]).filter(isFinite));
+    assert(Math.abs(medRef - 1) < 0.8, 'a janela de referência não ficou perto de 1: ' + medRef.toFixed(2));
+    return `expoente 1/f = ${sp.aperiodic.exponent.toFixed(2)} (R² ${sp.aperiodic.r2.toFixed(3)}) · referência normalizada ≈ ${medRef.toFixed(2)}`;
+  });
+
+  t('Levinson-Durbin resolve Yule-Walker e o BIC escolhe ordem parcimoniosa', () => {
+    /* AR(2) conhecido: x[n] = 1.4·x[n-1] − 0.8·x[n-2] + e[n], pico ressonante */
+    const n = FS * 30, e = ruidoBranco(n, 1, 999), x = new Float64Array(n);
+    for (let i = 2; i < n; i++) x[i] = 1.4 * x[i - 1] - 0.8 * x[i - 2] + e[i];
+    const sp = C.spectrogramAR(x, FS, { windowS: 2, overlapS: 1, maxOrder: 30 });
+    assert(sp.ok, sp.reason);
+    assert(sp.params.medianOrder >= 2 && sp.params.medianOrder <= 12,
+      'ordem mediana ' + sp.params.medianOrder + ' — o BIC deveria ficar perto de 2, não estourar');
+    /* o pico do AR tem de cair na ressonância teórica do sistema */
+    const r = Math.sqrt(0.8), teta = Math.acos(1.4 / (2 * r));
+    const fTeo = teta * FS / (2 * Math.PI);
+    const col = sp.power[Math.floor(sp.power.length / 2)];
+    let bi = 1; for (let k = 1; k < col.length; k++) if (col[k] > col[bi]) bi = k;
+    assert(Math.abs(sp.freqs[bi] - fTeo) < 2, `pico do AR em ${sp.freqs[bi].toFixed(2)} Hz, ressonância teórica ${fTeo.toFixed(2)} Hz`);
+    assert(/IMPOSTO pelo modelo/.test(sp.caveat), 'não avisa que a forma do espectro vem do modelo');
+    /* Levinson devolve variância residual decrescente com a ordem */
+    const lev = C.levinsonDurbin(Float64Array.from([1, 0.5, 0.2, 0.05]), 3);
+    for (let p = 1; p <= 3; p++) assert(lev.varResidual[p] <= lev.varResidual[p - 1] + 1e-12, 'variância residual subiu com a ordem');
+    return `ordem mediana ${sp.params.medianOrder} (BIC) · pico ${sp.freqs[bi].toFixed(2)} Hz vs teórico ${fTeo.toFixed(2)} Hz`;
+  });
+
+  t('a matriz para desenho recorta em fMax e converte em dB sem perder NaN', () => {
+    const x = senoide(FS * 8, FS, 20, 2);
+    for (let i = FS * 2; i < FS * 2 + 30; i++) x[i] = NaN;
+    const sp = C.timeFrequency(x, FS, { method: 'welch', windowS: 1, overlapS: 0.5 });
+    const tm = C.tfMatrix(sp, { fMax: 60, dB: true });
+    assert(tm.freqs[tm.freqs.length - 1] <= 60, 'não recortou em fMax');
+    assert(tm.matrix.length === tm.freqs.length, 'matriz e eixo de frequência com tamanhos diferentes');
+    assert(tm.matrix[0].length === sp.times.length, 'largura da matriz ≠ número de épocas');
+    const iMarc = Array.from(sp.flagged).indexOf(1);
+    assert(iMarc >= 0 && !isFinite(tm.matrix[10][iMarc]), 'época descartada virou número na matriz de desenho');
+    /* dB = 10·log10(potência), como no frontend do BRAVO */
+    const iBom = Array.from(sp.flagged).indexOf(0);
+    const k = 40;
+    assert(Math.abs(tm.matrix[k][iBom] - 10 * Math.log10(sp.power[iBom][k])) < 1e-9, 'a conversão em dB não é 10·log10');
+    return `${tm.freqs.length} bins até ${tm.freqs[tm.freqs.length - 1]} Hz · NaN preservado · dB = 10·log10(P)`;
+  });
+
+  await ta('o espectrograma roda no trabalhador e o CSV exportado se explica sozinho', async () => {
+    const td = parsed.map(p => p.bsTimeDomain.concat(p.montageTD)).find(a => a.length)[0];
+    const out = await H.Trabalhador.chamar('timeFrequency', [td.data, td.fs, { method: 'welch', windowS: 1, overlapS: 0.5, freqRes: 0.5 }]);
+    assert(out.r && out.r.ok, 'o trabalhador não devolveu espectrograma');
+    const tm = C.tfMatrix(out.r, { fMax: 60, dB: true });
+    const csv = H.csvEspectrograma(out.r, tm, td, true);
+    const linhas = csv.split('\n');
+    const cab = linhas.find(l => !l.startsWith('#'));
+    assert(cab === 'Time_s,Frequency_Hz,Power,logPower_dB,Channel,Missing', 'cabeçalho em inglês mudou: ' + cab);
+    /* o bloco de metadados tem de permitir refazer o cálculo */
+    const meta = linhas.filter(l => l.startsWith('#')).join(' ');
+    ['method=', 'window_samples=', 'nfft=', 'scaling=', 'fs_hz=', 'freq_resolution_hz=', 'epochs_flagged_missing='].forEach(k => {
+      assert(meta.includes(k), 'metadado ausente no CSV: ' + k);
+    });
+    assert(/NOT A MEDICAL DEVICE/.test(meta), 'o CSV não carrega o aviso de uso');
+    assert(!/PatientFirstName|PatientLastName|SerialNumber/i.test(csv), 'identificador vazou para a exportação');
+    return `${out.ondeRodou} · ${out.ms} ms · ${linhas.length - 1} linhas · cabeçalho em inglês`;
+  });
+}
+
 /* ------ heatmap: orientação, unidade do detrending e escala de cor -------- */
 sec('heatmap dia × hora — orientação, unidade e escala de cor');
 {
