@@ -41,7 +41,7 @@ export const PROFILES = {
        consultório. A F28 entrou na Onda 9: a matriz hora × dia é o formato que
        distingue OFF matinal de wearing-off, distinção que muda a conduta e que
        nenhuma das outras figuras mostra. O modo pesquisa continua com todas. */
-    clinicalFigures: ['F1', 'F6', 'F8', 'F9', 'F11', 'F13', 'F28'],
+    clinicalFigures: ['F1', 'F31', 'F6', 'F8', 'F32', 'F9', 'F13', 'F28', 'F11', 'F23', 'F17'],
     peakSearch: [{ band: 'beta', lo: 13, hi: 35, method: 'aperiodic_corrected' }],
     normalization: 'aperiodic_corrected',
     burstBand: { lo: 13, hi: 30 }, burstMethodDefault: 'hilbert_percentile',
@@ -77,7 +77,7 @@ export const PROFILES = {
        descreve a distonia — mostrá-lo aqui seria sugerir leitura que o dado
        não sustenta. Entra F5, o mapa de canais, que orienta a escolha de
        contatos de sensing. */
-    clinicalFigures: ['F1', 'F5', 'F6', 'F8', 'F9', 'F11'],
+    clinicalFigures: ['F1', 'F31', 'F5', 'F6', 'F8', 'F32', 'F9', 'F11', 'F17'],
     peakSearch: [{ band: 'thetaalpha', lo: 4, hi: 12, method: 'aperiodic_corrected' }],
     /* normalização específica: minimiza contaminação espectral por movimentos
        distônicos fásicos e mioclonias (Thenaisie et al. 2021) */
@@ -117,7 +117,7 @@ export const PROFILES = {
       { key: 'highbeta', label: 'β↑', lo: 20, hi: 30, color: COR.highbeta, clinicalReading: 'Beta talâmico alto; apoio.' }
     ],
     primaryBand: { lo: 2, hi: 12, label: 'frequência do tremor' },
-    clinicalFigures: ['F1', 'F5', 'F6', 'F8', 'F9', 'F11'],
+    clinicalFigures: ['F1', 'F31', 'F5', 'F6', 'F8', 'F32', 'F9', 'F11', 'F17'],
     peakSearch: [{ band: 'tremor', lo: 2, hi: 12, method: 'accelerometer_first' }],
     normalization: 'relative',
     burstBand: { lo: 3, hi: 10 }, burstMethodDefault: 'hilbert_percentile',
@@ -158,7 +158,7 @@ export const PROFILES = {
       { key: 'gamma', label: 'γ', lo: 35, hi: 100, color: COR.gamma, clinicalReading: 'Gama.' }
     ],
     primaryBand: { lo: 4, hi: 8, label: 'teta' },
-    clinicalFigures: ['F1', 'F5', 'F6', 'F8', 'F9', 'F11'],
+    clinicalFigures: ['F1', 'F31', 'F5', 'F6', 'F8', 'F32', 'F9', 'F11', 'F17'],
     peakSearch: [{ band: 'theta', lo: 1, hi: 13, method: 'aperiodic_corrected' }],
     normalization: 'relative',
     burstBand: { lo: 4, hi: 13 }, burstMethodDefault: 'hilbert_percentile',
@@ -186,7 +186,7 @@ export const PROFILES = {
       { key: 'gamma', label: 'γ', lo: 35, hi: 100, color: COR.gamma, clinicalReading: '' }
     ],
     primaryBand: { lo: 13, hi: 35, label: 'banda primária' },
-    clinicalFigures: ['F1', 'F6', 'F8', 'F9', 'F11', 'F13'],
+    clinicalFigures: ['F1', 'F31', 'F6', 'F8', 'F32', 'F9', 'F13', 'F11', 'F17'],
     peakSearch: [{ band: 'custom', lo: 13, hi: 35, method: 'aperiodic_corrected' }],
     normalization: 'relative',
     burstBand: { lo: 13, hi: 30 }, burstMethodDefault: 'hilbert_percentile',

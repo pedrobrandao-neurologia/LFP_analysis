@@ -324,3 +324,105 @@ canvas:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .svbox canvas{outline-offset:-2px}
 /* contraste mínimo do texto auxiliar: --ink-3 sobre --panel dá 4,6:1 */
 .exphint,.legendrow,.proc-log{color:var(--ink-2)}
+
+/* ================= ABAS: a hierarquia agudo / crônico (Onda 11) ===========
+   A separação não é de visualização, é de inferência. O registro crônico é
+   observacional e denso no tempo; o agudo é experimental e denso no espectro.
+   Usar um achado de 10 min de consultório para interpretar uma tendência de
+   seis semanas — ou o contrário — é a falácia recorrente da literatura de
+   Percept, e a navegação existe para tornar essa fronteira visível. */
+nav.tabs{position:sticky;top:60px;z-index:40;display:flex;gap:0;overflow-x:auto;
+  background:var(--panel);border-bottom:1px solid var(--rule);
+  padding:0 clamp(12px,4vw,40px);scrollbar-width:thin}
+nav.tabs button{position:relative;flex:0 0 auto;border:0;background:none;cursor:pointer;
+  padding:11px 15px 10px;display:flex;flex-direction:column;gap:2px;align-items:flex-start;
+  border-bottom:2px solid transparent;color:var(--ink-3);white-space:nowrap}
+nav.tabs button b{font:600 11.5px/1.2 var(--mono);letter-spacing:.06em;text-transform:uppercase}
+nav.tabs button i{font-style:normal;font:10px/1.2 var(--sans);color:var(--ink-3);opacity:.85}
+nav.tabs button:hover{color:var(--ink-2);background:var(--panel-2)}
+nav.tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent)}
+nav.tabs button[aria-selected="true"] i{color:var(--accent)}
+nav.tabs button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+nav.tabs button .cnt{position:absolute;top:7px;right:6px;font:9.5px/1 var(--mono);
+  color:var(--ink-3);background:var(--panel-2);border:1px solid var(--rule-2);
+  border-radius:8px;padding:2px 5px}
+nav.tabs button[aria-selected="true"] .cnt{border-color:var(--accent);color:var(--accent)}
+nav.tabs button.vazia{opacity:.45}
+nav.tabs .sep{flex:0 0 1px;background:var(--rule);margin:9px 6px}
+@media(max-width:700px){nav.tabs button i{display:none}}
+@media print{nav.tabs{display:none!important}}
+
+/* cabeçalho de orientação: o que é esta aba, que inferência ela sustenta e
+   qual é a fronteira que não deve ser cruzada */
+.orient{border:1px solid var(--rule);border-radius:4px;padding:14px 16px;margin:0 0 16px;
+  background:var(--panel);border-left-width:3px}
+.orient.agudo{border-left-color:var(--accent)}
+.orient.cronico{border-left-color:var(--left)}
+.orient.ponte{border-left-color:var(--warn)}
+.orient.qc{border-left-color:var(--right)}
+.orient h2{margin:0 0 3px;font:600 13px/1.3 var(--mono);letter-spacing:.05em;
+  text-transform:uppercase;color:var(--ink)}
+.orient .cam{display:inline-block;font:9.5px/1 var(--mono);letter-spacing:.08em;
+  text-transform:uppercase;padding:3px 7px;border-radius:9px;margin-bottom:8px;
+  border:1px solid var(--rule-2);color:var(--ink-3)}
+.orient .cam.agudo{border-color:var(--accent);color:var(--accent)}
+.orient .cam.cronico{border-color:var(--left);color:var(--left)}
+.orient .cam.ponte{border-color:var(--warn);color:var(--warn)}
+.orient p{margin:0 0 8px;font:13px/1.68 var(--sans);color:var(--ink)}
+.orient p:last-child{margin-bottom:0}
+.orient .lim{margin-top:10px;padding-top:9px;border-top:1px dashed var(--rule-2);
+  font:11.5px/1.6 var(--sans);color:var(--ink-2)}
+.orient .lim b{color:var(--warn)}
+.orient dl{margin:10px 0 0;display:grid;grid-template-columns:auto 1fr;gap:4px 12px;
+  font:11.5px/1.55 var(--sans)}
+.orient dt{font:600 10.5px/1.55 var(--mono);color:var(--ink-3);text-transform:uppercase;letter-spacing:.04em}
+.orient dd{margin:0;color:var(--ink-2)}
+
+/* triagem da aba Início: o que este arquivo responde, e por onde começar */
+.triagem{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-bottom:16px}
+.qcard{border:1px solid var(--rule);border-radius:4px;padding:13px 15px;background:var(--panel);
+  display:flex;flex-direction:column;gap:7px;text-align:left;cursor:pointer;font:inherit}
+.qcard:hover{border-color:var(--accent);background:var(--panel-2)}
+.qcard:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.qcard[disabled]{cursor:not-allowed;opacity:.5}
+.qcard b{font:600 12.5px/1.4 var(--sans);color:var(--ink)}
+.qcard span{font:11.5px/1.55 var(--sans);color:var(--ink-2)}
+.qcard em{font-style:normal;font:10px/1.4 var(--mono);letter-spacing:.05em;text-transform:uppercase;color:var(--ink-3)}
+.qcard.na em{color:var(--right)}
+
+/* alarme de artefato: o clínico não reconhece ECG num espectro, então o
+   software precisa alarmar em vez de descrever */
+.alarme{border:1px solid var(--right);border-left-width:4px;border-radius:4px;
+  padding:13px 15px;margin:0 0 16px;background:var(--panel)}
+.alarme.atencao{border-color:var(--warn)}
+.alarme.limpo{border-color:var(--ok)}
+.alarme h3{margin:0 0 7px;font:600 12px/1.3 var(--mono);letter-spacing:.06em;
+  text-transform:uppercase;color:var(--right)}
+.alarme.atencao h3{color:var(--warn)} .alarme.limpo h3{color:var(--ok)}
+.alarme ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:9px}
+.alarme li{border-top:1px dashed var(--rule-2);padding-top:8px}
+.alarme li:first-child{border-top:0;padding-top:0}
+.alarme .tit{font:600 12px/1.45 var(--sans);color:var(--ink);display:block}
+.alarme .pl{font:12.5px/1.6 var(--sans);color:var(--ink);display:block;margin:3px 0}
+.alarme .ev{font:10.5px/1.5 var(--mono);color:var(--ink-3);display:block}
+.alarme .vd{display:inline-block;margin-top:4px;font:600 10px/1 var(--mono);
+  letter-spacing:.06em;text-transform:uppercase;padding:4px 7px;border-radius:3px;
+  border:1px solid currentColor}
+.alarme .vd.nao{color:var(--right)} .alarme .vd.ressalva{color:var(--warn)} .alarme .vd.pode{color:var(--ok)}
+.alarme .rodape{margin:10px 0 0;padding-top:8px;border-top:1px solid var(--rule-2);
+  font:11px/1.55 var(--sans);color:var(--ink-2)}
+
+/* item de agenda (F33): cada anomalia do crônico vira um protocolo agudo, e o
+   cartão só faz sentido se protocolo e "o que ficaria decidido" andarem juntos */
+.agenda-item{border:1px solid var(--rule);border-left:3px solid var(--rule-2);border-radius:4px;
+  padding:12px 15px;margin:0 0 12px;background:var(--panel)}
+.agenda-item .tit{font:600 12.5px/1.55 var(--sans);color:var(--ink);margin-bottom:8px}
+.agenda-item .prio{display:inline-block;margin-right:7px;padding:2px 7px;border-radius:3px;
+  border:1px solid currentColor;font:600 9.5px/1.4 var(--mono);letter-spacing:.06em;text-transform:uppercase}
+.agenda-item .campo{font:11.5px/1.65 var(--sans);color:var(--ink-2);margin:5px 0}
+.agenda-item .campo b{color:var(--ink)}
+.agenda-item .campo.lim b{color:var(--warn)}
+.agenda-item details.evid{margin-top:8px}
+.agenda-item details.evid>summary{cursor:pointer;font:10.5px/1.5 var(--mono);color:var(--ink-3);
+  letter-spacing:.04em;text-transform:uppercase}
+.agenda-item details.evid table{margin-top:7px}

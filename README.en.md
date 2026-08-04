@@ -10,7 +10,7 @@
 
 ## What it is
 
-A **single-file** web application (`index.html`, 868 KB) that reads the JSON *Session Reports* exported from the Medtronic Percept™ clinician programmer and produces **29 interactive figures**, quantitative metrics, a clinical PDF report and statistics-ready exports.
+A **single-file** web application (`index.html`, 1124 KB) that reads the JSON *Session Reports* exported from the Medtronic Percept™ clinician programmer and produces **31 interactive figures** organised into seven tabs, quantitative metrics, a clinical PDF report and statistics-ready exports.
 
 Opens by **double-click**. Nothing to install, no server required, and it never issues a single network request.
 
@@ -45,12 +45,38 @@ Both read the same file and produce largely the same figures.
 
 Load **several files from the same person** at once: chronic Timeline series are concatenated and de-duplicated automatically, and each figure picks the appropriate source. The **+ folder** button ingests a whole directory (cohort mode).
 
+### Seven tabs, and the hierarchy they encode
+
+Navigation is organised into tabs because the difference between an **acute** and a **chronic** recording is not one of time scale — it is epistemological, and treating it as a display filter is the source of much of the error circulating in the Percept literature.
+
+|  | Acute recording | Chronic recording |
+|---|---|---|
+| Design | experimental, controlled | observational, ecological |
+| Inference | causal, driven by the design | association within naturalistic variation |
+| Sampling | sparse in time, rich in spectrum (~250 Hz) | dense in time, poor in spectrum (one scalar per bin) |
+| Unit of analysis | trial / event / condition | timestamp / day / dose |
+| Internal structure | epoched array | irregular long table with gaps |
+| Setting | clinic, supervised | home, unsupervised |
+| Dominant risk | low *n*, synchronisation noise | confounding by configuration change |
+
+| Tab | Layer | What lives there |
+|---|---|---|
+| **Home** | — | Question-first triage: 14 clinician and researcher questions; each states whether **this** file answers it and jumps straight to the figure, or explains what is missing |
+| **Acute** | experimental | Spectrum, montage, time domain, spectrogram, wavelet, PAC, gamma, external signal, stimulation ramp |
+| **Chronic** | observational | Timeline, configuration blocks, circadian rhythm, ON/OFF states, hour × day matrix, levodopa response |
+| **Bridge** | both | Biomarker passport (descending), agenda for the next session (ascending), candidate aDBS threshold over the real 30-day histogram (convergence) |
+| **Quality** | transversal | Artefact alarm, peak reproducibility, electrode integrity, QC panel |
+| **Cohort** | group | Tidy table by subject and hemisphere, prevalence with Wilson CI |
+| **Report** | — | What leaves this software for the chart and for the manuscript |
+
+Every tab opens with an orientation header declaring **the inference layer**, what it answers well, what it cannot answer no matter how much data it has, the dominant risk, and — mandatorily — **the boundary that must not be crossed**. The recurring fallacy in the field is using a ten-minute acute finding to interpret a six-week chronic trend, or the reverse, as if they measured the same quantity.
+
 ### Two modes
 
 | Mode | For what | What it shows |
 |---|---|---|
 | **Clinical** | Consultation, programming decisions | The subset of figures that answers clinic questions, chosen by the disease profile, plus plain-language readings |
-| **Research** | Analysis, publication | All 29 figures, all parameter controls, all exports |
+| **Research** | Analysis, publication | All 31 figures, all parameter controls, all exports |
 
 The same numbers, the same caveats and the same declared parameters in both modes — clinical mode hides figures, never uncertainty. The preference is stored in `localStorage` (interface preference only; no patient data is ever written to disk).
 
@@ -70,7 +96,7 @@ The profile is suggested from the JSON content (lead target, sensing band) and c
 
 ---
 
-## The 29 figures
+## The 31 figures
 
 ### Acute signal — spectrum and time domain
 
@@ -99,6 +125,16 @@ The profile is suggested from the JSON content (lead target, sensing band) and c
 | **F25** | Double-plotted **actogram** and **control band** | Timeline + dated snapshots | Whether the peak hour drifts across days, and whether the diurnal pattern is **band-specific** |
 | **F28** | **Hour × day matrix** — ON/OFF linked to their integral | Timeline and/or Hauser diary CSV | *Where* in the day the OFF falls: morning delayed-on, afternoon wearing-off, or fragmented — the information stacked bars destroy |
 | **F29** | Levodopa response aligned to intake marks | Timeline + medication events | Whether beta drops after the dose, with what latency and for how long — or whether that cannot be separated from the diurnal rhythm |
+| **F32** | **Configuration blocks and change points** | Timeline + at least one session with declared sensing | Whether a change across weeks is biological or the device started measuring something else — the series is **split** at the boundary and the line refuses to cross it |
+
+### The bridge between layers
+
+| # | Figure | Requires | Answers |
+|---|---|---|---|
+| **F31** | **Biomarker passport** | Survey, Signal Test or raw signal | *(descending — calibration)* Which bipolar pair, which peak, which band and which SNR the acute session defined, with a versioned fingerprint, and whether the current device configuration still reproduces it |
+| **F33** | **Agenda for the next session** | Chronic Timeline | *(ascending — hypothesis generation)* What the chronic record observed and cannot explain, turned into an acute protocol, stating what each protocol **would settle**. Never therapeutic conduct |
+
+Eight automatic checks feed the agenda: emerging interhemispheric asymmetry, loss of dose response, reproducible circadian anomaly, baseline drift, unstable configuration, outdated passport, poor coverage and fragmented rhythm. Each returns a finding, numerical evidence, a suggested protocol, what it would settle, and a confidence — and every check the data did not permit goes into `notChecked` with the reason and what would be needed.
 
 ### Stimulation, aDBS and thresholds
 
@@ -167,6 +203,8 @@ Three independent methods, **with quantified validation instead of faith**: QRS 
 - **AR(1) correction** of the cosinor p-value via effective n; Rayleigh test for daily acrophases; η² by hour of day.
 - **Cluster-based permutation** (Maris & Oostenveld) with the Sassenhagen & Draschkow caveat embedded in the output.
 - **Two-sample permutation** with **exact** enumeration when the number of partitions allows, and a fixed seed when it does not.
+- **Non-parametric chronobiology** borrowed from actigraphy, because the beta rhythm is often not sinusoidal and the cosinor underestimates amplitude when it cannot follow the corners: **IS** (interdaily stability), **IV** (intradaily variability), **M10/L5** and **RA** (relative amplitude, unit-invariant). These are descriptive — they test nothing; what tests whether a rhythm exists is the cosinor, and both readings are reported together.
+- **Change-point detection** by binary segmentation with a two-sample CUSUM over the daily value, significance by permutation of the window itself, with optional block permutation to preserve autocorrelation — and annotation against known markers, separating an explained step from an orphan one. *Not a t-test between "before and after".*
 - **ICC(2,1) and ICC(3,1)** with F-based CI — both, because the choice changes the number.
 - **Wilson CI** for proportions; Sarle's bimodality coefficient; Cohen's kappa with CI.
 
@@ -192,7 +230,13 @@ These rules live in the project's development contract ([`CLAUDE.md`](CLAUDE.md)
 
 5. **"This cannot be determined from these data" is a valid answer** — and often the correct one. With fewer than 3 subjects the ICC is refused with the statistical reason. If the levodopa response curve does not separate from chance, latency and duration are **not reported**.
 
-6. **Not a medical device.** A research and decision-support tool. No interface, report or documentation string suggests diagnostic use or replacement of the manufacturer's regulated software.
+6. **Absence of verification is not absence of finding.** The artefact alarm and the session agenda return, alongside what they found, the list of what they **could not** check and why. A file with no raw signal may come back "no alarm" with thirteen impossible checks; reporting only "no alarm" would be lying by omission.
+
+7. **The inference layer is declared, and improper crossing is forbidden.** Each tab states whether what it holds is observational or experimental, and which boundary must not be crossed. The chronic series refuses to be plotted as one continuous line across a sensing-configuration change — because on either side of that boundary it is not the same variable.
+
+8. **The agenda suggests investigation, never conduct.** Every suggested protocol passes a filter that rejects prescriptive verbs, and each item is flagged `conductFree`. The software does not suggest changing contacts, amplitudes, medication or aDBS programming.
+
+9. **Not a medical device.** A research and decision-support tool. No interface, report or documentation string suggests diagnostic use or replacement of the manufacturer's regulated software.
 
 ---
 
@@ -253,7 +297,7 @@ The density scaling is checked against exact identities rather than against anot
 
 ### Regression suite
 
-`node tests/run.mjs` — **249 tests**, including all 29 figure renderers exercised against a minimal simulated DOM. No existing test may be removed or weakened to make new code pass.
+`node tests/run.mjs` — **271 tests**, including all 31 figure renderers exercised against a minimal simulated DOM. No existing test may be removed or weakened to make new code pass.
 
 ---
 
@@ -262,7 +306,7 @@ The density scaling is checked against exact identities rather than against anot
 ```bash
 node tools/gerar_exemplo.mjs examples   # synthetic dataset (no real data)
 cd src && node build.mjs                # generates index.html from src/
-node tests/run.mjs                      # 249 tests
+node tests/run.mjs                      # 271 tests
 node tests/benchmark.mjs --check        # 87 criteria, fails on regression
 ```
 
