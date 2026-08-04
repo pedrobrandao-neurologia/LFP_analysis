@@ -1375,8 +1375,12 @@ sec('modo clínico, leituras em linguagem simples e pipelines');
     H.S.mode = antes; H.S.profile = perfilAntes;
     /* o conjunto tem de ser EXATAMENTE o declarado no perfil — comparar contra
        um número mágico deixaria passar figura trocada por outra */
-    const esperado = C.PROFILES.pd.clinicalFigures;
-    assert(clin.join(' ') === esperado.join(' '), `modo clínico mostrou "${clin.join(' ')}", perfil declara "${esperado.join(' ')}"`);
+    /* compara como CONJUNTO: a ordem de exibição é a de FIGURES, e a ordem
+       declarada no perfil é a de leitura pretendida — as duas não coincidem de
+       propósito. Trocar uma figura por outra continua sendo pego. */
+    const esperado = C.PROFILES.pd.clinicalFigures.slice().sort();
+    assert(clin.slice().sort().join(' ') === esperado.join(' '),
+      `modo clínico mostrou "${clin.join(' ')}", perfil declara "${C.PROFILES.pd.clinicalFigures.join(' ')}"`);
     assert(pesq.length === H.FIGURES.length, 'modo pesquisa deveria mostrar todas');
     return `clínico: ${clin.join(' ')} · pesquisa: ${pesq.length} figuras`;
   });
@@ -2242,6 +2246,79 @@ sec('coorte, EDF, BIDS-like e linha de comando');
   });
 }
 
+/* -------- navegação por abas: a hierarquia agudo/crônico (Onda 11) -------- */
+sec('abas — hierarquia agudo/crônico e triagem por pergunta');
+{
+  t('toda figura mora em exatamente uma aba, e toda aba só cita figura que existe', () => {
+    const idsFig = new Set(H.FIGURES.map(f => f.id));
+    const vistas = new Map();
+    const inexistentes = [];
+    H.ABAS.forEach(a => (a.figuras || []).forEach(id => {
+      if (!idsFig.has(id)) inexistentes.push(`${a.id}:${id}`);
+      vistas.set(id, (vistas.get(id) || []).concat(a.id));
+    }));
+    assert(!inexistentes.length, 'aba cita figura inexistente: ' + inexistentes.join(', '));
+    const duplicadas = Array.from(vistas.entries()).filter(([, abas]) => abas.length > 1);
+    assert(!duplicadas.length, 'figura em mais de uma aba: ' + duplicadas.map(([f, a]) => `${f}->${a.join('+')}`).join(', '));
+    const orfas = H.FIGURES.map(f => f.id).filter(id => !vistas.has(id));
+    assert(!orfas.length, 'figura sem aba — ficaria inalcançável: ' + orfas.join(', '));
+    return `${H.FIGURES.length} figuras em ${H.ABAS.filter(a => a.figuras).length} abas, sem duplicata e sem órfã`;
+  });
+
+  t('cada aba declara a camada de inferência e a fronteira que não deve ser cruzada', () => {
+    const semOrientacao = H.ABAS.filter(a => !a.orient || !a.orient.titulo || !(a.orient.texto || []).length);
+    assert(!semOrientacao.length, 'aba sem cabeçalho de orientação: ' + semOrientacao.map(a => a.id).join(', '));
+    const semLimite = H.ABAS.filter(a => a.figuras && !(a.orient && a.orient.limite));
+    assert(!semLimite.length, 'aba de figuras sem declaração de fronteira: ' + semLimite.map(a => a.id).join(', '));
+    const agudo = H.ABAS.find(a => a.id === 'agudo');
+    const cronico = H.ABAS.find(a => a.id === 'cronico');
+    assert(agudo.camada === 'agudo' && cronico.camada === 'cronico', 'camadas não declaradas');
+    assert(/Crônico/i.test(agudo.orient.limite), 'a aba Agudo não aponta para onde a pergunta de dias mora');
+    assert(/configuração/i.test(cronico.orient.limite), 'a aba Crônico não avisa do confundidor de configuração');
+    return H.ABAS.map(a => a.id).join(' · ');
+  });
+
+  t('a triagem só oferece pergunta que este arquivo responde, e explica as demais', () => {
+    const d = H.ds();
+    const semAlvo = H.PERGUNTAS.filter(p => !H.FIGURES.some(f => f.id === p.fig));
+    assert(!semAlvo.length, 'pergunta aponta para figura inexistente: ' + semAlvo.map(p => p.id).join(', '));
+    const abaRuim = H.PERGUNTAS.filter(p => !H.ABAS.some(a => a.id === p.aba));
+    assert(!abaRuim.length, 'pergunta aponta para aba inexistente: ' + abaRuim.map(p => p.id).join(', '));
+    const desencontro = H.PERGUNTAS.filter(p => {
+      const a = H.ABAS.find(x => x.id === p.aba);
+      return a && a.figuras && !a.figuras.includes(p.fig);
+    });
+    assert(!desencontro.length, 'pergunta leva a aba que não contém a figura: ' +
+      desencontro.map(p => `${p.id}->${p.aba}/${p.fig}`).join(', '));
+    const semMotivo = H.PERGUNTAS.filter(p => !p.tem(d) && !p.falta);
+    assert(!semMotivo.length, 'pergunta indisponível sem motivo: ' + semMotivo.map(p => p.id).join(', '));
+    const disp = H.PERGUNTAS.filter(p => p.tem(d)).length;
+    const personas = new Set(H.PERGUNTAS.map(p => p.persona));
+    assert(personas.has('clinico') && personas.has('pesquisa'), 'a triagem não cobre as duas personas');
+    return `${disp}/${H.PERGUNTAS.length} perguntas respondíveis · personas: ${Array.from(personas).join(', ')}`;
+  });
+
+  t('o recorte por aba compõe com o recorte por modo, sem esconder incerteza', () => {
+    const d = H.ds();
+    const antes = H.S.mode;
+    H.S.mode = 'pesquisa';
+    const nPesquisa = H.ABAS.filter(a => a.figuras).reduce((n, a) => n + H.figurasDaAba(a, d).length, 0);
+    H.S.mode = 'clinico';
+    const nClinico = H.ABAS.filter(a => a.figuras).reduce((n, a) => n + H.figurasDaAba(a, d).length, 0);
+    H.S.mode = antes;
+    assert(nPesquisa === H.FIGURES.length,
+      `modo pesquisa deveria alcançar as ${H.FIGURES.length} figuras pelas abas, alcança ${nPesquisa}`);
+    assert(nClinico > 0 && nClinico < nPesquisa, 'o modo clínico não está recortando');
+    /* o painel de QC é requisito clínico, não item de pesquisa: um clínico que
+       não vê o alarme de artefato interpreta canal contaminado */
+    C.PROFILE_IDS.forEach(id => {
+      assert(C.PROFILES[id].clinicalFigures.includes('F17'),
+        `perfil ${id} não mostra o painel de qualidade no modo clínico`);
+    });
+    return `pesquisa alcança ${nPesquisa} figuras · clínico ${nClinico} · F17 obrigatória em todos os perfis`;
+  });
+}
+
 /* ------- tempo-frequência no padrão do BRAVO (Onda 10) -------------------- */
 sec('espectrogramas — FFT arbitrária, escala do scipy e emulação de bordo');
 {
@@ -2968,6 +3045,246 @@ sec('PDF nativo, idiomas, acessibilidade e robustez');
     const r = C.clinicalReadings(b, { profileId: 'pd' });
     assert(r.readings.every(l => l.nivel === 'insuficiente' || !l.numeros), 'leitura com número sobre nada');
     return `${b.acute.length} agudas, ${b.chronic.length} crônicas, ${r.readings.length} leitura(s) — todas declaram dado insuficiente`;
+  });
+}
+
+
+/* ----------------------- cronobiologia, mudança de nível, alarme e agenda -- */
+sec('ritmo não paramétrico, ponto de mudança, alarme ativo e agenda da próxima sessão');
+{
+  const DIA = 86400000, BIN = 600000, T0 = Date.UTC(2025, 0, 1, 0, 0, 0);
+  /* gerador determinístico: nDias × 144 bins de 10 min, sem Math.random */
+  const serie = (nDias, fn) => {
+    const out = [];
+    for (let d = 0; d < nDias; d++) for (let k = 0; k < 144; k++) {
+      const v = fn(d, k / 6, k);
+      if (v != null) out.push({ t: T0 + d * DIA + k * BIN, lfp: v });
+    }
+    return out;
+  };
+  const ritmo = h => 10 + 3 * Math.sin(2 * Math.PI * (h - 8) / 24);
+  const jitter = (d, k) => 0.35 * Math.sin(d * 7.13 + k * 2.71);
+
+  /* --- IS / IV / M10-L5 contra verdade construída ------------------------ */
+  t('IS separa ritmo que se repete de ruído que não se repete', () => {
+    const puro = serie(14, (d, h) => ritmo(h));
+    const caos = serie(14, (d, h, k) => 10 + 5 * Math.sin(d * 11.7 + k * 3.31));
+    const a = C.interdailyStability(puro, 0, {}), b = C.interdailyStability(caos, 0, {});
+    assert(a.ok && b.ok, 'IS não calculou');
+    assert(a.IS > 0.95, 'ritmo idêntico entre dias deveria dar IS ≈ 1, deu ' + a.IS);
+    assert(b.IS < 0.2, 'série sem estrutura de 24 h deveria dar IS baixo, deu ' + b.IS);
+    return `IS ritmo puro ${a.IS.toFixed(3)} · IS sem ritmo ${b.IS.toFixed(3)}`;
+  });
+
+  t('IV distingue perfil liso de perfil picado, e declara o que descartou', () => {
+    const liso = serie(14, (d, h) => ritmo(h));
+    const picado = serie(14, (d, h, k) => 10 + 6 * Math.sin(d * 3.7 + k * 1.9));
+    const a = C.intradailyVariability(liso, 0, {}), b = C.intradailyVariability(picado, 0, {});
+    assert(a.ok && b.ok, 'IV não calculou');
+    assert(a.IV < 0.3, 'perfil senoidal deveria dar IV baixo, deu ' + a.IV);
+    assert(b.IV > 1.0, 'perfil picado deveria dar IV alto, deu ' + b.IV);
+    assert(a.params && a.params.binStatistic, 'IV não declarou a estatística de resumo do bin');
+    return `IV liso ${a.IV.toFixed(3)} · IV picado ${b.IV.toFixed(3)} · resumo por ${a.params.binStatistic}`;
+  });
+
+  t('M10 e L5 acham a janela construída, e RA não depende da unidade', () => {
+    /* pico às 9 h, vale às 21 h */
+    const rows = serie(14, (d, h) => 10 + 4 * Math.cos(2 * Math.PI * (h - 9) / 24));
+    const dobro = rows.map(r => ({ t: r.t, lfp: 2 * r.lfp }));
+    const a = C.m10l5(rows, 0, {}), b = C.m10l5(dobro, 0, {});
+    assert(a.ok && b.ok, 'M10/L5 não calculou');
+    const dist = Math.min(Math.abs(a.M10startHour - 4), 24 - Math.abs(a.M10startHour - 4));
+    assert(dist <= 2, 'M10 de um pico às 9 h deveria começar perto das 4 h, começou às ' + a.M10startHour);
+    assert(Math.abs(a.RA - b.RA) < 1e-9, 'RA mudou ao multiplicar a série por 2: ' + a.RA + ' vs ' + b.RA);
+    return `M10 começa ${a.M10startHour}h · L5 ${a.L5startHour}h · RA ${a.RA.toFixed(4)} invariante à escala`;
+  });
+
+  t('o painel de ritmo recusa dado curto em vez de devolver número frágil', () => {
+    const curto = serie(2, (d, h) => ritmo(h));
+    const r = C.actigraphyPanel(curto, 0, {});
+    assert(!r.ok, 'aceitou 2 dias');
+    assert(/dia/.test(r.reason), 'recusou sem dizer por quê: ' + r.reason);
+    return r.reason.slice(0, 70);
+  });
+
+  /* --- ponto de mudança -------------------------------------------------- */
+  t('ponto de mudança acha o degrau construído e não inventa em série plana', () => {
+    const comDegrau = serie(20, (d, h, k) => ritmo(h) - (d >= 10 ? 12 : 0) + jitter(d, k));
+    const plana = serie(20, (d, h, k) => ritmo(h) + jitter(d, k));
+    const a = C.changePointsInTime(comDegrau, { offMin: 0 });
+    const b = C.changePointsInTime(plana, { offMin: 0 });
+    assert(a.ok && b.ok, 'não calculou');
+    assert(a.nPoints === 1, 'esperado 1 ponto de mudança, achou ' + a.nPoints);
+    assert(a.points[0].dayKey === '2025-01-11', 'degrau no dia errado: ' + a.points[0].dayKey);
+    assert(a.points[0].delta < -10, 'variação do degrau muito pequena: ' + a.points[0].delta);
+    assert(b.nPoints === 0, 'inventou ' + b.nPoints + ' mudança(s) numa série sem degrau');
+    return `degrau em ${a.points[0].dayKey}, Δ ${a.points[0].delta.toFixed(2)}, p ${a.points[0].p} · série plana: 0 pontos`;
+  });
+
+  t('a anotação separa mudança explicada por marco de mudança órfã', () => {
+    const rows = serie(20, (d, h, k) => ritmo(h) - (d >= 10 ? 12 : 0) + jitter(d, k));
+    const cp = C.changePointsInTime(rows, { offMin: 0 });
+    const perto = C.annotateChangePoints(cp.points, [{ t: T0 + 10 * DIA, label: 'reprogramação' }], { toleranceDays: 2 });
+    const longe = C.annotateChangePoints(cp.points, [{ t: T0 + 2 * DIA, label: 'reprogramação' }], { toleranceDays: 2 });
+    assert(perto.nExplained === 1 && perto.nUnexplained === 0, 'marco a 1 dia não explicou a mudança');
+    assert(longe.nExplained === 0 && longe.nUnexplained === 1, 'marco a 9 dias explicou o que não deveria');
+    assert(/não estabelece causa/.test(longe.caveat), 'a anotação não declarou que coincidência não é causa');
+    return `marco a 1 dia: explicado · marco a 9 dias: órfão · ressalva de causalidade presente`;
+  });
+
+  /* --- alarme ativo de artefato ------------------------------------------ */
+  const FS = 250, NS = FS * 60;
+  const canal = (ampQRS, satura) => {
+    const x = new Float64Array(NS);
+    let s = 12345;
+    const r = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296 - 0.5; };
+    for (let i = 0; i < NS; i++) x[i] = 4 * Math.sin(2 * Math.PI * 20 * i / FS) + 3 * r();
+    if (ampQRS > 0) {
+      const rr = Math.round(FS * 0.8);                       /* 75 bpm */
+      for (let p = rr; p < NS; p += rr) for (let k = -4; k <= 4; k++)
+        if (p + k < NS) x[p + k] += ampQRS * Math.exp(-(k * k) / 2) * (k === 0 ? 1 : (k < 0 ? -0.3 : -0.35));
+    }
+    if (satura) for (let i = 0; i < NS; i++) x[i] = Math.max(-3, Math.min(3, x[i]));
+    return {
+      bsTimeDomain: [{
+        label: '1-3', hemisphere: 'Left', channel: '1-3', fs: FS, fsEff: FS, data: x,
+        packets: { pctMissing: 0, nGaps: 0 }, timing: { driftMsTotal: 0 }
+      }]
+    };
+  };
+
+  t('o alarme acha ECG forte, chama de impeditivo e diz o que fazer', () => {
+    const a = C.artifactAlarm(canal(30, false), {});
+    const ecg = (a.alarms || []).find(x => x.id === 'ecg');
+    assert(ecg, 'não alarmou ECG num canal com QRS de 30 µV');
+    assert(ecg.severity === 'critico', 'gravidade errada: ' + ecg.severity);
+    assert(ecg.verdict === 'não interprete este canal', 'veredito errado: ' + ecg.verdict);
+    assert(ecg.plain && !/µV²|FFT|espectrograma/.test(ecg.plain), 'a frase para o clínico usa jargão de processamento');
+    assert(ecg.whatToDo && ecg.whatToDo.length > 20, 'alarme sem ação concreta');
+    return `${ecg.severity} · ${ecg.evidence.slice(0, 80)}`;
+  });
+
+  t('o alarme NÃO acusa batimento num canal limpo com beta forte', () => {
+    const a = C.artifactAlarm(canal(0, false), {});
+    assert(!(a.alarms || []).some(x => x.id === 'ecg'), 'falso positivo de ECG num canal só com beta e ruído');
+    assert(a.level === 'limpo', 'nível deveria ser limpo, veio ' + a.level);
+    return `${a.checked.length} verificação(ões) feitas, nenhum alarme`;
+  });
+
+  t('o segundo detector pega ECG que o detector de picos R deixa passar', () => {
+    /* com QRS pequeno o detector de picos trava no ruído; a periodicidade da
+       potência instantânea continua vendo o transiente repetitivo */
+    const a = C.artifactAlarm(canal(10, false), {});
+    const ecg = (a.alarms || []).find(x => x.id === 'ecg');
+    assert(ecg, 'nenhum alarme com QRS de 10 µV — o segundo detector não pegou');
+    assert(ecg.severity === 'atencao', 'achado só do segundo detector não pode ser impeditivo: ' + ecg.severity);
+    assert(/potência instantânea se repete/.test(ecg.evidence), 'não mostrou a evidência de periodicidade');
+    return ecg.evidence.slice(ecg.evidence.indexOf('potência'), 200);
+  });
+
+  t('o alarme acha saturação e conta o que NÃO pôde verificar', () => {
+    const a = C.artifactAlarm(canal(0, true), {});
+    assert((a.alarms || []).some(x => x.id === 'saturacao'), 'não achou o sinal ceifado em ±3 µV');
+    const vazio = C.artifactAlarm({}, {});
+    assert(vazio.ok && !vazio.alarms.length, 'arquivo vazio deveria voltar sem alarme');
+    assert(vazio.notChecked.length >= 3, 'arquivo sem nada deveria acumular verificações impossíveis');
+    assert(/ausência de verificação não é ausência de artefato/.test(vazio.summary),
+      'o resumo de um arquivo sem dado não avisou que nada foi verificado');
+    return `saturação detectada · arquivo vazio: 0 alarmes e ${vazio.notChecked.length} verificações impossíveis`;
+  });
+
+  /* --- agenda da próxima sessão ------------------------------------------ */
+  t('cada checagem da agenda dispara no cenário que a define', () => {
+    const casos = {
+      assimetria: {
+        rows: {
+          Left: serie(30, (d, h, k) => ritmo(h) + jitter(d, k)),
+          Right: serie(30, (d, h, k) => (d < 15 ? ritmo(h) : ritmo(h) * 0.55) + jitter(d, k))
+        }
+      },
+      dose: {
+        rows: { Left: serie(30, (d, h, k) => ritmo(h) + jitter(d, k)) },
+        doseTimes: (() => { const v = []; for (let d = 0; d < 30; d++)[7, 12, 17, 21].forEach(h => v.push(T0 + d * DIA + h * 36e5)); return v; })()
+      },
+      circadiano: { rows: { Left: serie(30, (d, h, k) => ritmo(h) - (Math.floor(h) === 3 ? 4 : 0) + jitter(d, k)) } },
+      deriva: { rows: { Left: serie(30, (d, h, k) => ritmo(h) - (d >= 15 ? 4 : 0) + jitter(d, k)) } },
+      cobertura: { rows: { Left: serie(30, (d, h, k) => (h >= 8 && h < 14) ? ritmo(h) + jitter(d, k) : null) } },
+      ritmo: { rows: { Left: serie(30, (d, h, k) => 10 + 6 * Math.sin(d * 3.7 + k * 1.9)) } }
+    };
+    const achados = [];
+    Object.keys(casos).forEach(id => {
+      const ag = C.sessionAgenda(Object.assign({ offMin: 0 }, casos[id]), {});
+      assert(ag.ok, `agenda falhou no caso ${id}: ${ag.reason}`);
+      const it = (ag.items || []).find(x => x.id === id);
+      assert(it, `a checagem "${id}" não disparou no cenário construído para ela`);
+      assert(it.suggestedProtocol && it.whatItWouldSettle, `item ${id} sem protocolo ou sem o que ficaria decidido`);
+      assert(it.conductFree, `item ${id} tem verbo de conduta terapêutica no texto`);
+      achados.push(`${id}/${it.priority}`);
+    });
+    return achados.join(' · ');
+  });
+
+  t('numa série sem anomalia a agenda não inventa item', () => {
+    const limpa = {
+      offMin: 0,
+      rows: {
+        Left: serie(30, (d, h, k) => ritmo(h) + jitter(d, k)),
+        Right: serie(30, (d, h, k) => ritmo(h) + jitter(d, k))
+      }
+    };
+    const ag = C.sessionAgenda(limpa, {});
+    assert(ag.ok, 'agenda falhou: ' + ag.reason);
+    assert(ag.items.length === 0, 'inventou item numa série sem anomalia: ' + ag.items.map(i => i.id).join(', '));
+    assert(ag.notChecked.length >= 1, 'sem passaporte e sem dose, deveria haver checagem não realizada');
+    assert(/não é\s*\n?\s*ausência|ausência de achado/i.test(ag.incompletenessNote) || ag.notChecked.length === 0,
+      'não avisou que verificação não feita não é achado ausente');
+    return `0 itens · ${ag.nChecksRun}/${ag.nChecksTotal} verificações · ${ag.notChecked.map(n => n.id).join(', ')} não checadas`;
+  });
+
+  t('a agenda declara que é investigação e nunca conduta', () => {
+    const ag = C.sessionAgenda({ offMin: 0, rows: { Left: serie(30, (d, h, k) => ritmo(h) - (d >= 15 ? 4 : 0) + jitter(d, k)) } }, {});
+    assert(/AGENDA DE INVESTIGAÇÃO/.test(ag.disclaimer), 'sem declaração de natureza');
+    assert(/não é conduta terapêutica/i.test(ag.disclaimer), 'não nega conduta terapêutica');
+    const texto = (ag.items || []).map(i => `${i.suggestedProtocol} ${i.whatItWouldSettle}`).join(' ').toLowerCase();
+    ['aumente', 'diminua a amplitude', 'prescreva', 'troque o contato'].forEach(v =>
+      assert(texto.indexOf(v) < 0, 'texto de protocolo contém verbo de conduta: ' + v));
+    assert(ag.params && ag.params.thresholds && isFinite(ag.params.seed), 'a agenda não exportou parâmetros e semente');
+    return `${ag.items.length} item(ns) · limiares e semente exportados · nenhum verbo de conduta`;
+  });
+
+  t('sem Timeline a agenda recusa em vez de devolver lista vazia como se fosse limpo', () => {
+    const ag = C.sessionAgenda({ offMin: 0, rows: {} }, {});
+    assert(!ag.ok, 'aceitou arquivo sem Timeline');
+    assert(/registro crônico|Timeline/.test(ag.reason), 'recusou sem dizer o que falta: ' + ag.reason);
+    return ag.reason.slice(0, 80);
+  });
+
+  /* --- as duas figuras novas --------------------------------------------- */
+  t('F32 e F33 renderizam e existem nas abas certas', () => {
+    const f32 = H.FIGURES.find(x => x.id === 'F32'), f33 = H.FIGURES.find(x => x.id === 'F33');
+    assert(f32 && f33, 'F32 ou F33 não está registrada');
+    const d = H.ds();
+    assert(f32.has(d) && f33.has(d), 'as figuras se declaram indisponíveis sobre o exemplo');
+    const aba32 = H.ABAS.find(a => (a.figuras || []).indexOf('F32') >= 0);
+    const aba33 = H.ABAS.find(a => (a.figuras || []).indexOf('F33') >= 0);
+    assert(aba32 && aba32.id === 'cronico', 'F32 deveria morar na aba Crônico');
+    assert(aba33 && aba33.id === 'ponte', 'F33 deveria morar na aba Ponte');
+    const n1 = document.createElement('div'), n2 = document.createElement('div');
+    f32.render(n1, d); f33.render(n2, d);
+    /* o DOM de teste é mínimo: varre a árvore à mão em vez de usar seletor */
+    const varre = (n, acc) => {
+      acc.tags.push(n.tagName || (typeof n.getContext === 'function' ? 'CANVAS' : '?'));
+      acc.txt += ' ' + (n.textContent || '') + ' ' + (n.innerHTML || '');
+      (n.children || []).forEach(c => varre(c, acc));
+      return acc;
+    };
+    const a1 = varre(n1, { tags: [], txt: '' }), a2 = varre(n2, { tags: [], txt: '' });
+    const tabelas = a1.tags.filter(x => x === 'TABLE').length;
+    assert(tabelas >= 1, 'F32 não produziu tabela');
+    assert(a1.tags.indexOf('CANVAS') >= 0, 'F32 não desenhou a série');
+    assert(a2.txt.length > 200, 'F33 produziu conteúdo vazio');
+    assert(/AGENDA DE INVESTIGAÇÃO/.test(a2.txt), 'F33 não mostrou a natureza da lista ao usuário');
+    return `F32 em ${aba32.id} · F33 em ${aba33.id} · ${tabelas} tabela(s) e 1 gráfico em F32`;
   });
 }
 

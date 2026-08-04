@@ -8,7 +8,7 @@
 
 ## O que é
 
-Um aplicativo web de **arquivo único** (`index.html`, 868 KB) que lê os *Session Reports* em JSON exportados do programador do neuroestimulador Medtronic Percept™ e produz **29 figuras interativas**, métricas quantitativas, relatório clínico em PDF e exportações prontas para estatística.
+Um aplicativo web de **arquivo único** (`index.html`, 1124 KB) que lê os *Session Reports* em JSON exportados do programador do neuroestimulador Medtronic Percept™ e produz **31 figuras interativas** organizadas em sete abas, métricas quantitativas, relatório clínico em PDF e exportações prontas para estatística.
 
 Abre com **duplo clique**. Não instala nada, não precisa de servidor, não faz uma única requisição de rede.
 
@@ -43,12 +43,38 @@ Os dois leem o mesmo arquivo e produzem em grande parte as mesmas figuras.
 
 Carregue **vários arquivos da mesma pessoa** ao mesmo tempo: as séries do Timeline crônico são concatenadas e desduplicadas automaticamente, e cada figura escolhe a fonte adequada. O botão **+ pasta** ingere um diretório inteiro de uma vez (modo coorte).
 
+### Sete abas, e a hierarquia que elas codificam
+
+A navegação é organizada em abas porque a diferença entre registro **agudo** e registro **crônico** não é de escala temporal — é epistemológica, e tratá-la como filtro de visualização é a origem de boa parte dos erros que circulam na literatura de Percept.
+
+|  | Registro agudo | Registro crônico |
+|---|---|---|
+| Desenho | experimental, controlado | observacional, ecológico |
+| Inferência | causal, dirigida pelo desenho | associação em variação naturalística |
+| Amostragem | esparsa no tempo, rica no espectro (~250 Hz) | densa no tempo, pobre no espectro (um escalar por bin) |
+| Unidade de análise | *trial* / evento / condição | *timestamp* / dia / dose |
+| Estrutura interna | array epocado | tabela longa irregular com lacunas |
+| Ambiente | consultório, supervisionado | domicílio, sem supervisão |
+| Risco dominante | baixo *n*, ruído de sincronização | confundimento por mudança de configuração |
+
+| Aba | Camada | O que mora ali |
+|---|---|---|
+| **Início** | — | Triagem por pergunta: 14 perguntas de clínico e de pesquisador; cada uma diz se **este** arquivo a responde e leva direto à figura, ou explica o que falta |
+| **Agudo** | experimental | Espectro, montagem, domínio do tempo, espectrograma, wavelet, PAC, gama, sinal externo, rampa de estimulação |
+| **Crônico** | observacional | Timeline, blocos de configuração, ritmo circadiano, estados ON/OFF, matriz hora × dia, resposta à levodopa |
+| **Ponte** | as duas | Passaporte do biomarcador (descendente), agenda da próxima sessão (ascendente), limiar de aDBS sobre o histograma real de 30 dias (convergência) |
+| **Qualidade** | transversal | Alarme de artefato, reprodutibilidade do pico, integridade de eletrodos, painel de QC |
+| **Coorte** | grupo | Tabela *tidy* por sujeito e hemisfério, prevalência com IC de Wilson |
+| **Relatório** | — | O que sai daqui para o prontuário e para o manuscrito |
+
+Cada aba abre com um cabeçalho de orientação que declara **a camada de inferência**, o que ela responde bem, o que ela não responde por mais dados que tenha, o risco dominante, e — obrigatoriamente — **a fronteira que não deve ser cruzada**. A falácia recorrente na área é usar um achado agudo de dez minutos para interpretar uma tendência crônica de seis semanas, ou o contrário, como se fossem medidas da mesma quantidade.
+
 ### Dois modos
 
 | Modo | Para quê | O que mostra |
 |---|---|---|
 | **Clínico** | Consulta, decisão de programação | O subconjunto de figuras que responde às perguntas de consultório, escolhido pelo perfil de doença, mais leituras em linguagem simples |
-| **Pesquisa** | Análise, publicação | Todas as 29 figuras, todos os controles de parâmetro, todas as exportações |
+| **Pesquisa** | Análise, publicação | Todas as 31 figuras, todos os controles de parâmetro, todas as exportações |
 
 Os mesmos números, as mesmas ressalvas e os mesmos parâmetros declarados nos dois modos — o modo clínico esconde figuras, nunca esconde incerteza. A preferência fica no `localStorage` (apenas a preferência de interface; nenhum dado de paciente é gravado).
 
@@ -68,7 +94,7 @@ O perfil é sugerido pelo conteúdo do JSON (alvo do eletrodo, banda de sensing)
 
 ---
 
-## As 29 figuras
+## As 31 figuras
 
 ### Sinal agudo — espectro e domínio do tempo
 
@@ -97,6 +123,16 @@ O perfil é sugerido pelo conteúdo do JSON (alvo do eletrodo, banda de sensing)
 | **F25** | **Actograma** duplo-plot e **banda-controle** | Timeline + snapshots datados | Se o horário do pico deriva entre os dias, e se o padrão diurno é **específico da banda** |
 | **F28** | **Matriz hora × dia** — ON/OFF ligados à sua integral | Timeline e/ou diário de Hauser em CSV | Onde no dia o OFF cai: matinal por *delayed-on*, vespertino por *wearing-off*, ou picado — a informação que a barra empilhada destrói |
 | **F29** | Resposta à levodopa alinhada às tomadas | Timeline + eventos de medicação | Se o beta cai depois da dose, com que latência e por quanto tempo — ou se isso não se separa do ritmo diurno |
+| **F32** | **Blocos de configuração e pontos de mudança** | Timeline + ≥ 1 sessão com sensing declarado | Se a mudança ao longo das semanas é biológica ou é o aparelho ter passado a medir outra coisa — a série é **partida** na fronteira e a linha se recusa a atravessá-la |
+
+### A ponte entre as camadas
+
+| # | Figura | Precisa de | Responde |
+|---|---|---|---|
+| **F31** | **Passaporte do biomarcador** | Survey, Signal Test ou sinal bruto | *(descendente — calibração)* Qual par bipolar, qual pico, qual banda e qual SNR a sessão aguda definiu, com impressão digital versionada, e se a configuração vigente do aparelho ainda reproduz isso |
+| **F33** | **Agenda da próxima sessão** | Timeline crônico | *(ascendente — geração de hipótese)* O que o crônico observou e não explica, transformado em protocolo agudo, com o que cada protocolo **decidiria**. Nunca conduta terapêutica |
+
+Oito checagens automáticas alimentam a agenda: assimetria interhemisférica emergente, perda da resposta à dose, anomalia circadiana reprodutível, deriva do nível basal, configuração instável, passaporte desatualizado, cobertura pobre e ritmo fragmentado. Cada uma sai com achado, evidência numérica, protocolo sugerido, o que ficaria decidido e a confiança — e toda checagem que o dado não permitiu sai em `notChecked` com o motivo e o que seria necessário.
 
 ### Estimulação, aDBS e limiares
 
@@ -166,6 +202,8 @@ Três métodos independentes, **com validação quantificada em vez de fé**: in
 - **Permutação de cluster** (Maris & Oostenveld) com a ressalva de Sassenhagen & Draschkow embutida na saída.
 - **Permutação de duas amostras** com enumeração **exata** quando o número de partições permite, e semente fixa quando não.
 - **ICC(2,1) e ICC(3,1)** com IC pelo método F — os dois, porque a escolha muda o número.
+- **Cronobiologia não paramétrica** emprestada da actigrafia, porque o ritmo do beta muitas vezes não é senoidal e o cosinor subestima a amplitude quando não consegue seguir os cantos: **IS** (estabilidade interdiária), **IV** (variabilidade intradiária), **M10/L5** e **RA** (amplitude relativa, invariante à unidade). São descritivas — não testam nada; quem testa se o ritmo existe é o cosinor, e as duas leituras saem juntas.
+- **Detecção de pontos de mudança** por segmentação binária com CUSUM de duas amostras sobre o valor diário, significância por permutação da própria janela, com opção de permutação em blocos para preservar autocorrelação — e anotação contra marcos conhecidos, separando degrau explicado de degrau órfão. *Não teste t entre "antes e depois".*
 - **IC de Wilson** para proporções; bimodalidade de Sarle; kappa de Cohen com IC.
 
 ### Modelos e simulação
@@ -190,7 +228,13 @@ Estas regras estão no contrato de desenvolvimento do projeto ([`CLAUDE.md`](CLA
 
 5. **"Não é possível determinar com este dado" é uma resposta válida** — e frequentemente a certa. Com menos de 3 sujeitos, o ICC é recusado com o motivo estatístico. Se a curva de resposta à levodopa não se separa do acaso, latência e duração **não são reportadas**.
 
-6. **Não é dispositivo médico.** Ferramenta de pesquisa e apoio à decisão. Nenhuma string de interface, relatório ou documentação sugere uso diagnóstico ou substituição do software regulado do fabricante.
+6. **Ausência de verificação não é ausência de achado.** O alarme de artefato e a agenda da próxima sessão devolvem, junto com o que encontraram, a lista do que **não puderam** verificar e por quê. Um arquivo sem sinal bruto pode voltar "sem alarme" com treze verificações impossíveis; dizer só "sem alarme" seria mentir por omissão.
+
+7. **A camada de inferência é declarada, e o cruzamento indevido é proibido.** Cada aba diz se o que está ali é observacional ou experimental e qual fronteira não deve ser cruzada. A série crônica se recusa a ser plotada como uma linha contínua atravessando uma mudança de configuração de sensing — porque dos dois lados da fronteira não é a mesma variável.
+
+8. **A agenda sugere investigação, nunca conduta.** Todo protocolo sugerido passa por um filtro que rejeita verbo de prescrição, e o item sai marcado com `conductFree`. O software não sugere trocar contato, mudar amplitude, ajustar medicação nem programar aDBS.
+
+9. **Não é dispositivo médico.** Ferramenta de pesquisa e apoio à decisão. Nenhuma string de interface, relatório ou documentação sugere uso diagnóstico ou substituição do software regulado do fabricante.
 
 ---
 
@@ -251,7 +295,7 @@ A escala de densidade é conferida contra identidades exatas, não contra outra 
 
 ### Suíte de regressão
 
-`node tests/run.mjs` — **249 testes**, incluindo os 29 renderizadores de figura exercitados sobre um DOM mínimo simulado. Nenhum teste pode ser removido ou afrouxado para fazer código novo passar.
+`node tests/run.mjs` — **271 testes**, incluindo os 31 renderizadores de figura exercitados sobre um DOM mínimo simulado. Nenhum teste pode ser removido ou afrouxado para fazer código novo passar.
 
 ---
 
@@ -260,7 +304,7 @@ A escala de densidade é conferida contra identidades exatas, não contra outra 
 ```bash
 node tools/gerar_exemplo.mjs examples   # dataset sintético (nenhum dado real)
 cd src && node build.mjs                # gera index.html a partir de src/
-node tests/run.mjs                      # 249 testes
+node tests/run.mjs                      # 271 testes
 node tests/benchmark.mjs --check        # 87 critérios, falha se houver regressão
 ```
 

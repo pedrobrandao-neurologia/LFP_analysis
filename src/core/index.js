@@ -56,6 +56,12 @@ import {
   spectrogramWelch, spectrogramSTFT, spectrogramPercept, spectrogramWavelet, spectrogramAR,
   levinsonDurbin, normalizeSpectrogram, removeAperiodicTrend, timeFrequency, tfMatrix
 } from './dsp/timefreq.js';
+import { sensingConfigOf, configBlocks, segmentTrendByConfig, crossBlockWarning } from './metrics/config.js';
+import { PASSPORT_VERSION, biomarkerPassport, passportSensingSuggestion, passportMatchesConfig, passportCompare } from './metrics/passport.js';
+import { AGENDA_VERSION, sessionAgenda } from './metrics/agenda.js';
+import { artifactAlarm } from './qc/alarm.js';
+import { interdailyStability, intradailyVariability, m10l5, actigraphyPanel } from './stats/actigraphy.js';
+import { changePoints, changePointsInTime, annotateChangePoints } from './stats/changepoint.js';
 import { controlBandDiurnal, actogram } from './metrics/control.js';
 import {
   DIARY_STATES, LFP_STATES, stateById, normalizeState, parseDiaryCsv, diaryGrid,
@@ -119,6 +125,15 @@ const API = {
   alignByCrossCorrelation, alignByStimArtifact, alignByTimestamp, detectStimSteps,
   /* actograma, banda-controle e cluster (Onda 4.1) */
   clusterPermutation, controlBandDiurnal, actogram,
+  /* hierarquia agudo/crônico: configuração de sensing e passaporte (Onda 11) */
+  sensingConfigOf, configBlocks, segmentTrendByConfig, crossBlockWarning,
+  PASSPORT_VERSION, biomarkerPassport, passportSensingSuggestion, passportMatchesConfig, passportCompare,
+  AGENDA_VERSION, sessionAgenda,
+  /* alarme ativo de artefato, em linguagem de consultório (Onda 11) */
+  artifactAlarm,
+  /* cronobiologia não paramétrica e ponto de mudança (Onda 11) */
+  interdailyStability, intradailyVariability, m10l5, actigraphyPanel,
+  changePoints, changePointsInTime, annotateChangePoints,
   /* tempo-frequência no padrão do BRAVO (Onda 10) */
   fftBluestein, fftAny, dftDireta,
   hannPeriodic, hammingPeriodic, hannSymmetric, WINDOWS, TF_METHODS,

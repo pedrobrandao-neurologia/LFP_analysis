@@ -304,6 +304,7 @@ const S = {
   diary: null,          // diário de Hauser importado (Onda 9): {name, parsed}
   mode: 'clinico',      // 'clinico' | 'pesquisa' (Onda 8.1)
   lang: 'pt',           // 'pt' | 'en' (Onda 8.2)
+  aba: 'inicio',        // aba ativa (Onda 11): inicio|agudo|cronico|ponte|qualidade|coorte|relatorio
 };
 
 /* Atalho de tradução. Devolve a própria chave quando não há tradução — o texto
@@ -1777,6 +1778,35 @@ const FIGURES = [
             `O p bruto do cosinor é anticonservador; use o <b>p corrigido para n efetivo</b> e, na análise definitiva, um modelo misto com estrutura AR(1) (ver script R fornecido).`
         }));
       }
+
+      /* --- o cosinor supõe senoide; o ritmo do beta muitas vezes não é ------
+         As quatro medidas não paramétricas da cronobiologia da actigrafia não
+         fazem essa suposição. Elas descrevem a FORMA do ritmo; o cosinor acima
+         testa se ele EXISTE. As duas leituras só valem juntas. */
+      const act = C.actigraphyPanel(clean, offMin(), {});
+      node.appendChild(el('h4', { class: 'qc-title', html: '<b>(d) O ritmo tem forma de senoide? — medidas não paramétricas</b>' }));
+      if (!act.ok) {
+        node.appendChild(el('div', { class: 'note', html: `<b>Não calculado.</b> ${act.reason}` }));
+      } else {
+        node.appendChild(table(['medida', 'valor', 'o que responde', 'leitura'], [
+          ['IS — estabilidade interdiária', f(act.IS, 3), 'o ritmo se repete de um dia para o outro?',
+            act.detail.interdailyStability.interpretation || '—'],
+          ['IV — variabilidade intradiária', f(act.IV, 3), 'o ritmo é liso ou picado dentro do dia?',
+            act.detail.intradailyVariability.interpretation || '—'],
+          ['M10', `${f(act.M10, 2)} (às ${act.M10startHour}h)`, 'as 10 h de maior média e onde começam', '—'],
+          ['L5', `${f(act.L5, 2)} (às ${act.L5startHour}h)`, 'as 5 h de menor média e onde começam', '—'],
+          ['RA — amplitude relativa', f(act.RA, 3), '(M10 − L5)/(M10 + L5), sem depender da unidade',
+            'comparável entre pacientes e entre registros de escalas diferentes']
+        ]));
+        node.appendChild(el('div', { class: 'note', html: `<b>Por que ao lado do cosinor.</b> ${act.caveat}. ` +
+          `Uma amplitude de cosinor baixa com RA alta é a assinatura de um ritmo real que não é senoidal — sobe rápido ao ` +
+          `acordar, tem platô, cai por degraus com as tomadas. A senoide não segue os cantos e subestima a amplitude.` }));
+        node.appendChild(el('div', { class: 'seal', text:
+          `${act.quality.nDaysUsed} dia(s) usados · ${act.quality.nDaysExcluded} excluído(s) por cobertura < ` +
+          `${Math.round(act.quality.minCoverage * 100)}% dos bins · bin de ${act.params.binMin} min · ` +
+          `resumo do bin por ${act.params.binStatistic}` }));
+      }
+
       node.appendChild(exportRow([
         { label: '⤓ PNG heatmap', fn: () => P.downloadCanvas(box.canvas, 'F9a_heatmap_dia_hora') },
         { label: '⤓ PNG perfil', fn: () => P.downloadCanvas(b2.canvas, 'F9b_perfil_diurno') },
@@ -3913,6 +3943,408 @@ const FIGURES = [
     }
   },
 
+  /* ----------------------------------------------------------------- F31 */
+  {
+    id: 'F31', title: 'Passaporte do biomarcador — o que a sessão aguda calibra no crônico',
+    sub: 'par bipolar, pico, banda e SNR versionados · confronto com a configuração vigente do aparelho',
+    has: d => d.montage.length || d.sensingSetup.length || d.signalCheck.length,
+    render(node, d) {
+      const pb = profileBands().primary || { lo: 13, hi: 35 };
+      const crit = opt('F31', 'crit', 'aperiodic');
+      const modo = opt('F31', 'bandmode', 'apriori');
+      const larg = opt('F31', 'larg', 5);
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('critério de escolha do par', [
+          { value: 'aperiodic', label: 'área acima do fundo 1/f' },
+          { value: 'raw', label: 'área bruta na banda' },
+          { value: 'peak', label: 'magnitude do pico' }
+        ], crit, v => setOpt('F31', 'crit', v)),
+        ctrlSelect('banda', [
+          { value: 'apriori', label: `a priori ${pb.lo}–${pb.hi} Hz` },
+          { value: 'peak', label: 'centrada no pico do paciente' }
+        ], modo, v => setOpt('F31', 'bandmode', v)),
+        modo === 'peak' ? ctrlNumber('largura (Hz)', larg, 2, 20, 1, v => setOpt('F31', 'larg', v)) : el('span')
+      ]));
+
+      const pass = C.biomarkerPassport(activeFiles()[0].parsed, {
+        criterion: crit, bandSearch: [pb.lo, pb.hi], bandMode: modo, peakBandwidthHz: larg
+      });
+      if (!pass.ok) return node.appendChild(el('div', { class: 'empty', text: pass.reason }));
+
+      /* ---------------- (a) o passaporte ------------------------------- */
+      const linhas = [];
+      ['Left', 'Right'].forEach(h => {
+        const b = pass.byHemisphere[h];
+        if (!b || b.channel == null) { linhas.push([`STN ${hname(h)}`, '—', '—', '—', { html: '<i>sem espectro neste arquivo</i>' }]); return; }
+        linhas.push([
+          `STN ${hname(h)}`,
+          `${b.label} (#${b.rank} de ${b.nCandidates})`,
+          isFinite(b.peakHz) ? `${f(b.peakHz, 2)} Hz` : '—',
+          `${f(b.bandLo, 1)}–${f(b.bandHi, 1)} Hz`,
+          {
+            html: b.usable
+              ? `<b style="color:var(--ok)">utilizável</b> · SNR ${f(b.snrDb, 2)} dB`
+              : `<b style="color:var(--warn)">não utilizável</b> — ${b.reason || 'motivo não declarado'}`
+          }
+        ]);
+      });
+      node.appendChild(table(['hemisfério', 'par bipolar', 'pico', 'banda', 'veredito'], linhas));
+
+      /* o detalhe metodológico de cada hemisfério, que é onde mora a ressalva */
+      ['Left', 'Right'].forEach(h => {
+        const b = pass.byHemisphere[h];
+        if (!b || b.channel == null) return;
+        node.appendChild(table([`STN ${hname(h)} — como este número foi obtido`, 'valor', 'o que significa'], [
+          ['definição do SNR', `${f(b.snrDb, 2)} dB`, b.snrDefinition || '—'],
+          ['pico sobrevive ao fundo 1/f?', b.peakSurvivesAperiodic ? 'sim' : 'não',
+            isFinite(b.peakExcessOverBackgroundPct) ? `excesso de ${f(b.peakExcessOverBackgroundPct, 0)}% sobre o fundo aperiódico` : '—'],
+          ['expoente aperiódico', f(b.aperiodicExponent, 3), `R² do ajuste ${f(b.aperiodicR2, 3)}${b.aperiodicR2 < 0.5 ? ' — abaixo de 0,5, o ajuste não é confiável' : ''}`],
+          ['origem do pico', b.peakSource || '—', b.bandNote || '—'],
+          ['suspeita de ECG', b.ecgSuspected ? 'SIM' : 'não',
+            b.ecgSuspected ? 'este canal pode carregar artefato cardíaco — confira na aba Qualidade antes de usar' : 'nenhum indício nas verificações possíveis']
+        ]));
+      });
+
+      /* ---------------- (b) sugestão vs. aparelho ---------------------- */
+      node.appendChild(el('h4', { class: 'qc-title', html: '<b>(b) O que o aparelho está registrando é o que a sessão calibrou?</b>' }));
+      const sug = C.passportSensingSuggestion(pass);
+      const cfg = C.sensingConfigOf(activeFiles()[0].parsed);
+      const m = (cfg && cfg.ok) ? C.passportMatchesConfig(pass, cfg) : null;
+
+      if (sug && sug.ok) {
+        node.appendChild(table(['hemisfério', 'sugestão de sensing', 'confiança', 'por quê'],
+          ['Left', 'Right'].map(h => {
+            const s = sug.byHemisphere[h];
+            if (!s) return [`STN ${hname(h)}`, '—', '—', 'sem passaporte utilizável'];
+            return [`STN ${hname(h)}`,
+              `${f(s.centerFreq, 2)} Hz · ${s.label || s.channel}`,
+              s.confidence, s.rationale];
+          })));
+      }
+      if (m && m.ok) {
+        node.appendChild(el('div', {
+          class: m.match ? 'note' : 'warnbox',
+          html: `<b>${m.verdict}.</b> ${m.consequence || ''}`
+        }));
+        const difs = [];
+        ['Left', 'Right'].forEach(h => {
+          const bh = m.byHemisphere && m.byHemisphere[h];
+          (bh && bh.differences || []).forEach(dd => difs.push([
+            `STN ${hname(h)}`, dd.field,
+            String(dd.passport == null ? '—' : dd.passport),
+            String(dd.device == null ? '—' : dd.device),
+            dd.matters ? 'invalida a comparação de escala' : 'não invalida'
+          ]));
+        });
+        if (difs.length) node.appendChild(table(['hemisfério', 'campo', 'passaporte', 'aparelho', 'consequência'], difs));
+      } else {
+        node.appendChild(el('div', {
+          class: 'note', html: `Este arquivo não declara a configuração de sensing vigente (falta <code>BrainSenseLfp</code> com ` +
+            `<code>TherapySnapshot</code>), então não há como confrontar a sugestão com o que o aparelho está de fato registrando.`
+        }));
+      }
+
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Por que este objeto existe.</b> A sessão aguda é o que <b>define</b> o biomarcador; o registro ` +
+          `crônico apenas o acompanha. Sem guardar qual par bipolar, qual pico e qual banda originaram a série, comparar dois ` +
+          `meses de Timeline é comparar duas variáveis diferentes com o mesmo nome. A impressão digital <code>${pass.fingerprint}</code> ` +
+          `identifica esta calibração: se ela mudar entre duas análises, os números não são comparáveis. ` +
+          `${pass.fingerprintNote || ''}`
+      }));
+      if (pass.controversy) node.appendChild(el('div', { class: 'note', html: `<b>Controvérsia declarada.</b> ${pass.controversy}` }));
+      if (pass.caveat) node.appendChild(el('div', { class: 'warnbox', html: `<b>Limite.</b> ${pass.caveat}` }));
+
+      node.appendChild(el('div', {
+        class: 'seal', text: `${pass.quality.nSpectra} espectro(s) · ${pass.quality.nHemispheresUsable} de ` +
+          `${pass.quality.nHemispheresWithSpectrum} hemisfério(s) utilizável(is) · ECG avaliado em ${pass.quality.ecgEvaluated} · ` +
+          `impressão digital ${pass.fingerprint}`
+      }));
+      node.appendChild(exportRow([
+        {
+          label: '⤓ Passaporte (JSON)', fn: () => P.downloadText(JSON.stringify(Object.assign({}, pass, {
+            suggestion: sug, deviceConfig: cfg, match: m
+          }), null, 2), `passaporte_${pass.fingerprint}.json`, 'application/json')
+        },
+        {
+          label: '⤓ CSV', fn: () => P.downloadText(P.toCSV(['Left', 'Right'].map(h => {
+            const b = pass.byHemisphere[h] || {};
+            return {
+              hemisphere: h, channel: b.channel || '', label: b.label || '',
+              peak_hz: b.peakHz, band_lo_hz: b.bandLo, band_hi_hz: b.bandHi,
+              snr_db: b.snrDb, aperiodic_exponent: b.aperiodicExponent, aperiodic_r2: b.aperiodicR2,
+              peak_survives_aperiodic: b.peakSurvivesAperiodic ? 1 : 0,
+              ecg_suspected: b.ecgSuspected ? 1 : 0, usable: b.usable ? 1 : 0,
+              rank: b.rank, n_candidates: b.nCandidates,
+              criterion: pass.params && pass.params.criterion, fingerprint: pass.fingerprint
+            };
+          })), 'F31_passaporte.csv', 'text/csv')
+        }
+      ]));
+    }
+  },
+
+
+  /* ----------------------------------------------------------------- F32 */
+  {
+    id: 'F32', title: 'Blocos de configuração e pontos de mudança',
+    sub: 'a série crônica partida onde o aparelho deixou de medir a mesma variável · degraus de nível e os marcos que os explicam',
+    has: d => Object.keys(d.trend).length,
+    render(node, d) {
+      const hemis = Object.keys(d.trend);
+      const h = opt('F32', 'hemi', hemis[0]);
+      const atrib = opt('F32', 'atrib', 'retrospectiva');
+      const agreg = opt('F32', 'agreg', 'median');
+      const tolDias = opt('F32', 'tol', 2);
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: `STN ${hname(x)}` })), h, v => setOpt('F32', 'hemi', v)),
+        ctrlSelect('atribuição temporal', [
+          { value: 'retrospectiva', label: 'retrospectiva — a sessão descreve o período anterior' },
+          { value: 'prospectiva', label: 'prospectiva — a sessão abre o período seguinte' }
+        ], atrib, v => setOpt('F32', 'atrib', v)),
+        ctrlSelect('resumo do dia', [
+          { value: 'median', label: 'mediana' }, { value: 'mean', label: 'média' }
+        ], agreg, v => setOpt('F32', 'agreg', v)),
+        ctrlNumber('tolerância do marco (dias)', tolDias, 0, 10, 1, v => setOpt('F32', 'tol', v))
+      ]));
+
+      const blocos = C.configBlocks(d.all, offMin(), { attribution: atrib });
+      const rows = d.trend[h] || [];
+      const seg = C.segmentTrendByConfig(rows, blocos);
+
+      /* ---------------- (a) a série, partida onde precisa ser -------------- */
+      const finitos = rows.filter(r => isFinite(r.t) && isFinite(r.lfp));
+      if (!finitos.length) return node.appendChild(el('div', { class: 'empty', text: 'nenhum ponto do Timeline com data e valor utilizáveis neste hemisfério' }));
+      const tmin = Math.min(...finitos.map(r => r.t)), tmax = Math.max(...finitos.map(r => r.t));
+      const vmax = Math.max(...finitos.map(r => r.lfp));
+      const box = plotBox(node, 300);
+      const ch = new P.Chart(box.canvas, {
+        width: box.width, height: box.height, xlim: [tmin, tmax], ylim: [0, vmax * 1.15],
+        xlabel: 'data local', ylabel: 'potência LFP (u.a.)',
+        title: `STN ${hname(h)} — ${seg.nSegments || 0} segmento(s) de configuração`,
+        pad: { l: 62, r: 20, t: 24, b: 42 }
+      });
+      ch.axes({ nx: 7, xfmt: v => new Date(v + offMin() * 60000).toISOString().slice(5, 10).split('-').reverse().join('/') });
+
+      const paleta = ['#2C6E9B', '#B5651D', '#4C8C4A', '#8E5AA0', '#B03A48', '#7A7A2E'];
+      (seg.segments || []).forEach((s, i) => {
+        const pts = (s.rows || []).filter(r => isFinite(r.t) && isFinite(r.lfp));
+        if (!pts.length) return;
+        const cor = s.blockIndex == null ? '#8A8F98' : paleta[s.blockIndex % paleta.length];
+        const xs = pts.map(r => r.t), ys = pts.map(r => r.lfp);
+        ch.scatter(xs, ys, { color: cor, size: 1.1, alpha: .25 });
+        /* a linha NUNCA atravessa a fronteira: cada segmento é uma linha própria */
+        ch.line(xs, movingMedian(ys, 6), {
+          color: cor, width: 1.8,
+          label: s.blockIndex == null ? 'sem configuração conhecida' : `bloco ${s.blockIndex + 1}`
+        });
+      });
+      /* fronteiras: faixa vertical larga, para que a descontinuidade seja vista */
+      (blocos.blocks || []).forEach((b, i) => {
+        if (i === 0 || !isFinite(b.startT)) return;
+        ch.span(b.startT - 3 * 36e5, b.startT + 3 * 36e5, { color: '#B03A48', alpha: .16 });
+      });
+      ch.legend({ x: ch.x0 + 8, y: ch.y1 + 6 });
+
+      if (blocos.ok && blocos.nBlocks > 1) node.appendChild(el('div', {
+        class: 'warnbox',
+        html: `<b>A série está partida em ${blocos.nBlocks} blocos e as linhas não se conectam de propósito.</b> ` +
+          'Atravessar a fronteira com uma linha contínua sugeriria que os dois trechos medem a mesma coisa. ' +
+          'Não medem: o par bipolar ou a frequência central mudou entre eles.'
+      }));
+      const aviso = C.crossBlockWarning(blocos);
+      if (aviso && aviso.message) node.appendChild(el('div', {
+        class: aviso.safe ? (aviso.level === 'atencao' ? 'note' : 'note') : 'warnbox',
+        html: `<b>Comparação entre períodos — ${aviso.level}.</b> ${aviso.message}`
+      }));
+      if (!blocos.ok) node.appendChild(el('div', {
+        class: 'note', html: `<b>Sem blocos de configuração.</b> ${blocos.reason} — a série abaixo foi tratada como um ` +
+          'único trecho, o que só é legítimo se a configuração de fato não mudou, e este arquivo não permite verificar isso.'
+      }));
+
+      /* ---------------- (b) tabela de blocos ------------------------------ */
+      if ((blocos.blocks || []).length) node.appendChild(table(
+        ['bloco', 'período atribuído', 'configuração', 'n pontos', 'faltantes', 'dias'],
+        blocos.blocks.map((b, i) => {
+          const s = (seg.segments || []).find(x => x.blockIndex === i) || {};
+          return [
+            { html: `<span style="color:${paleta[i % paleta.length]}">■</span> ${i + 1}` },
+            `${b.startT ? new Date(b.startT + offMin() * 60000).toISOString().slice(0, 10) : '—'} → ` +
+            `${b.endT ? new Date(b.endT + offMin() * 60000).toISOString().slice(0, 10) : '—'}`,
+            b.summary || '—',
+            s.n == null ? 0 : s.n,
+            isFinite(s.pctMissing) ? `${f(s.pctMissing, 1)}%` : '—',
+            isFinite(s.nDaysObserved) ? f(s.nDaysObserved, 1) : '—'
+          ];
+        })));
+
+      if ((blocos.changes || []).length) node.appendChild(table(
+        ['dia', 'hemisfério', 'o que mudou', 'de', 'para', 'gravidade', 'consequência'],
+        blocos.changes.map(c => [
+          c.dayLocal || '—', c.hemisphere === 'Ambos' ? 'ambos' : hname(c.hemisphere), c.field,
+          String(c.from == null ? '—' : c.from), String(c.to == null ? '—' : c.to),
+          { html: c.severity === 'quebra' ? '<b style="color:var(--warn)">quebra</b>' : c.severity },
+          c.consequence || '—'
+        ])));
+      if ((blocos.undeclared || []).length) node.appendChild(el('div', {
+        class: 'note', html: `<b>Não verificável.</b> ${blocos.undeclared.length} campo(s) não puderam ser comparados entre ` +
+          'sessões porque ao menos uma delas não os declara. Isso não é "sem mudança", é "não dá para saber": ' +
+          (blocos.undeclared.slice(0, 4).map(u => `${u.field}${u.hemisphere && u.hemisphere !== 'Ambos' ? ' (' + hname(u.hemisphere) + ')' : ''}`).join(', ')) +
+          (blocos.undeclared.length > 4 ? ` e mais ${blocos.undeclared.length - 4}` : '') + '.'
+      }));
+
+      /* ---------------- (c) pontos de mudança de nível -------------------- */
+      node.appendChild(el('h4', { class: 'qc-title', html: '<b>(c) O nível mudou por degrau? E existe marco que explique?</b>' }));
+      const cp = C.changePointsInTime(finitos, { offMin: offMin(), aggregation: agreg });
+      if (!cp.ok) {
+        node.appendChild(el('div', { class: 'note', html: `<b>Não avaliado.</b> ${cp.reason}` }));
+      } else {
+        /* marcos conhecidos: mudanças de configuração e eventos do aparelho */
+        const marcos = (blocos.changes || []).filter(c => isFinite(c.t))
+          .map(c => ({ t: c.t, label: `${c.field} (${c.severity})` }))
+          .concat((d.eventLogs || []).filter(e => isFinite(e.t)).map(e => ({ t: e.t, label: [e.kind, e.detail].filter(Boolean).join(' · ') || 'evento' })));
+        const an = C.annotateChangePoints(cp.points, marcos, { toleranceDays: tolDias });
+        (an.annotated || []).forEach(a => ch.vline(a.t, { color: a.explained ? '#4C8C4A' : '#B03A48', width: 1.4, dash: [4, 3] }));
+        node.appendChild(table(['dia da mudança', 'variação', 'p', 'marco mais próximo', 'distância (dias)', 'explicado?'],
+          (an.annotated || []).map(a => [
+            a.dayKey, f(a.delta, 3), { html: pHtml(a.p) },
+            a.nearestMarker || '—', isFinite(a.deltaDays) ? f(a.deltaDays, 1) : '—',
+            { html: a.explained ? 'sim' : '<b style="color:var(--warn)">não</b>' }
+          ])));
+        node.appendChild(el('div', { class: an.nUnexplained ? 'warnbox' : 'note', html: `<b>Leitura.</b> ${an.reading}` }));
+        node.appendChild(el('div', { class: 'note', html: `<b>Limite.</b> ${an.caveat}` }));
+        node.appendChild(el('div', { class: 'note', html: `<b>Método.</b> ${cp.note} ${cp.method || ''} ` +
+          `Significância por ${cp.nPermutations || 0} permutações da própria janela; ${cp.nDays} dias analisados.` }));
+      }
+
+      node.appendChild(el('div', {
+        class: 'seal', text: `${blocos.nSessionsUsable || 0} de ${blocos.nSessionsRead || 0} sessão(ões) com configuração ` +
+          `legível · atribuição ${blocos.attribution} · largura de banda ${f(blocos.bandwidthHz, 1)} Hz (${blocos.bandwidthSource})`
+      }));
+      if (blocos.caveat) node.appendChild(el('div', { class: 'note', html: `<b>Parâmetro assumido.</b> ${blocos.caveat}` }));
+      node.appendChild(exportRow([
+        { label: '⤓ PNG', fn: () => P.downloadCanvas(box.canvas, 'F32_blocos_configuracao') },
+        {
+          label: '⤓ CSV — série segmentada', fn: () => P.downloadText(P.toCSV((seg.segments || []).flatMap(s =>
+            (s.rows || []).map(r => ({
+              hemisphere: h, block_index: s.blockIndex == null ? '' : s.blockIndex + 1,
+              config: s.configSummary || '', utc: new Date(r.t).toISOString(),
+              local: new Date(r.t + offMin() * 60000).toISOString().slice(0, 19),
+              lfp: isFinite(r.lfp) ? r.lfp : '', missing: isFinite(r.lfp) ? 0 : 1
+            })))), 'F32_serie_segmentada.csv', 'text/csv')
+        },
+        {
+          label: '⤓ JSON — blocos e mudanças', fn: () => P.downloadText(JSON.stringify({
+            blocks: blocos, segmentation: Object.assign({}, seg, { segments: (seg.segments || []).map(s => Object.assign({}, s, { rows: undefined })) })
+          }, null, 2), 'F32_blocos.json', 'application/json')
+        }
+      ]));
+      node.appendChild(el('div', {
+        class: 'note', html: '<b>Por que esta figura vem antes de qualquer comparação longitudinal.</b> O confundidor mais ' +
+          'comum de um registro crônico do Percept não é fisiológico: é o próprio aparelho ter passado a medir outra coisa. ' +
+          'Trocar o par bipolar ou a frequência central muda o valor absoluto da potência sem que nada mude no paciente. ' +
+          'Comparar "seis semanas atrás" com "hoje" atravessando essa fronteira produz uma diferença que parece clínica e é ' +
+          'de instrumentação.'
+      }));
+    }
+  },
+
+  /* ----------------------------------------------------------------- F33 */
+  {
+    id: 'F33', title: 'Agenda da próxima sessão',
+    sub: 'o que o crônico observou e não explica, transformado em protocolo agudo · com o que cada protocolo decidiria',
+    has: d => Object.keys(d.trend).length,
+    render(node, d) {
+      const hemis = Object.keys(d.trend);
+      const hemi = opt('F33', 'hemi', '');
+      const agreg = opt('F33', 'agreg', 'median');
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('hemisfério', [{ value: '', label: 'automático (o com mais dias)' }]
+          .concat(hemis.map(x => ({ value: x, label: `STN ${hname(x)}` }))), hemi, v => setOpt('F33', 'hemi', v)),
+        ctrlSelect('resumo do dia', [
+          { value: 'median', label: 'mediana' }, { value: 'mean', label: 'média' }
+        ], agreg, v => setOpt('F33', 'agreg', v))
+      ]));
+
+      const p0 = activeFiles()[0] && activeFiles()[0].parsed;
+      const doseInfo = C.doseMarkers(d.snapshots, offMin(), { pattern: /medica|levodopa|dose/i });
+      const blocos = C.configBlocks(d.all, offMin(), {});
+      const passe = p0 ? C.biomarkerPassport(p0, {}) : null;
+      const cfgAtual = p0 ? C.sensingConfigOf(p0) : null;
+      const casa = (passe && passe.ok && cfgAtual && cfgAtual.ok) ? C.passportMatchesConfig(passe, cfgAtual) : null;
+      const marcos = (blocos.changes || []).filter(c => isFinite(c.t)).map(c => ({ t: c.t, label: `${c.field} (${c.severity})` }))
+        .concat((d.eventLogs || []).filter(e => isFinite(e.t)).map(e => ({ t: e.t, label: [e.kind, e.detail].filter(Boolean).join(' · ') || 'evento' })));
+
+      const ag = C.sessionAgenda({
+        rows: d.trend, offMin: offMin(),
+        doseTimes: doseInfo.ok ? doseInfo.doses.map(x => x.t) : [],
+        markers: marcos, blocks: blocos, passport: passe, passportMatch: casa,
+        alarm: alarmeDoRegistro()
+      }, { hemisphere: hemi || undefined, aggregation: agreg });
+
+      if (!ag.ok) return node.appendChild(el('div', { class: 'empty', text: ag.reason }));
+
+      node.appendChild(el('div', { class: 'note', html: `<b>${ag.summary}</b> ${ag.incompletenessNote}` }));
+
+      const corPrio = { alta: 'var(--warn)', 'média': 'var(--accent)', baixa: 'var(--muted)' };
+      (ag.items || []).forEach((it, i) => {
+        const card = el('div', { class: 'agenda-item' });
+        card.appendChild(el('div', {
+          class: 'tit',
+          html: `<span class="prio" style="border-color:${corPrio[it.priority] || 'var(--muted)'};color:${corPrio[it.priority] || 'var(--muted)'}">` +
+            `${it.priority}</span> ${i + 1}. ${it.finding}`
+        }));
+        card.appendChild(el('div', { class: 'campo', html: `<b>Protocolo sugerido.</b> ${it.suggestedProtocol}` }));
+        card.appendChild(el('div', { class: 'campo', html: `<b>O que ficaria decidido.</b> ${it.whatItWouldSettle}` }));
+        if (it.caveat) card.appendChild(el('div', { class: 'campo lim', html: `<b>Limite.</b> ${it.caveat}` }));
+        const ev = Object.keys(it.evidence || {})
+          .filter(k => it.evidence[k] != null && it.evidence[k] !== '')
+          .map(k => [k, { html: `<code>${typeof it.evidence[k] === 'object' ? JSON.stringify(it.evidence[k]) : String(it.evidence[k])}</code>` }]);
+        if (ev.length) {
+          const det = el('details', { class: 'evid' });
+          det.appendChild(el('summary', { text: `evidência numérica (confiança ${it.confidence})` }));
+          det.appendChild(table(['medida', 'valor'], ev));
+          card.appendChild(det);
+        }
+        node.appendChild(card);
+      });
+
+      if (!(ag.items || []).length) node.appendChild(el('div', {
+        class: 'note', html: '<b>Nenhum achado nas verificações que este arquivo permitiu.</b> Isso não é um atestado de ' +
+          'normalidade: é a lista abaixo de tudo o que <i>não</i> pôde ser verificado que diz o quanto essa frase vale.'
+      }));
+
+      if ((ag.notChecked || []).length) {
+        node.appendChild(el('h4', { class: 'qc-title', html: '<b>O que não foi possível verificar neste arquivo</b>' }));
+        node.appendChild(table(['verificação', 'por que não', 'o que seria necessário'],
+          ag.notChecked.map(n => [n.id, n.whyNot, n.whatWouldBeNeeded])));
+      }
+
+      node.appendChild(el('div', { class: 'note', html: `<b>Artefato.</b> ${ag.artifactNote}` }));
+      node.appendChild(el('div', { class: 'warnbox', html: `<b>Natureza desta lista.</b> ${ag.disclaimer}` }));
+      node.appendChild(el('div', {
+        class: 'seal', text: `hemisfério ${hname(ag.params.hemisphere)} (${ag.params.hemisphereNote}) · ` +
+          `${ag.params.nDays} dia(s) · ${ag.params.nDoseMarks} marca(s) de dose · ${ag.params.nMarkers} marco(s) · ` +
+          `${ag.nChecksRun}/${ag.nChecksTotal} verificações · agenda v${ag.version}`
+      }));
+      node.appendChild(exportRow([
+        { label: '⤓ Agenda (JSON)', fn: () => P.downloadText(JSON.stringify(ag, null, 2), 'F33_agenda.json', 'application/json') },
+        {
+          label: '⤓ CSV', fn: () => P.downloadText(P.toCSV((ag.items || []).map(it => ({
+            id: it.id, priority: it.priority, confidence: it.confidence, finding: it.finding,
+            suggested_protocol: it.suggestedProtocol, what_it_would_settle: it.whatItWouldSettle,
+            evidence: JSON.stringify(it.evidence)
+          }))), 'F33_agenda.csv', 'text/csv')
+        }
+      ]));
+      node.appendChild(el('div', {
+        class: 'note', html: '<b>A direção que falta na maioria dos softwares.</b> É pacífico que a sessão de consultório ' +
+          'calibra o registro domiciliar — é ela que define par, pico e banda (F31). O caminho de volta quase nunca é ' +
+          'feito: os trinta dias de vida livre observam o que nenhuma consulta observa, e o que eles encontram de anômalo ' +
+          'só se resolve com um experimento. Esta lista é esse caminho de volta, e nada nela é conduta.'
+      }));
+    }
+  },
+
   /* ----------------------------------------------------------------- F30 */
   {
     id: 'F30', title: 'Espectrograma — análise tempo-frequência no padrão do BRAVO',
@@ -4540,6 +4972,586 @@ function preencherSemaforo() {
    demais só calculam quando o usuário as abre, e aí com aviso de "calculando".
    Manter esta lista curta é o que define quanto tempo passa entre soltar o
    arquivo e ver o primeiro gráfico. */
+/* ======================================================== ABAS ===========
+   A HIERARQUIA QUE ORGANIZA O SOFTWARE NÃO É DE VISUALIZAÇÃO, É DE INFERÊNCIA.
+
+   O registro crônico e o registro agudo do Percept não são o mesmo sinal em
+   janelas diferentes. Diferem no desenho (observacional vs. experimental), na
+   inferência que sustentam (associação vs. causa dirigida pelo desenho), na
+   amostragem (densa no tempo e pobre no espectro vs. o contrário), na unidade
+   de análise (timestamp/dia/dose vs. ensaio/evento/condição) e no confundidor
+   que os mata (mudança de configuração vs. ruído de sincronização).
+
+   Tratá-los como abas distintas, cada uma com o seu cabeçalho de orientação, é
+   o que impede a falácia recorrente da literatura de Percept: usar um achado
+   agudo de dez minutos de consultório para interpretar uma tendência crônica de
+   seis semanas, ou o contrário, como se fossem medidas da mesma quantidade.
+
+   As duas camadas se encontram na aba PONTE — onde o agudo calibra a escala do
+   crônico (passaporte do biomarcador), o crônico pauta a próxima sessão aguda
+   (agenda), e a escolha de limiar de aDBS precisa das duas ao mesmo tempo.   */
+
+const ABAS = [
+  {
+    id: 'inicio', label: 'Início', sub: 'por onde começar', especial: 'triagem',
+    orient: {
+      titulo: 'O que este arquivo responde',
+      texto: [
+        'Cada Session Report contém modalidades diferentes, conforme o que foi executado na consulta. ' +
+        'Abaixo está o que <b>este</b> conjunto de arquivos permite perguntar — e o que ele não permite.',
+        'Escolha a pergunta; o aplicativo leva você à figura que a responde.'
+      ]
+    }
+  },
+  {
+    id: 'agudo', label: 'Agudo', sub: 'sessão · experimento', camada: 'agudo',
+    figuras: ['F1', 'F2', 'F5', 'F6', 'F7', 'F12', 'F18', 'F19', 'F20', 'F21', 'F22', 'F24', 'F30'],
+    orient: {
+      titulo: 'Registro agudo — sessão controlada',
+      camada: 'agudo · experimental',
+      texto: [
+        'Aqui o sinal é <b>denso no espectro e esparso no tempo</b>: a série temporal completa, tipicamente a 250 Hz, ' +
+        'durante minutos. A unidade de análise é o ensaio, o evento ou a condição, e a inferência é dirigida pelo desenho — ' +
+        'você manipulou alguma coisa e mede o que aconteceu.',
+        'É a camada que <b>define o biomarcador</b>: qual par bipolar, qual frequência de pico, qual largura de banda, ' +
+        'qual a razão sinal-ruído, se há contaminação por ECG, e se o pico sobrevive à separação do componente aperiódico. ' +
+        'Esse produto vira o <b>passaporte</b> na aba Ponte.'
+      ],
+      tabela: [
+        ['Responde bem', 'dinâmica de bursts, acoplamento fase-amplitude, resposta aguda a rampa de amplitude ou a levodopa, correlatos de tarefa, gama de discinesia'],
+        ['Não responde', 'qualquer coisa que exija dias — ritmo circadiano, flutuação em vida real, adesão, estabilidade do biomarcador'],
+        ['Risco dominante', 'n baixo e ruído de sincronização; sem TTL, a latência do Bluetooth tem jitter real']
+      ],
+      limite: 'Um achado de dez minutos de consultório <b>não interpreta</b> uma tendência de seis semanas. ' +
+        'Se a sua pergunta é sobre dias, ela está na aba Crônico.'
+    }
+  },
+  {
+    id: 'cronico', label: 'Crônico', sub: 'dias · vida real', camada: 'cronico',
+    figuras: ['F8', 'F32', 'F9', 'F13', 'F10', 'F25', 'F28', 'F29'],
+    orient: {
+      titulo: 'Registro crônico — vida real, sem supervisão',
+      camada: 'crônico · observacional',
+      texto: [
+        'Aqui o sinal é <b>denso no tempo e pobre no espectro</b>: um escalar por bin de dez minutos, numa banda escolhida ' +
+        '<i>a priori</i>, durante semanas ou meses, no domicílio. A unidade de análise é o timestamp, o dia ou a dose, e a ' +
+        'inferência é associativa — ninguém manipulou nada.',
+        'É a única camada que enxerga ritmo circadiano, flutuação motora em ambiente natural, resposta a cada tomada de ' +
+        'levodopa em vida livre, adesão e estabilidade do biomarcador ao longo de meses.'
+      ],
+      tabela: [
+        ['Responde bem', 'ritmo circadiano, arquitetura de sono inferida, flutuações e ciclo medicamentoso, habituação, deriva do nível basal'],
+        ['Não responde', 'resolução espectral (o bin já vem colapsado numa banda), dinâmica de bursts, acoplamento fase-amplitude, latência abaixo de dez minutos'],
+        ['Risco dominante', 'confundimento por mudança de configuração de sensing entre consultas — invisível no gráfico, fatal para a leitura']
+      ],
+      limite: 'Antes de comparar dois períodos, confira os <b>blocos de configuração</b> (F32). Se o par bipolar ou a ' +
+        'frequência central mudaram, a série antes e depois não é a mesma variável.'
+    }
+  },
+  {
+    id: 'ponte', label: 'Ponte', sub: 'calibração · aDBS · agenda', camada: 'ponte',
+    figuras: ['F31', 'F11', 'F23', 'F33'],
+    orient: {
+      titulo: 'A ponte entre as camadas',
+      camada: 'agudo ↔ crônico',
+      texto: [
+        '<b>Sentido descendente — calibração.</b> A sessão aguda define o biomarcador e produz o <b>passaporte</b>: par bipolar, ' +
+        'frequência de pico, largura de banda, razão sinal-ruído, contaminação por ECG. Esse objeto vira a configuração de sensing ' +
+        'e a referência de escala do registro crônico seguinte. Sem esse vínculo, comparar dois meses de Timeline é comparar duas ' +
+        'variáveis diferentes com o mesmo nome.',
+        '<b>Sentido ascendente — hipótese.</b> O crônico detecta o anômalo e não explica: uma queda reprodutível às 3h, uma dose ' +
+        'que deixou de responder, uma assimetria emergente. A <b>agenda</b> transforma isso na pauta da próxima sessão aguda.',
+        '<b>Convergência — aDBS.</b> A escolha de limiar precisa das duas camadas: o agudo estabelece a relação entre nível de beta ' +
+        'e estado motor observado; o crônico estabelece a distribuição real daquele biomarcador em vida livre, que é o que determina ' +
+        'qual fração do dia o limiar será cruzado. Definir limiar só com dado de consultório é erro previsível de generalização.'
+      ],
+      limite: 'Esta aba é a única em que atravessar as camadas é legítimo — porque aqui o cruzamento é <b>o método</b>, ' +
+        'e não uma extrapolação silenciosa.'
+    }
+  },
+  {
+    id: 'qualidade', label: 'Qualidade', sub: 'posso confiar?', camada: null,
+    figuras: ['F17', 'F15', 'F16', 'F3', 'F4'],
+    orient: {
+      titulo: 'Posso confiar neste sinal?',
+      texto: [
+        'Artefato cardíaco no LFP é <b>sistemático</b>, depende do lado de implante do gerador, e produz um pico espúrio ' +
+        'convincente que ninguém reconhece olhando o espectro. O mesmo vale para harmônico de estimulação, alias e ganho saturado.',
+        'O alarme no topo desta aba ordena por gravidade e emite um veredito de uso por canal. ' +
+        'Ausência de verificação <b>não é</b> ausência de artefato: o que não pôde ser verificado neste arquivo aparece listado como tal.'
+      ],
+      limite: 'Um canal com veredito <b>não interprete</b> deve ficar fora de toda leitura das outras abas, ' +
+        'inclusive das figuras que ele alimenta em silêncio.'
+    }
+  },
+  {
+    id: 'coorte', label: 'Coorte', sub: 'n pacientes', camada: null,
+    figuras: ['F27', 'F26'],
+    orient: {
+      titulo: 'Muitos registros, inferência de grupo',
+      texto: [
+        'A unidade de análise deixa de ser o paciente e passa a ser a amostra. Carregue uma pasta inteira com <b>+ pasta</b>: ' +
+        'os arquivos são agrupados por sujeito, e o resultado é uma tabela <i>tidy</i>, não quarenta relatórios.',
+        'Comparar o beta de hoje com o de seis meses atrás só faz sentido se o que mudou foi o cérebro, e não a medida — ' +
+        'daí a confiabilidade entre sessões (ICC) e a deriva de impedância ficarem aqui, e não na aba Crônico.'
+      ],
+      limite: 'Prevalência e estatística de grupo com n pequeno saem com intervalo de confiança largo <b>de propósito</b>. ' +
+        'O intervalo é o resultado; a estimativa pontual sozinha, não.'
+    }
+  },
+  {
+    id: 'relatorio', label: 'Relatório', sub: 'uma página', especial: 'relatorio',
+    orient: {
+      titulo: 'O que sai daqui para o prontuário',
+      texto: [
+        'Uma página datada e reprodutível: identificação do dispositivo, eletrodo, impedâncias, grupo ativo, espectro por ' +
+        'hemisfério, sugestão de banda de sensing e as ressalvas que couberem.',
+        'Toda exportação pode vir com o <b>manifesto de proveniência</b> — hash do arquivo de origem, versão do software, ' +
+        'parâmetros de cada figura e sementes dos procedimentos aleatórios. É o que torna a análise refazível meses depois.'
+      ],
+      limite: 'Ferramenta de pesquisa e apoio à decisão. <b>Não é dispositivo médico</b> e não substitui o software ' +
+        'regulado do fabricante.'
+    }
+  }
+];
+
+const abaPorId = id => ABAS.find(a => a.id === id) || ABAS[0];
+function abaAtual() {
+  const a = abaPorId(S.aba || 'inicio');
+  return a;
+}
+function setAba(id, foco) {
+  if (S.aba === id) return;
+  S.aba = id;
+  salvarPref('aba', id);
+  renderTabs();
+  renderFigures();
+  const main = document.getElementById('figs');
+  if (main && main.scrollIntoView) main.scrollIntoView({ block: 'start' });
+  if (foco && main && main.focus) main.focus();
+}
+
+/* Figuras desta aba que existem e estão liberadas pelo modo atual. A aba é um
+   recorte de ASSUNTO; o modo é um recorte de PROFUNDIDADE. Os dois se compõem. */
+function figurasDaAba(aba, d) {
+  if (!aba.figuras) return [];
+  const permitidas = new Set(figurasVisiveis().map(f => f.id));
+  return aba.figuras
+    .map(id => FIGURES.find(f => f.id === id))
+    .filter(f => f && permitidas.has(f.id))
+    .map(f => ({ fig: f, ok: d ? !!f.has(d) : false }));
+}
+
+function renderTabs() {
+  const nav = document.getElementById('tabs');
+  if (!nav) return;
+  nav.innerHTML = '';
+  const temArquivo = S.files.length > 0;
+  const d = temArquivo ? ds() : null;
+  ABAS.forEach((aba, i) => {
+    if (aba.id === 'ponte') nav.appendChild(el('div', { class: 'sep' }));
+    const figs = figurasDaAba(aba, d);
+    const nProntas = figs.filter(x => x.ok).length;
+    const vazia = temArquivo && aba.figuras && nProntas === 0;
+    const b = el('button', {
+      type: 'button', role: 'tab', id: 'tab-' + aba.id,
+      class: vazia ? 'vazia' : '',
+      'aria-selected': String(S.aba === aba.id),
+      'aria-controls': 'figs',
+      title: vazia ? 'nenhuma figura desta aba tem dado neste registro' : '',
+      onclick: () => setAba(aba.id, true)
+    }, [
+      el('b', { text: t(aba.label) }),
+      el('i', { text: aba.sub })
+    ]);
+    if (aba.figuras && temArquivo) b.appendChild(el('span', { class: 'cnt', text: String(nProntas) }));
+    nav.appendChild(b);
+    void i;
+  });
+}
+
+/* Cabeçalho de orientação: a primeira coisa dentro de cada aba diz que camada é
+   aquela, que inferência ela sustenta e qual fronteira não deve ser cruzada. */
+function cabecalhoOrientacao(aba) {
+  const o = aba.orient;
+  if (!o) return null;
+  const classe = aba.camada === 'agudo' ? 'agudo' : aba.camada === 'cronico' ? 'cronico'
+    : aba.camada === 'ponte' ? 'ponte' : aba.id === 'qualidade' ? 'qc' : '';
+  const box = el('section', { class: 'orient ' + classe, 'aria-label': 'orientação da aba' });
+  if (o.camada) box.appendChild(el('span', { class: 'cam ' + classe, text: o.camada }));
+  box.appendChild(el('h2', { text: o.titulo }));
+  (o.texto || []).forEach(p => box.appendChild(el('p', { html: p })));
+  if (o.tabela) {
+    const dl = el('dl');
+    o.tabela.forEach(([k, v]) => { dl.appendChild(el('dt', { text: k })); dl.appendChild(el('dd', { text: v })); });
+    box.appendChild(dl);
+  }
+  if (o.limite) box.appendChild(el('p', { class: 'lim', html: '<b>Fronteira.</b> ' + o.limite }));
+  return box;
+}
+
+/* ------------------------------------------------------------- triagem ----
+   TEMPO ATÉ O PRIMEIRO INSIGHT. O usuário clínico não vem escolher janela de
+   Welch — vem com uma pergunta. Esta grade lista as perguntas em português de
+   consultório e de bancada, diz quais delas ESTE conjunto de arquivos responde,
+   e leva direto à figura. A pergunta que o dado não sustenta aparece desativada
+   com o motivo, o que é informação e não obstáculo: saber que o arquivo não tem
+   Timeline é metade do caminho para pedir o exportador certo na próxima consulta. */
+const PERGUNTAS = [
+  {
+    id: 'candidato', persona: 'clinico',
+    q: 'Este paciente é candidato a sensing?',
+    ajuda: 'Existe pico do marcador identificável em algum par bipolar, em cada hemisfério, acima do fundo aperiódico?',
+    aba: 'agudo', fig: 'F1',
+    tem: d => d.montage.length || d.sensingSetup.length,
+    falta: 'este registro não tem Survey nem SignalTest — é preciso um arquivo com LFPMontage ou SenseChannelTests'
+  },
+  {
+    id: 'banda', persona: 'clinico',
+    q: 'Que frequência central e largura de banda configurar?',
+    ajuda: 'A sugestão sai do passaporte do biomarcador, com a confiança declarada e a ressalva de que quem confirma é o profissional no programador.',
+    aba: 'ponte', fig: 'F31',
+    tem: d => d.montage.length || d.sensingSetup.length,
+    falta: 'sem Survey não há como escolher par bipolar nem medir o pico'
+  },
+  {
+    id: 'janela', persona: 'clinico',
+    q: 'A rampa de amplitude sugere qual janela terapêutica?',
+    ajuda: 'Curva de supressão do marcador contra a corrente entregue, com o modelo de ajuste declarado.',
+    aba: 'agudo', fig: 'F7',
+    tem: d => d.bsLfp.length,
+    falta: 'este registro não tem BrainSense Streaming com estimulação (BrainSenseLfp)'
+  },
+  {
+    id: 'biologico', persona: 'clinico',
+    q: 'A mudança ao longo das semanas é biológica ou é troca de configuração?',
+    ajuda: 'Segmentação do Timeline em blocos de configuração comparável, com os pontos de mudança de nível e os marcos que os explicam.',
+    aba: 'cronico', fig: 'F32',
+    tem: d => Object.keys(d.trend).length,
+    falta: 'este registro não tem Timeline crônico (DiagnosticData.LFPTrendLogs)'
+  },
+  {
+    id: 'ondeoff', persona: 'clinico',
+    q: 'Onde no dia o OFF se concentra?',
+    ajuda: 'Matriz hora × dia: OFF matinal por delayed-on, vespertino por wearing-off, ou picado — distinção que a barra empilhada destrói.',
+    aba: 'cronico', fig: 'F28',
+    tem: d => Object.keys(d.trend).length || (S.diary && S.diary.parsed && S.diary.parsed.ok),
+    falta: 'é preciso o Timeline crônico ou um diário de Hauser em CSV'
+  },
+  {
+    id: 'dose', persona: 'clinico',
+    q: 'Como o marcador responde a cada dose de levodopa?',
+    ajuda: 'Latência até o nadir, profundidade da supressão, duração do efeito e variabilidade entre doses — em vida real, não no consultório.',
+    aba: 'cronico', fig: 'F29',
+    tem: d => Object.keys(d.trend).length && d.snapshots.length,
+    falta: 'é preciso o Timeline crônico e eventos de medicação marcados pelo paciente no aparelho'
+  },
+  {
+    id: 'adbs', persona: 'clinico',
+    q: 'É candidato a DBS adaptativa, e com que limiar?',
+    ajuda: 'Elegibilidade com critérios explícitos, e o limiar candidato sobreposto à distribuição real do biomarcador em vida livre.',
+    aba: 'ponte', fig: 'F23',
+    tem: d => Object.keys(d.trend).length,
+    falta: 'sem Timeline não há distribuição em vida livre contra a qual julgar um limiar'
+  },
+  {
+    id: 'confio', persona: 'clinico',
+    q: 'Posso confiar neste sinal?',
+    ajuda: 'Alarme de artefato por canal, com veredito de uso e o que não pôde ser verificado neste arquivo.',
+    aba: 'qualidade', fig: 'F17',
+    tem: () => true, falta: ''
+  },
+  {
+    id: 'ritmo', persona: 'pesquisa',
+    q: 'Há ritmo circadiano, e ele é específico da banda?',
+    ajuda: 'Cosinor com IC por bootstrap de dias inteiros, métricas não paramétricas da cronobiologia, e o teste contra uma banda-controle.',
+    aba: 'cronico', fig: 'F9',
+    tem: d => Object.keys(d.trend).length,
+    falta: 'é preciso o Timeline crônico com ao menos dois dias'
+  },
+  {
+    id: 'tf', persona: 'pesquisa',
+    q: 'Como o espectro muda ao longo do registro?',
+    ajuda: 'Espectrograma por cinco estimadores, com a escala de densidade do scipy e época com perda de pacote marcada, nunca preenchida.',
+    aba: 'agudo', fig: 'F30',
+    tem: d => d.bsTimeDomain.length || d.montageTD.length,
+    falta: 'é preciso sinal bruto no domínio do tempo'
+  },
+  {
+    id: 'bursts', persona: 'pesquisa',
+    q: 'Onde cada rajada começa e termina?',
+    ajuda: 'Wavelet de Morlet com delimitação separada da detecção, e limiar por percentil ou pelo fundo aperiódico.',
+    aba: 'agudo', fig: 'F20',
+    tem: d => d.bsTimeDomain.length || d.montageTD.length,
+    falta: 'é preciso sinal bruto no domínio do tempo'
+  },
+  {
+    id: 'externo', persona: 'pesquisa',
+    q: 'A oscilação é do cérebro ou é o movimento entrando pelo eletrodo?',
+    ajuda: 'Importa IMU, EMG ou ECG externo, alinha, e mede coerência com limiar corrigido — declarando a incerteza residual do alinhamento.',
+    aba: 'agudo', fig: 'F24',
+    tem: d => d.bsTimeDomain.length || d.montageTD.length,
+    falta: 'é preciso sinal bruto de LFP para comparar com o sinal externo'
+  },
+  {
+    id: 'agenda', persona: 'pesquisa',
+    q: 'O que investigar na próxima sessão?',
+    ajuda: 'O crônico detecta o anômalo e não explica. A agenda transforma cada anomalia em protocolo agudo e diz o que ficaria decidido.',
+    aba: 'ponte', fig: 'F33',
+    tem: d => Object.keys(d.trend).length,
+    falta: 'é preciso o Timeline crônico para detectar o que merece investigação'
+  },
+  {
+    id: 'coorte', persona: 'pesquisa',
+    q: 'Como está a coorte inteira?',
+    ajuda: 'Tabela tidy por sujeito e hemisfério, prevalência de pico com IC de Wilson, estatísticas de grupo. Carregue uma pasta com + pasta.',
+    aba: 'coorte', fig: 'F27',
+    tem: () => true, falta: ''
+  }
+];
+
+function painelTriagem(main, d) {
+  const cabec = cabecalhoOrientacao(abaPorId('inicio'));
+  if (cabec) main.appendChild(cabec);
+
+  /* inventário do que veio no arquivo — antes das perguntas, porque é o que
+     explica por que algumas delas estão desativadas */
+  const mods = [
+    ['Survey / espectro', d.montage.length + d.sensingSetup.length + d.signalCheck.length],
+    ['sinal bruto no tempo', d.bsTimeDomain.length + d.montageTD.length],
+    ['streaming com estimulação', d.bsLfp.length],
+    ['Timeline crônico', Object.keys(d.trend).length],
+    ['eventos marcados', d.snapshots.length],
+    ['impedâncias', Object.keys(d.impedance || {}).length]
+  ];
+  main.appendChild(el('div', { class: 'card' }, [
+    el('h3', {}, ['O que veio nestes arquivos']),
+    el('div', { class: 'body' }, [
+      table(['modalidade', 'presente'], mods.map(([k, n]) => [k, n ? `sim (${n})` : '—'])),
+      el('div', {
+        class: 'note', html: `<b>Por que isto importa.</b> As perguntas abaixo que aparecem desativadas não estão ` +
+          `com defeito: o arquivo não traz a modalidade que as responderia. Saber disso agora é o que permite pedir a ` +
+          `exportação certa na próxima consulta.`
+      })
+    ])
+  ]));
+
+  ['clinico', 'pesquisa'].forEach(persona => {
+    const doGrupo = PERGUNTAS.filter(p => p.persona === persona);
+    main.appendChild(el('h3', {
+      class: 'qc-title',
+      html: persona === 'clinico'
+        ? '<b>Perguntas de consultório</b> — um paciente, uma decisão, agora'
+        : '<b>Perguntas de bancada</b> — método, incerteza e reprodutibilidade'
+    }));
+    const grade = el('div', { class: 'triagem' });
+    doGrupo.forEach(p => {
+      const disponivel = !!p.tem(d);
+      const alvo = FIGURES.find(f => f.id === p.fig);
+      const card = el('button', {
+        class: 'qcard' + (disponivel ? '' : ' na'), type: 'button',
+        disabled: disponivel ? null : 'disabled',
+        onclick: () => { if (disponivel) irPara(p.aba, p.fig); }
+      }, [
+        el('b', { text: p.q }),
+        el('span', { text: p.ajuda }),
+        el('em', { text: disponivel ? `${p.aba} · ${p.fig}${alvo ? ' — ' + alvo.title : ''}` : p.falta })
+      ]);
+      grade.appendChild(card);
+    });
+    main.appendChild(grade);
+  });
+}
+
+/* Leva à aba e abre a figura pedida. É a única forma de navegação cruzada: a
+   triagem, os alarmes e a agenda apontam para figuras, e o usuário nunca
+   precisa saber em que aba elas moram. */
+function irPara(abaId, figId) {
+  S.aba = abaId;
+  salvarPref('aba', abaId);
+  renderTabs();
+  renderFigures().then(() => {
+    if (!figId) return;
+    const det = document.getElementById('fig-' + figId);
+    if (!det) return;
+    det.open = true;
+    if (!_renderizadas.has(figId)) renderFigureAsync(figId);
+    if (det.scrollIntoView) det.scrollIntoView({ block: 'start' });
+  });
+}
+
+/* ------------------------------------------------- alarme de artefato ----
+   POR QUE ELE APARECE NO TOPO DE TODA ABA, E NÃO SÓ NA DE QUALIDADE. Um canal
+   contaminado por ECG contamina a leitura de onde quer que ela seja feita — o
+   espectro da aba Agudo, a série da aba Crônico, o limiar da aba Ponte. Deixar
+   o aviso guardado numa aba que o usuário clínico talvez nunca abra seria
+   escondê-lo. Aqui ele acompanha o usuário, compacto fora da aba de qualidade
+   e completo dentro dela.
+
+   A contabilidade é memoizada porque a varredura roda detecção de picos R sobre
+   o sinal bruto e não pode repetir a cada troca de aba. */
+let _alarmeCache = null, _alarmeChave = null;
+function alarmeDoRegistro() {
+  if (!S.files.length) return null;
+  const chave = chaveAnalise();
+  if (_alarmeCache && _alarmeChave === chave) return _alarmeCache;
+  let saida = null;
+  try {
+    const porArquivo = activeFiles().map(x => C.artifactAlarm(x.parsed, {}));
+    /* junta os arquivos do sujeito ativo num alarme só: o usuário quer saber se
+       ALGUM canal está comprometido, não abrir seis painéis */
+    const alarms = porArquivo.flatMap(a => (a && a.alarms) || []);
+    const notChecked = porArquivo.flatMap(a => (a && a.notChecked) || []);
+    const nCrit = alarms.filter(a => a.severity === 'critico').length;
+    const nAt = alarms.filter(a => a.severity === 'atencao').length;
+    saida = {
+      ok: porArquivo.some(a => a && a.ok),
+      level: nCrit ? 'critico' : nAt ? 'atencao' : 'limpo',
+      alarms: alarms.sort((a, b) => {
+        const peso = s => s === 'critico' ? 0 : s === 'atencao' ? 1 : 2;
+        return peso(a.severity) - peso(b.severity);
+      }),
+      nCritical: nCrit, nWarning: nAt,
+      notChecked, nFiles: porArquivo.length,
+      params: (porArquivo[0] || {}).params || {}
+    };
+  } catch (e) {
+    saida = { ok: false, level: 'limpo', alarms: [], notChecked: [], erro: String((e && e.message) || e) };
+  }
+  _alarmeChave = chave; _alarmeCache = saida;
+  return saida;
+}
+
+function cartaoAlarme(al, completo) {
+  const cls = al.level === 'critico' ? '' : al.level === 'atencao' ? ' atencao' : ' limpo';
+  const box = el('section', { class: 'alarme' + cls, role: 'alert' });
+  const titulo = al.level === 'critico'
+    ? `${al.nCritical} problema(s) que impedem a leitura de um ou mais canais`
+    : al.level === 'atencao'
+      ? `${al.nWarning} ressalva(s) sobre a qualidade do sinal`
+      : 'nenhum artefato detectado nas verificações possíveis';
+  box.appendChild(el('h3', { text: '⚠ ' + titulo }));
+
+  /* fora da aba de qualidade mostra só os críticos, com um atalho */
+  const mostrar = completo ? al.alarms : al.alarms.filter(a => a.severity === 'critico').slice(0, 3);
+  const ul = el('ul');
+  mostrar.forEach(a => {
+    const vcls = /não interprete/i.test(a.verdict || '') ? 'nao'
+      : /ressalva/i.test(a.verdict || '') ? 'ressalva' : 'pode';
+    ul.appendChild(el('li', {}, [
+      el('span', { class: 'tit', text: `${a.title}${a.channel ? ' — ' + a.channel : ''}` }),
+      el('span', { class: 'pl', text: a.plain }),
+      a.evidence ? el('span', { class: 'ev', text: a.evidence }) : el('span'),
+      el('span', { class: 'vd ' + vcls, text: a.verdict || '—' }),
+      completo && a.whatToDo ? el('span', { class: 'ev', text: '→ ' + a.whatToDo }) : el('span')
+    ]));
+  });
+  if (mostrar.length) box.appendChild(ul);
+
+  const restantes = al.alarms.length - mostrar.length;
+  const partes = [];
+  if (!completo && restantes > 0) partes.push(`${restantes} outro(s) item(ns) na aba Qualidade`);
+  if (al.notChecked && al.notChecked.length) {
+    partes.push(`<b>${al.notChecked.length} verificação(ões) não foi(ram) possível(is) neste arquivo</b> — ` +
+      `ausência de verificação não é ausência de artefato`);
+  }
+  if (partes.length || !completo) {
+    const rod = el('div', { class: 'rodape', html: partes.join(' · ') || '' });
+    if (!completo) {
+      rod.appendChild(el('br'));
+      rod.appendChild(el('button', {
+        class: 'btn', text: 'abrir o painel de qualidade',
+        onclick: () => irPara('qualidade', 'F17'), style: 'margin-top:7px'
+      }));
+    }
+    box.appendChild(rod);
+  }
+  if (completo && al.notChecked && al.notChecked.length) {
+    box.appendChild(el('div', {
+      class: 'rodape', html: '<b>Não verificado neste arquivo:</b> ' +
+        al.notChecked.map(x => `${x.check} (${x.whyNot})`).join(' · ')
+    }));
+  }
+  return box;
+}
+
+/* ------------------------------------------------------------ relatório ---
+   A aba que entrega o produto do usuário clínico: uma página datada, com o que
+   o prontuário precisa, e todas as exportações reunidas num lugar só em vez de
+   espalhadas pelo painel lateral. */
+function painelRelatorio(main, d) {
+  const b = exportBundle();
+  const p0 = (activeFiles()[0] || {}).parsed;
+  if (!p0) { main.appendChild(el('div', { class: 'empty', text: 'nenhum registro carregado' })); return; }
+
+  /* cabeçalho de identificação — pseudonimizado, como em toda a aplicação */
+  const perfil = activeProfile();
+  const s0 = (b && b.subject) || {};
+  main.appendChild(el('div', { class: 'card' }, [
+    el('h3', {}, ['Identificação do registro']),
+    el('div', { class: 'body' }, [
+      table(['campo', 'valor'], [
+        ['identificador (hash)', p0.patient.idHash],
+        ['diagnóstico declarado', s0.diagnosis || '—'],
+        ['dispositivo', `${(p0.device || {}).model || '—'} · fw ${(p0.device || {}).firmware || '—'}`],
+        ['data de implante', String((p0.device || {}).implantDate || '—').slice(0, 10)],
+        ['perfil de análise', `${perfil.label} · banda ${perfil.primaryBand.label} (${perfil.primaryBand.lo}–${perfil.primaryBand.hi} Hz)`],
+        ['sessões carregadas', String(activeFiles().length)],
+        ['fuso aplicado', `UTC${offMin() >= 0 ? '+' : '−'}${String(Math.floor(Math.abs(offMin()) / 60)).padStart(2, '0')}:${String(Math.abs(offMin()) % 60).padStart(2, '0')}`],
+        ['gerado em', new Date().toLocaleString('pt-BR')]
+      ])
+    ])
+  ]));
+
+  /* leituras em linguagem clínica — as mesmas do modo clínico */
+  const leituras = leiturasClinicas();
+  if (leituras && leituras.readings && leituras.readings.length) {
+    const card = el('div', { class: 'card' }, [el('h3', {}, ['Leitura em linguagem clínica'])]);
+    const body = el('div', { class: 'body' });
+    if (leituras.semaforo) body.appendChild(el('div', {
+      class: 'semaforo ' + (leituras.semaforo.cor || 'cinza'),
+      html: `<i></i><div><b>${leituras.semaforo.rotulo}</b><span>${leituras.semaforo.frase}</span></div>`
+    }));
+    leituras.readings.forEach(l => {
+      const nv = el('div', { class: 'leitura ' + (l.nivel || '') });
+      nv.appendChild(el('h4', { text: l.titulo }));
+      nv.appendChild(el('p', { text: l.frase }));
+      if (l.numeros) nv.appendChild(el('span', { class: 'num', text: l.numeros }));
+      if (l.parametro) nv.appendChild(el('span', { class: 'par', text: 'parâmetros: ' + l.parametro }));
+      if (l.ressalva) nv.appendChild(el('p', { class: 'res', html: '<b>Ressalva.</b> ' + l.ressalva }));
+      if (l.figura) nv.appendChild(el('button', {
+        class: 'btn', text: `ver ${l.figura}`, style: 'margin-top:6px',
+        onclick: () => { const a = ABAS.find(x => (x.figuras || []).includes(l.figura)); irPara(a ? a.id : 'agudo', l.figura); }
+      }));
+      body.appendChild(nv);
+    });
+    if (leituras.disclaimer) body.appendChild(el('div', { class: 'note', text: leituras.disclaimer }));
+    card.appendChild(body);
+    main.appendChild(card);
+  }
+
+  /* exportações reunidas */
+  main.appendChild(el('div', { class: 'card' }, [
+    el('h3', {}, ['Exportar']),
+    el('div', { class: 'body' }, [
+      el('div', { class: 'note', html: `Toda exportação pode vir com o <b>manifesto de proveniência</b>: hash SHA-256 dos ` +
+        `arquivos de origem, versão do software, parâmetros de cada figura e sementes dos procedimentos aleatórios. ` +
+        `É o que permite refazer esta análise meses depois e obter os mesmos números.` }),
+      exportRow([
+        { label: '⤓ Relatório clínico (PDF)', fn: () => gerarPdfNativo() },
+        { label: '⤓ Pacote completo (.zip)', fn: () => exportarPacote() },
+        { label: '⤓ CSV — métricas agudas', fn: () => exportAcuteCSV() },
+        { label: '⤓ CSV — métricas crônicas', fn: () => exportChronicCSV() },
+        { label: '⤓ CSV — Timeline bruto', fn: () => exportSession() },
+        { label: '⤓ JSON para estatística', fn: () => exportJSON() },
+        { label: '⤓ Manifesto de proveniência', fn: () => exportManifest() },
+        { label: 'imprimir / PDF do navegador', fn: () => window.print() }
+      ])
+    ])
+  ]));
+  void d;
+}
+
 const AUTO_ABRIR = ['F1', 'F8', 'F9'];
 const _renderizadas = new Set();
 
@@ -4565,14 +5577,39 @@ async function renderFigures() {
     return;
   }
   const d = ds();
-  const visiveis = figurasVisiveis();
+  const aba = abaAtual();
+
+  /* O alarme de artefato aparece no TOPO de toda aba que consome sinal, e não
+     só na aba de qualidade: um canal contaminado por ECG contamina a leitura
+     de onde quer que ela seja feita. */
+  if (aba.id !== 'inicio') {
+    const al = alarmeDoRegistro();
+    if (al && al.level !== 'limpo') main.appendChild(cartaoAlarme(al, aba.id === 'qualidade'));
+  }
+
+  if (aba.especial === 'triagem') { painelTriagem(main, d); return; }
+
+  const cabec = cabecalhoOrientacao(aba);
+  if (cabec) main.appendChild(cabec);
+
+  if (aba.especial === 'relatorio') { painelRelatorio(main, d); return; }
+
+  const figs = figurasDaAba(aba, d);
+  if (!figs.length) {
+    main.appendChild(el('div', {
+      class: 'empty', html: ehClinico()
+        ? `O modo <b>clínico</b> não mostra nenhuma figura desta aba para o perfil de doença ativo. ` +
+          `Troque para <b>pesquisa</b> no topo da página para ver todas.`
+        : 'Nenhuma figura desta aba está disponível.'
+    }));
+    return;
+  }
   const abrir = [];
-  visiveis.forEach(fig => {
-    const ok = !!fig.has(d);
+  figs.forEach(({ fig, ok }) => {
     const det = el('details', { class: 'fig ' + (ok ? 'ready' : 'na'), id: 'fig-' + fig.id });
-    /* no modo clínico as seis figuras já vêm abertas: são poucas e é o que a
-       pessoa veio ver. No modo pesquisa só as três de leitura imediata. */
-    if (ok && (ehClinico() || AUTO_ABRIR.includes(fig.id))) abrir.push(fig);
+    /* abre o que dá para ler de imediato: no modo clínico, tudo o que tem dado;
+       no de pesquisa, a primeira figura pronta da aba, que é a porta de entrada */
+    if (ok && (ehClinico() || abrir.length === 0)) abrir.push(fig);
     det.appendChild(el('summary', {}, [el('header', {}, [
       el('span', { class: 'chev', text: '▸' }),
       el('span', { class: 'id', text: fig.id }),
@@ -4580,18 +5617,13 @@ async function renderFigures() {
       el('span', { class: 'state', text: ok ? t('dados presentes') : t('sem dados') })
     ])]));
     det.appendChild(el('div', { class: 'content', id: 'content-' + fig.id }));
-    /* cálculo sob demanda: abrir uma figura pesada mostra o aviso antes de
-       travar a thread, e cada figura só é calculada uma vez */
     det.addEventListener('toggle', () => {
       if (det.open && !_renderizadas.has(fig.id)) renderFigureAsync(fig.id);
     });
     main.appendChild(det);
   });
-  /* a lista inteira aparece primeiro; só então começam os cálculos */
   await proximoQuadro();
   if (Prog.ativo) Prog.expect(abrir.length);
-  /* `open` só é ligado no momento de calcular: o evento `toggle` que ele dispara
-     chega depois, encontra a figura já em `_renderizadas` e não refaz o trabalho */
   for (const fig of abrir) {
     if (Prog.ativo) await Prog.step(`figura ${fig.id} — ${fig.title}`);
     else await proximoQuadro();
@@ -4599,18 +5631,44 @@ async function renderFigures() {
     if (det) det.open = true;
     renderFigure(fig.id);
   }
-  /* leituras e semáforo são caros (métricas + painel de QC) e por isso vêm
-     depois das figuras, como etapa própria e anunciada */
-  if (ehClinico() && S.files.length) {
-    if (Prog.ativo) await Prog.step('leituras em linguagem clínica e semáforo de qualidade');
-    else await proximoQuadro();
-    try {
-      await leiturasClinicasAsync();
-      preencherSemaforo();
-      abrir.forEach(fig => inserirLeituras(fig.id));
-    } catch (e) { Prog.falhaEtapa(String(e && e.message || e)); }
-  }
 }
+
+/* ------------------------------------------------------- primeiros passos */
+function primeiraVisita() { return !lerPrefs().tutorialVisto; }
+
+function cartaoPrimeirosPassos() {
+  const c = el('div', { class: 'onboard', id: 'onboard' }, [
+    el('h3', { text: 'Primeiros passos' }),
+    el('ol', {}, [
+      el('li', { html: 'Baixe do programador Percept o <b>Session Report em JSON</b> — não o PDF — e solte o arquivo aqui. Pode soltar vários da mesma pessoa de uma vez.' }),
+      el('li', { html: 'A aba <b>Início</b> lista as perguntas que <i>estes</i> arquivos respondem. Escolha a pergunta e o aplicativo leva à figura.' }),
+      el('li', { html: 'As abas separam <b>registro agudo</b> (sessão, experimento, denso no espectro) de <b>registro crônico</b> (dias, vida real, denso no tempo). A aba <b>Ponte</b> é onde as duas se encontram — calibração, limiar de aDBS e agenda da próxima sessão.' }),
+      el('li', { html: 'No <b>modo clínico</b> cada aba mostra só o essencial, com leitura em linguagem simples. No <b>modo pesquisa</b> aparecem todas as figuras, todos os parâmetros e todas as exportações.' }),
+      el('li', { html: 'Cada número vem com o <b>parâmetro que o produziu</b> e a <b>ressalva</b> que ele exige. Quando o dado não sustenta uma conclusão, o texto diz isso em vez de mostrar um valor.' })
+    ]),
+    el('p', { html: 'Nenhum dado sai deste dispositivo: leitura, cálculo e figuras acontecem no navegador. ' +
+      'Nome, data de nascimento e número de série nunca passam do leitor de arquivo. ' +
+      'Ferramenta de pesquisa e apoio à decisão — não substitui o julgamento clínico nem o software regulado do fabricante.' })
+  ]);
+  c.appendChild(el('button', {
+    class: 'btn primary', text: 'entendi',
+    onclick: () => { salvarPref('tutorialVisto', true); const o = document.getElementById('onboard'); if (o && o.remove) o.remove(); }
+  }));
+  return c;
+}
+
+function caixaLeitura(l) {
+  const n = el('div', { class: 'leitura ' + l.nivel }, [
+    el('h4', { text: l.titulo }),
+    el('p', { text: l.frase })
+  ]);
+  if (l.numeros) n.appendChild(el('span', { class: 'num', text: l.numeros }));
+  if (l.parametro) n.appendChild(el('span', { class: 'par', text: 'parâmetros usados: ' + l.parametro }));
+  if (l.ressalva) n.appendChild(el('p', { class: 'res', html: '<b>Ressalva.</b> ' + l.ressalva }));
+  return n;
+}
+
+/* ------------------------------------------------------- primeiros passos */
 
 /* Insere, no topo da figura, as leituras em linguagem simples que pertencem a
    ela. O texto vem do núcleo (report/reading.js): a interface não interpreta
@@ -4626,39 +5684,6 @@ function inserirLeituras(id) {
   minhas.forEach(l => caixa.appendChild(caixaLeitura(l)));
   if (node.firstChild) node.insertBefore(caixa, node.firstChild);
   else node.appendChild(caixa);
-}
-
-function caixaLeitura(l) {
-  const n = el('div', { class: 'leitura ' + l.nivel }, [
-    el('h4', { text: l.titulo }),
-    el('p', { text: l.frase })
-  ]);
-  if (l.numeros) n.appendChild(el('span', { class: 'num', text: l.numeros }));
-  if (l.parametro) n.appendChild(el('span', { class: 'par', text: 'parâmetros usados: ' + l.parametro }));
-  if (l.ressalva) n.appendChild(el('p', { class: 'res', html: '<b>Ressalva.</b> ' + l.ressalva }));
-  return n;
-}
-
-/* ------------------------------------------------------- primeiros passos */
-function primeiraVisita() { return !lerPrefs().tutorialVisto; }
-function cartaoPrimeirosPassos() {
-  const c = el('div', { class: 'onboard', id: 'onboard' }, [
-    el('h3', { text: 'Primeiros passos' }),
-    el('ol', {}, [
-      el('li', { html: 'Baixe do programador Percept o <b>Session Report em JSON</b> — não o PDF — e solte o arquivo aqui. Pode soltar vários da mesma pessoa de uma vez.' }),
-      el('li', { html: 'No <b>modo clínico</b> (atual) aparecem seis figuras com a leitura em linguagem simples no topo de cada uma, um semáforo de qualidade do sinal e um botão de relatório.' }),
-      el('li', { html: 'No <b>modo pesquisa</b> aparecem todas as figuras, todos os controles de parâmetro, as exportações em CSV/JSON/PNG, o checklist PERCEPT-REPORT e o manifesto de proveniência.' }),
-      el('li', { html: 'Cada número vem com o <b>parâmetro que o produziu</b> e a <b>ressalva</b> que ele exige. Quando o dado não sustenta uma conclusão, o texto diz isso em vez de inventar um valor.' })
-    ]),
-    el('p', { html: 'Nenhum dado sai deste dispositivo: leitura, cálculo e figuras acontecem no navegador. ' +
-      'Nome, data de nascimento e número de série nunca passam do leitor de arquivo. ' +
-      'Ferramenta de pesquisa e apoio à decisão — não substitui o julgamento clínico nem o software regulado do fabricante.' })
-  ]);
-  c.appendChild(el('button', {
-    class: 'btn primary', text: 'entendi',
-    onclick: () => { salvarPref('tutorialVisto', true); const o = document.getElementById('onboard'); if (o && o.remove) o.remove(); }
-  }));
-  return c;
 }
 
 function renderFigure(id) {
@@ -4714,6 +5739,7 @@ async function renderAll(titulo) {
   try {
     if (proprio) await Prog.step('montando painel do registro');
     renderRail();
+    renderTabs();
     await renderFigures();
     if (proprio) await Prog.finish('figuras prontas');
   } catch (e) {
@@ -4816,6 +5842,7 @@ async function handleFiles(fileList) {
       `${ondeCalcula} — etapas anunciadas acima estão <b>calculando</b>, não travadas.`;
     await Prog.step('montando painel do registro');
     renderRail();
+    renderTabs();
     await renderFigures();
     await Prog.finish('pronto');
   } catch (e) {
@@ -5454,7 +6481,11 @@ function init() {
   const prefs = lerPrefs();
   if (prefs.modo === 'clinico' || prefs.modo === 'pesquisa') S.mode = prefs.modo;
   if (prefs.idioma) S.lang = C.setLanguage(prefs.idioma);
+  /* a aba volta como o usuário deixou, mas nunca numa aba de figura antes de
+     haver arquivo: sem dado, a única aba com o que mostrar é a de triagem */
+  if (prefs.aba && ABAS.some(a => a.id === prefs.aba)) S.aba = prefs.aba;
   marcarModo();
+  renderTabs();
   aplicarIdiomaMoldura();
   const si = document.getElementById('idioma');
   if (si) si.addEventListener('change', e => setIdioma(e.target.value));
@@ -5511,5 +6542,5 @@ function init() {
 }
 document.addEventListener('DOMContentLoaded', init);
 /* hook de depuração (usado pela suíte de testes; inerte em produção) */
-window.__PLS__ = { FIGURES, buildProvenance, carregaExterno, carregaDiario, painelMatriz, csvEspectrograma, metaEspectrograma, calculaEspectrograma, exportarPacote, gerarPdfNativo, setIdioma, ds, invalidarDs, S, renderRail, renderFigure, renderFigureAsync, renderAllReady, handleFiles, offMin, exportBundle, exportBundleAsync, buildReportCover, Prog, proximoQuadro, setModo, modoAtual, figurasVisiveis, leiturasClinicas, leiturasClinicasAsync, PIPELINES, rodarPipeline, preencherSemaforo, inserirLeituras, Trabalhador, Instrumentacao };
+window.__PLS__ = { FIGURES, ABAS, setAba, abaAtual, irPara, renderTabs, figurasDaAba, painelTriagem, alarmeDoRegistro, PERGUNTAS, buildProvenance, carregaExterno, carregaDiario, painelMatriz, csvEspectrograma, metaEspectrograma, calculaEspectrograma, exportarPacote, gerarPdfNativo, setIdioma, ds, invalidarDs, S, renderRail, renderFigure, renderFigureAsync, renderAllReady, handleFiles, offMin, exportBundle, exportBundleAsync, buildReportCover, Prog, proximoQuadro, setModo, modoAtual, figurasVisiveis, leiturasClinicas, leiturasClinicasAsync, PIPELINES, rodarPipeline, preencherSemaforo, inserirLeituras, Trabalhador, Instrumentacao };
 })();
