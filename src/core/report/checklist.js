@@ -76,6 +76,20 @@ export const CHECKLIST_ITEMS = [
     ['n_permutations', 'n de permutações'],
     ['bootstrap', 'Método de bootstrap'],
     ['software', 'Software e versão']
+  ]],
+  /* Onda 12: tudo o que uma feature por janela precisa declarar para ser
+     reproduzível. O item de coerência está aqui, e não em "Estatística",
+     porque sem os segmentos efetivos e o limiar sob a nula o número não é
+     interpretável — não é uma questão de correção múltipla, é de referente. */
+  ['Features por janela (ODR e coerência)', [
+    ['window_length', 'Janela de análise e sobreposição'],
+    ['gamma_peak_def', 'Definição do pico individual de gama'],
+    ['entrainment_check', 'Verificação do pico de gama contra f_stim/2'],
+    ['odr_formulation', 'Formulação do ODR usada, e por quê'],
+    ['zscore_policy', 'Política de normalização (z-score em potência ou em log, sobre qual intervalo)'],
+    ['stim_state_window', 'Estado da estimulação durante o registro analisado'],
+    ['coherence_segments', 'Coerência: segmentos efetivos, limiar sob a nula e veredito de condução de volume'],
+    ['ssd_declaration', 'Declaração de que o passo de SSD do protocolo de origem não foi aplicado']
   ]]
 ];
 
@@ -91,6 +105,59 @@ function valorDe(chave, prov, metrics, profile) {
   const val = v => (v === undefined || v === null || v === '' || (typeof v === 'number' && !isFinite(v))) ? null : v;
 
   switch (chave) {
+    /* --- Onda 12: features por janela ------------------------------------ */
+    case 'window_length': {
+      const p = passo('metrics.odr') || passo('dsp.windowedCoherence') || passo('dsp.spectralVariation');
+      return p ? `${p.params.windowS} s, sobreposição ${p.params.overlap}` : null;
+    }
+    case 'gamma_peak_def': {
+      const p = passo('metrics.odr');
+      if (!p) return null;
+      return p.params.gammaSource === 'broad'
+        ? `banda larga ${p.params.gammaBroad || '60–90'} Hz — NÃO é o pico individual do artigo, escolha explícita do usuário`
+        : `pico individual em ${p.params.gammaSearch} Hz ± ${p.params.gammaHalfWidthHz} Hz, localizado uma vez sobre o ` +
+          `espectro médio do registro inteiro` +
+          (isFinite(p.params.gammaPeakHz) ? `; encontrado em ${p.params.gammaPeakHz} Hz` : '');
+    }
+    case 'entrainment_check': {
+      const p = passo('metrics.odr');
+      if (!p) return null;
+      return p.params.entrainmentChecked
+        ? `pico conferido contra f_stim/2 = ${p.params.subharmonicHz} Hz, tolerância ${p.params.entrainToleranceHz} Hz: ` +
+          `${p.params.entrainedDominant ? 'ENTRAINED — o ODR foi recusado' : 'fora da tolerância, compatível com gama endógena'}`
+        : NAO_DET + ' — a frequência de estimulação não está declarada no arquivo, e por isso a conferência NÃO foi feita. ' +
+          'Isso não é o mesmo que dizer que o pico não é entrained';
+    }
+    case 'odr_formulation': {
+      const p = passo('metrics.odr');
+      if (!p) return null;
+      return p.params.formulation === 'literal'
+        ? 'literal, (z(θ)·z(γ))/z(β) — escolhida pelo usuário para comparação direta com a literatura, apesar de ' +
+          'instável quando z(β) cruza zero'
+        : 'logarítmica, z(log θ) + z(log γ) − z(log β) — a MESMA razão sem divisão, escolhida porque a versão literal ' +
+          'divide por um valor z-scored que cruza zero por construção' +
+          (isFinite(p.params.spearmanLogVsLiteral) ? `; Spearman entre as duas: ${p.params.spearmanLogVsLiteral}` : '');
+    }
+    case 'zscore_policy': { const p = passo('metrics.odr'); return val(p && p.params.zPolicy); }
+    case 'stim_state_window': {
+      const p = passo('metrics.odr');
+      return p ? val(p.params.deviceState) : val(ag.device_state);
+    }
+    case 'coherence_segments': {
+      const p = passo('dsp.windowedCoherence');
+      if (!p) return null;
+      return `nperseg ${p.params.nperseg}, sobreposição ${p.params.overlap}, α ${p.params.alpha}; ` +
+        `${p.params.nSegmentsEffective} segmentos efetivos por janela, coerência sob a nula ${p.params.expectedNullCoherence}, ` +
+        `limiar corrigido para a banda (Šidák) ${p.params.thresholdBandCorrected}; ` +
+        `condução de volume suspeitada em ${p.params.nVolumeConductionSuspected} janela(s) acima do limiar`;
+    }
+    case 'ssd_declaration': {
+      const p = passo('metrics.odr');
+      if (!p) return null;
+      return 'o passo de SSD (decomposição espectro-espacial) do protocolo de origem NÃO foi aplicado: o Percept expõe ' +
+        'um par bipolar por hemisfério. A sensibilidade é menor, sobretudo em gama, e os valores absolutos não são ' +
+        'comparáveis com os do artigo';
+    }
     case 'device_model': return val(arq.deviceModel || sub.device_model);
     case 'firmware': return val(arq.firmware || sub.firmware);
     case 'programmer_version': return val(arq.programmerVersion);

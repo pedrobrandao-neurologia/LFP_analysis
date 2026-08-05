@@ -4480,6 +4480,20 @@ const CHECKLIST_ITEMS = [
     ['n_permutations', 'n de permutações'],
     ['bootstrap', 'Método de bootstrap'],
     ['software', 'Software e versão']
+  ]],
+  /* Onda 12: tudo o que uma feature por janela precisa declarar para ser
+     reproduzível. O item de coerência está aqui, e não em "Estatística",
+     porque sem os segmentos efetivos e o limiar sob a nula o número não é
+     interpretável — não é uma questão de correção múltipla, é de referente. */
+  ['Features por janela (ODR e coerência)', [
+    ['window_length', 'Janela de análise e sobreposição'],
+    ['gamma_peak_def', 'Definição do pico individual de gama'],
+    ['entrainment_check', 'Verificação do pico de gama contra f_stim/2'],
+    ['odr_formulation', 'Formulação do ODR usada, e por quê'],
+    ['zscore_policy', 'Política de normalização (z-score em potência ou em log, sobre qual intervalo)'],
+    ['stim_state_window', 'Estado da estimulação durante o registro analisado'],
+    ['coherence_segments', 'Coerência: segmentos efetivos, limiar sob a nula e veredito de condução de volume'],
+    ['ssd_declaration', 'Declaração de que o passo de SSD do protocolo de origem não foi aplicado']
   ]]
 ];
 
@@ -4495,6 +4509,59 @@ function valorDe(chave, prov, metrics, profile) {
   const val = v => (v === undefined || v === null || v === '' || (typeof v === 'number' && !isFinite(v))) ? null : v;
 
   switch (chave) {
+    /* --- Onda 12: features por janela ------------------------------------ */
+    case 'window_length': {
+      const p = passo('metrics.odr') || passo('dsp.windowedCoherence') || passo('dsp.spectralVariation');
+      return p ? `${p.params.windowS} s, sobreposição ${p.params.overlap}` : null;
+    }
+    case 'gamma_peak_def': {
+      const p = passo('metrics.odr');
+      if (!p) return null;
+      return p.params.gammaSource === 'broad'
+        ? `banda larga ${p.params.gammaBroad || '60–90'} Hz — NÃO é o pico individual do artigo, escolha explícita do usuário`
+        : `pico individual em ${p.params.gammaSearch} Hz ± ${p.params.gammaHalfWidthHz} Hz, localizado uma vez sobre o ` +
+          `espectro médio do registro inteiro` +
+          (isFinite(p.params.gammaPeakHz) ? `; encontrado em ${p.params.gammaPeakHz} Hz` : '');
+    }
+    case 'entrainment_check': {
+      const p = passo('metrics.odr');
+      if (!p) return null;
+      return p.params.entrainmentChecked
+        ? `pico conferido contra f_stim/2 = ${p.params.subharmonicHz} Hz, tolerância ${p.params.entrainToleranceHz} Hz: ` +
+          `${p.params.entrainedDominant ? 'ENTRAINED — o ODR foi recusado' : 'fora da tolerância, compatível com gama endógena'}`
+        : NAO_DET + ' — a frequência de estimulação não está declarada no arquivo, e por isso a conferência NÃO foi feita. ' +
+          'Isso não é o mesmo que dizer que o pico não é entrained';
+    }
+    case 'odr_formulation': {
+      const p = passo('metrics.odr');
+      if (!p) return null;
+      return p.params.formulation === 'literal'
+        ? 'literal, (z(θ)·z(γ))/z(β) — escolhida pelo usuário para comparação direta com a literatura, apesar de ' +
+          'instável quando z(β) cruza zero'
+        : 'logarítmica, z(log θ) + z(log γ) − z(log β) — a MESMA razão sem divisão, escolhida porque a versão literal ' +
+          'divide por um valor z-scored que cruza zero por construção' +
+          (isFinite(p.params.spearmanLogVsLiteral) ? `; Spearman entre as duas: ${p.params.spearmanLogVsLiteral}` : '');
+    }
+    case 'zscore_policy': { const p = passo('metrics.odr'); return val(p && p.params.zPolicy); }
+    case 'stim_state_window': {
+      const p = passo('metrics.odr');
+      return p ? val(p.params.deviceState) : val(ag.device_state);
+    }
+    case 'coherence_segments': {
+      const p = passo('dsp.windowedCoherence');
+      if (!p) return null;
+      return `nperseg ${p.params.nperseg}, sobreposição ${p.params.overlap}, α ${p.params.alpha}; ` +
+        `${p.params.nSegmentsEffective} segmentos efetivos por janela, coerência sob a nula ${p.params.expectedNullCoherence}, ` +
+        `limiar corrigido para a banda (Šidák) ${p.params.thresholdBandCorrected}; ` +
+        `condução de volume suspeitada em ${p.params.nVolumeConductionSuspected} janela(s) acima do limiar`;
+    }
+    case 'ssd_declaration': {
+      const p = passo('metrics.odr');
+      if (!p) return null;
+      return 'o passo de SSD (decomposição espectro-espacial) do protocolo de origem NÃO foi aplicado: o Percept expõe ' +
+        'um par bipolar por hemisfério. A sensibilidade é menor, sobretudo em gama, e os valores absolutos não são ' +
+        'comparáveis com os do artigo';
+    }
     case 'device_model': return val(arq.deviceModel || sub.device_model);
     case 'firmware': return val(arq.firmware || sub.firmware);
     case 'programmer_version': return val(arq.programmerVersion);
@@ -4822,6 +4889,67 @@ function qcTrafficLight(painel) {
 /* ------------------------------------------------------------------ fachada */
 /* clinicalReadings(bundle, opts) — `bundle` é a saída de extractMetrics.
    opts: { profileId, qcPanel }                                               */
+/* ------------------------------------------------------ ODR (Onda 12) ---- */
+
+/* odrReading(odr) — leitura em linguagem clínica da série de ODR.
+
+   Não entra em `clinicalReadings` porque não vem do bundle de métricas: vem
+   direto da figura, que é onde o ODR é calculado. A assinatura é a mesma das
+   demais (frase, números, parâmetro, ressalva, nível) para que o relatório
+   possa tratá-la sem caso especial.                                         */
+function odrReading(odr) {
+  const base = { id: 'odr', figura: 'F34' };
+  if (!odr || !odr.ok) return leitura('odr', 'ODR — dinâmica multi-banda',
+    'O ODR não pôde ser calculado neste registro.',
+    Object.assign({
+      nivel: 'insuficiente',
+      numeros: (odr && odr.reason) ? String(odr.reason).slice(0, 220) : 'sem sinal bruto no domínio do tempo',
+      ressalva: 'Recusar o cálculo é o resultado correto quando o numerador mediria a resposta da rede à própria ' +
+        'estimulação, ou quando não há pico individual de gama. Um número aqui seria pior do que nenhum.'
+    }, base));
+
+  const s = (odr.windows || []).map(w => w.odrLog).filter(isFinite);
+  const inc = odr.trendPerWindow || {};
+  const nJan = s.length;
+  const primeiroTerco = s.slice(0, Math.max(1, Math.floor(nJan / 3)));
+  const ultimoTerco = s.slice(-Math.max(1, Math.floor(nJan / 3)));
+  const md = v => v.reduce((a, b) => a + b, 0) / v.length;
+  const delta = md(ultimoTerco) - md(primeiroTerco);
+  /* "subiu" precisa de um limiar declarado, senão qualquer flutuação vira
+     movimento. Meio desvio-padrão do próprio ODR do registro é o critério. */
+  const dp = Math.sqrt(odrVar(s));
+  const limiar = 0.5 * dp;
+  const subiu = delta > limiar, caiu = delta < -limiar;
+
+  const lado = odr.nHemispheres === 1 ? ' (um hemisfério só)' : ' (média dos dois hemisférios)';
+  return leitura('odr', 'ODR — dinâmica multi-banda',
+    'O ODR combina três ritmos num único número: sobe quando o teta e a gama sobem e quando o beta cai — o padrão ' +
+    'descrito nos períodos de discinesia. Aqui ele ' +
+    (subiu ? 'subiu' : caiu ? 'caiu' : 'não se moveu') + ' ao longo do registro' + lado + '.',
+    Object.assign({
+      nivel: 'ok',
+      numeros: `${nJan} janela(s) de ${odr.params.windowS} s · primeiro terço ${n2(md(primeiroTerco))}, ` +
+        `último terço ${n2(md(ultimoTerco))} (Δ ${n2(delta)}, critério de movimento ${n2(limiar)} = 0,5 DP)` +
+        (isFinite(inc.slope) ? ` · inclinação ${n2(inc.slope)} por janela` : ''),
+      parametro: `formulação ${odr.formulationUsed === 'literal' ? 'literal do artigo' : 'logarítmica'} · ` +
+        `θ 4–8 Hz, β↓ 12–20 Hz, γ ${odr.params.gammaSource === 'broad' ? 'banda larga 60–90 Hz' : 'pico individual ± 2,5 Hz'} · ` +
+        `z-score ao longo do registro inteiro · Spearman entre as duas formulações ${odr.spearmanLogVsLiteral}`,
+      ressalva: 'É um marcador exploratório: no estudo que o propôs, ele acertou a presença de discinesia em pouco ' +
+        'mais de metade dos casos — acurácia balanceada de 0,61 (DP 0,14), com detecção significativa em 8 de 21 ' +
+        'sujeitos — e em condições melhores que as deste registro, com decomposição espectro-espacial para otimizar ' +
+        'a razão sinal-ruído, estimulação desligada e rótulo clínico validado por vídeo. Aqui não há rótulo clínico ' +
+        'nenhum: esta leitura descreve o que a série fez, não afirma que houve discinesia.' +
+        (odr.unilateralWarning ? ' ' + odr.unilateralWarning + '.' : '')
+    }, base));
+}
+
+/* variância populacional local, para não depender de import extra */
+function odrVar(v) {
+  if (v.length < 2) return 0;
+  const m = v.reduce((a, b) => a + b, 0) / v.length;
+  return v.reduce((a, x) => a + (x - m) * (x - m), 0) / v.length;
+}
+
 function clinicalReadings(bundle, opts) {
   opts = opts || {};
   if (!bundle) return null;
@@ -5435,6 +5563,8 @@ const DIC = {
     'Passaporte do biomarcador — o que a sessão aguda calibra no crônico': 'Biomarker passport — what the acute session calibrates in the chronic record',
     'Blocos de configuração e pontos de mudança': 'Configuration blocks and change points',
     'Agenda da próxima sessão': 'Agenda for the next session',
+    'ODR e features por janela — dinâmica multi-banda do registro agudo':
+      'ODR and windowed features — multi-band dynamics of the acute recording',
     'Início': 'Home', 'Agudo': 'Acute', 'Crônico': 'Chronic', 'Ponte': 'Bridge',
     'Qualidade': 'Quality', 'Coorte': 'Cohort', 'Relatório': 'Report',
     '⤓ Relatório PDF': '⤓ PDF report', '⤓ Relatório clínico (PDF)': '⤓ Clinical report (PDF)',
@@ -13322,6 +13452,1448 @@ function agNotaAlarme(alarm) {
   return 'o alarme de artefato não marcou nenhum canal como não interpretável';
 }
 
+/* ---------- core/dsp/features.js ---------- */
+/* dsp/features.js — features por janela deslizante (camada dsp).
+
+   PRIMITIVAS PURAS: sinal entra, números saem. Nenhum conhecimento de
+   hemisfério, de arquivo ou de dispositivo — quem sabe disso é `metrics`.
+   Todas tolerantes a NaN, e NaN aqui significa AUSÊNCIA, nunca zero.
+
+   As três features desta onda vêm de Habets JGV, Merk T, Mathiopoulou V, et al.
+   Movement dependent neural substates within levodopa-induced dyskinesia in
+   Parkinson's disease. Brain 2026 (doi:10.1093/brain/awag256): potência por
+   banda, variação espectral do envelope e coerência inter-hemisférica, todas
+   em janelas curtas.
+
+   O QUE ESTE ARQUIVO NÃO FAZ, E POR QUÊ. O protocolo de origem otimiza a razão
+   sinal-ruído por SSD (spatio-spectral decomposition) sobre vários canais por
+   eletrodo. O Percept entrega UM par bipolar por hemisfério. SSD não é
+   implementável aqui, e a perda de sensibilidade — sobretudo em gama — é real.
+   Isso é declarado na saída dos módulos de `metrics` que consomem estas
+   funções, não escondido num comentário.
+
+   Unidades: x em µV, fs em Hz, frequências em Hz, janelas em segundos.
+   CV e coerência são adimensionais.                                          */
+
+
+
+
+/* ------------------------------------------------------------ utilidades -- */
+
+/* Índices de início de cada janela. `windowS` e `overlap` viram amostras aqui,
+   uma vez só, e o passo efetivo sai na saída porque arredondamento muda o
+   número de janelas e o leitor precisa poder reconstruir a grade. */
+function windowGrid(n, fs, windowS, overlap) {
+  const nper = Math.max(2, Math.round(windowS * fs));
+  const ov = isFinite(overlap) ? Math.min(0.95, Math.max(0, overlap)) : 0;
+  const passo = Math.max(1, Math.round(nper * (1 - ov)));
+  const starts = [];
+  for (let s = 0; s + nper <= n; s += passo) starts.push(s);
+  return {
+    starts, nperseg: nper, step: passo, overlap: ov,
+    windowS: +(nper / fs).toFixed(6), stepS: +(passo / fs).toFixed(6), nWindows: starts.length
+  };
+}
+
+const fx = (v, k) => isFinite(v) ? +v.toFixed(k == null ? 6 : k) : NaN;
+
+/* Fração de amostras não finitas num trecho. */
+function pctNaNDe(x, ini, fim) {
+  let n = 0;
+  for (let i = ini; i < fim; i++) if (!isFinite(x[i])) n++;
+  return 100 * n / Math.max(1, fim - ini);
+}
+
+/* ========================================================================= */
+/*  1. spectralVariation — coeficiente de variação do envelope                */
+/* ========================================================================= */
+
+/* spectralVariation(x, fs, lo, hi, opts)
+
+   CV = DP(envelope) / média(envelope), sobre o envelope de Hilbert do sinal
+   filtrado na banda [lo, hi]. É a feature de segunda ordem do artigo: mede o
+   quanto a amplitude da oscilação FLUTUA dentro da janela, e não o quanto ela
+   vale.
+
+   A DECISÃO QUE MAIS MUDA O RESULTADO. Por padrão o sinal é filtrado e o
+   envelope calculado UMA VEZ sobre o registro inteiro, e só depois fatiado por
+   janela. Filtrar dentro de cada janela de 10 s introduz transiente de borda em
+   cada uma delas, e o transiente enviesa o CV de forma sistemática — não
+   aleatória, e por isso não desaparece na média. O modo por janela isolada fica
+   disponível em `opts.perWindow`; nele as bordas equivalentes a `edgeCycles`
+   ciclos da frequência inferior são descartadas, o que troca o viés do
+   transiente por outro efeito de sinal oposto — a janela efetiva encolhe, e
+   janela menor devolve CV MENOR. Os dois modos não são intercambiáveis, a
+   política usada sai em `edgePolicy`, e a suíte de testes mede a diferença
+   entre eles para que ela não seja descoberta depois por alguém interpretando
+   um resultado.
+
+   O CV DEPENDE DO COMPRIMENTO DA JANELA. Janela maior alcança mais da flutuação
+   lenta do envelope e devolve CV maior. Comparar CV de janelas diferentes é
+   erro, e por isso `windowS` sai em toda saída — para que a comparação indevida
+   seja verificável em vez de invisível.
+
+   GUARDA DE ESTABILIDADE. O CV é indefinido quando a média do envelope tende a
+   zero. Abaixo de `minMeanFrac` × (mediana das médias de janela) o valor sai
+   NaN com motivo, em vez de um número grande sem significado.
+
+   Entrada em µV; saída adimensional.                                        */
+function spectralVariation(x, fs, lo, hi, opts) {
+  opts = opts || {};
+  const windowS = isFinite(opts.windowS) ? opts.windowS : 10;
+  const overlap = isFinite(opts.overlap) ? opts.overlap : 0;
+  const maxNanPct = isFinite(opts.maxNanPct) ? opts.maxNanPct : 5;
+  const minMeanFrac = isFinite(opts.minMeanFrac) ? opts.minMeanFrac : 0.02;
+  const perWindow = !!opts.perWindow;
+  const edgeCycles = isFinite(opts.edgeCycles) ? opts.edgeCycles : 2;
+
+  const n = x ? x.length : 0;
+  const g = windowGrid(n, fs, windowS, overlap);
+  const base = {
+    band: [lo, hi], windowS: g.windowS, stepS: g.stepS, overlap: g.overlap,
+    nperseg: g.nperseg, maxNanPct, minMeanFrac,
+    edgePolicy: perWindow
+      ? `filtro por janela isolada, descartando ${edgeCycles} ciclos de ${lo} Hz em cada borda`
+      : 'filtro e envelope sobre o registro inteiro, fatiados depois — sem transiente de borda por janela',
+    perWindow,
+    windowNote: 'o CV cresce com o comprimento da janela: comparar CVs de janelas diferentes é erro'
+  };
+  if (!n || g.nWindows === 0) return Object.assign({ ok: false, windows: [], nWindows: 0 }, base, {
+    reason: !n ? 'sinal vazio' : `sinal curto demais para uma janela de ${windowS} s a ${fs} Hz`
+  });
+
+  let envelope = null, pctImputed = 0;
+  const janelas = [];
+
+  if (!perWindow) {
+    const filtrado = bandpassFFT(x, fs, lo, hi);
+    envelope = hilbertEnvelope(filtrado);
+    pctImputed = Math.max(filtrado.pctImputed || 0, envelope.pctImputed || 0);
+  }
+
+  const descarteAmostras = perWindow ? Math.round(edgeCycles * fs / Math.max(0.5, lo)) : 0;
+
+  g.starts.forEach((s, i) => {
+    const fim = s + g.nperseg;
+    const pn = pctNaNDe(x, s, fim);
+    const comum = {
+      index: i, tStartS: +(s / fs).toFixed(4), tCenterS: +((s + g.nperseg / 2) / fs).toFixed(4),
+      pctNan: +pn.toFixed(3)
+    };
+    if (pn > maxNanPct) {
+      janelas.push(Object.assign({ cv: NaN, meanEnv: NaN, sdEnv: NaN, nValid: 0, pctImputed: NaN }, comum, {
+        reason: `${pn.toFixed(1)}% de amostras ausentes na janela, acima do máximo de ${maxNanPct}% — ` +
+          'o CV não é calculado sobre o que sobrou'
+      }));
+      return;
+    }
+    let trecho, impJanela = pctImputed;
+    if (perWindow) {
+      const bruto = x.subarray ? x.subarray(s, fim) : x.slice(s, fim);
+      const fl = bandpassFFT(bruto, fs, lo, hi);
+      const env = hilbertEnvelope(fl);
+      impJanela = Math.max(fl.pctImputed || 0, env.pctImputed || 0);
+      if (2 * descarteAmostras >= env.length - 4) {
+        janelas.push(Object.assign({ cv: NaN, meanEnv: NaN, sdEnv: NaN, nValid: 0, pctImputed: impJanela }, comum, {
+          reason: `descartar ${edgeCycles} ciclos de ${lo} Hz em cada borda não deixa amostra suficiente numa ` +
+            `janela de ${windowS} s — aumente a janela ou use o modo padrão`
+        }));
+        return;
+      }
+      trecho = env.slice(descarteAmostras, env.length - descarteAmostras);
+    } else {
+      trecho = envelope.subarray ? envelope.subarray(s, fim) : envelope.slice(s, fim);
+    }
+    const m = nanMean(trecho), v = nanVariance(trecho);
+    const est = nanStats(trecho);
+    janelas.push(Object.assign({
+      cv: NaN, meanEnv: fx(m, 6), sdEnv: fx(Math.sqrt(v), 6),
+      nValid: est.nValid, pctImputed: fx(impJanela, 3)
+    }, comum, { _m: m, _v: v, reason: null }));
+  });
+
+  /* piso de estabilidade relativo à mediana das médias de janela: só é possível
+     depois de conhecer todas elas, e por isso o CV é fechado num segundo passe */
+  const medias = janelas.map(j => j._m).filter(isFinite).sort((a, b) => a - b);
+  const mediana = medias.length ? medias[Math.floor(medias.length / 2)] : NaN;
+  const piso = isFinite(mediana) ? minMeanFrac * mediana : NaN;
+
+  janelas.forEach(j => {
+    const m = j._m, v = j._v;
+    delete j._m; delete j._v;
+    if (!isFinite(m) || !isFinite(v)) { if (!j.reason) j.reason = 'janela sem amostras válidas suficientes'; return; }
+    if (isFinite(piso) && m < piso) {
+      j.reason = `média do envelope (${m.toExponential(2)}) abaixo do piso de estabilidade ` +
+        `(${minMeanFrac} × mediana = ${piso.toExponential(2)}) — o CV explodiria sem significar nada`;
+      return;
+    }
+    j.cv = fx(Math.sqrt(v) / m, 6);
+  });
+
+  const validos = janelas.filter(j => isFinite(j.cv));
+  return Object.assign({
+    ok: validos.length > 0,
+    windows: janelas, nWindows: janelas.length, nValidWindows: validos.length,
+    meanCv: validos.length ? fx(nanMean(validos.map(j => j.cv)), 6) : NaN,
+    envelopeStabilityFloor: isFinite(piso) ? +piso.toExponential(4) : NaN,
+    pctImputed: fx(pctImputed, 3)
+  }, base, {
+    reason: validos.length ? null : 'nenhuma janela produziu CV utilizável — veja `reason` de cada janela'
+  });
+}
+
+/* ========================================================================= */
+/*  2. windowedBandPower — potência por banda por janela                      */
+/* ========================================================================= */
+
+/* windowedBandPower(x, fs, bands, opts)
+
+   `bands`: [{ id, lo, hi }]. Devolve, por janela, a potência ABSOLUTA de cada
+   banda (integral da densidade, em µV²), mais a contabilidade do Welch:
+   quantos segmentos entraram e quantos foram descartados por lacuna. Janela com
+   menos de `minSegments` segmentos válidos sai NaN com motivo, porque uma
+   estimativa de Welch sobre um segmento só não é uma estimativa — é um
+   periodograma, com variância que não decresce.                              */
+function windowedBandPower(x, fs, bands, opts) {
+  opts = opts || {};
+  const windowS = isFinite(opts.windowS) ? opts.windowS : 10;
+  const overlap = isFinite(opts.overlap) ? opts.overlap : 0;
+  const maxNanPct = isFinite(opts.maxNanPct) ? opts.maxNanPct : 5;
+  const minSegments = isFinite(opts.minSegments) ? opts.minSegments : 3;
+  const nperWelch = isFinite(opts.nperseg) ? opts.nperseg : Math.round(fs);
+  const overlapWelch = isFinite(opts.welchOverlap) ? opts.welchOverlap : 0.5;
+  const lista = (bands || []).filter(b => b && isFinite(b.lo) && isFinite(b.hi));
+
+  const n = x ? x.length : 0;
+  const g = windowGrid(n, fs, windowS, overlap);
+  const base = {
+    bands: lista.map(b => ({ id: b.id, lo: b.lo, hi: b.hi })),
+    windowS: g.windowS, stepS: g.stepS, overlap: g.overlap,
+    welch: { nperseg: nperWelch, overlap: overlapWelch, df: fs / nperWelch },
+    maxNanPct, minSegments
+  };
+  if (!n || !g.nWindows || !lista.length) return Object.assign({ ok: false, windows: [], nWindows: 0 }, base, {
+    reason: !lista.length ? 'nenhuma banda válida foi pedida'
+      : !n ? 'sinal vazio' : `sinal curto demais para uma janela de ${windowS} s a ${fs} Hz`
+  });
+
+  const janelas = g.starts.map((s, i) => {
+    const fim = s + g.nperseg;
+    const pn = pctNaNDe(x, s, fim);
+    const comum = {
+      index: i, tStartS: +(s / fs).toFixed(4), tCenterS: +((s + g.nperseg / 2) / fs).toFixed(4),
+      pctNan: +pn.toFixed(3)
+    };
+    const vazio = {};
+    lista.forEach(b => { vazio[b.id] = NaN; });
+    if (pn > maxNanPct) return Object.assign({ power: vazio, nSegmentsUsed: 0, nSegmentsDropped: 0, f: null, psd: null }, comum, {
+      reason: `${pn.toFixed(1)}% de amostras ausentes na janela, acima do máximo de ${maxNanPct}%`
+    });
+    const trecho = x.subarray ? x.subarray(s, fim) : x.slice(s, fim);
+    const w = welchPSD(trecho, fs, { nperseg: nperWelch, overlap: overlapWelch });
+    /* welchPSD espalha os metadados no próprio objeto, não sob `meta` */
+    const usados = w && isFinite(w.nSegments) ? w.nSegments : 0;
+    const perdidos = w && isFinite(w.nSegmentsDropped) ? w.nSegmentsDropped : 0;
+    if (!w || !w.p || usados < minSegments) return Object.assign({
+      power: vazio, nSegmentsUsed: usados, nSegmentsDropped: perdidos, f: null, psd: null
+    }, comum, {
+      reason: `só ${usados} segmento(s) de Welch válido(s) na janela, abaixo do mínimo de ${minSegments} — ` +
+        'com tão poucos segmentos a estimativa não tem variância aceitável e não é reportada'
+    });
+    const pot = {};
+    lista.forEach(b => { pot[b.id] = fx(bandPower(w.f, w.p, b.lo, b.hi), 8); });
+    return Object.assign({
+      power: pot, nSegmentsUsed: usados, nSegmentsDropped: perdidos,
+      f: w.f, psd: w.p, reason: null
+    }, comum);
+  });
+
+  const validas = janelas.filter(j => !j.reason);
+  return Object.assign({
+    ok: validas.length > 0, windows: janelas, nWindows: janelas.length, nValidWindows: validas.length
+  }, base, { reason: validas.length ? null : 'nenhuma janela produziu potência utilizável' });
+}
+
+/* ========================================================================= */
+/*  3. windowedCoherence — coerência por janela                               */
+/* ========================================================================= */
+
+/* windowedCoherence(x, y, fs, opts)
+
+   Reaproveita `coherence` e `coherenceBand` inteiros, inclusive a correção de
+   segmentos efetivos (a sobreposição de Welch faz os segmentos não serem
+   independentes) e a correção de Šidák pelo número de bins da banda.
+
+   O ACOMPANHAMENTO OBRIGATÓRIO. Numa janela de 10 s a 250 Hz sobram poucos
+   segmentos, e com L segmentos a coerência esperada sob a hipótese nula NÃO é
+   zero: é 1/L. Com 4 segmentos, dois ruídos independentes dão Cxy ≈ 0,25, que
+   parece "coerência moderada" para quem lê só o número. Por isso cada valor sai
+   com três acompanhantes — segmentos efetivos, coerência sob a nula e limiar
+   corrigido para a banda — e sem eles um valor é ininterpretável.
+
+   A PARTE IMAGINÁRIA VEM SEMPRE. No Percept ela não é refinamento: é o
+   discriminante principal. Artefato de estimulação compartilhado, artefato
+   cardíaco compartilhado e condução de volume produzem, os três, coerência alta
+   com fase praticamente zero. Coerência alta com parte imaginária nula NÃO deve
+   ser reportada como acoplamento inter-hemisférico.                          */
+function windowedCoherence(x, y, fs, opts) {
+  opts = opts || {};
+  const windowS = isFinite(opts.windowS) ? opts.windowS : 10;
+  const overlap = isFinite(opts.overlap) ? opts.overlap : 0;
+  const maxNanPct = isFinite(opts.maxNanPct) ? opts.maxNanPct : 5;
+  const alpha = isFinite(opts.alpha) ? opts.alpha : 0.05;
+  const nperCoh = isFinite(opts.nperseg) ? opts.nperseg : Math.round(fs);
+  const overlapCoh = isFinite(opts.cohOverlap) ? opts.cohOverlap : 0.5;
+  const lista = (opts.bands || []).filter(b => b && isFinite(b.lo) && isFinite(b.hi));
+
+  const n = Math.min(x ? x.length : 0, y ? y.length : 0);
+  const g = windowGrid(n, fs, windowS, overlap);
+  const base = {
+    bands: lista.map(b => ({ id: b.id, lo: b.lo, hi: b.hi })),
+    windowS: g.windowS, stepS: g.stepS, overlap: g.overlap,
+    coherenceParams: { nperseg: nperCoh, overlap: overlapCoh, alpha, df: fs / nperCoh },
+    maxNanPct,
+    nullNote: 'com L segmentos efetivos a coerência esperada sob a nula é 1/L, não zero — o limiar por banda ' +
+      'já corrige para os bins da banda (Šidák)',
+    imagNote: 'coerência alta com parte imaginária praticamente nula é compatível com artefato compartilhado, ' +
+      'referência comum e condução de volume, e não deve ser lida como acoplamento'
+  };
+  if (!n || !g.nWindows) return Object.assign({ ok: false, windows: [], nWindows: 0 }, base, {
+    reason: !n ? 'um dos sinais está vazio' : `sinais curtos demais para uma janela de ${windowS} s a ${fs} Hz`
+  });
+
+  const janelas = g.starts.map((s, i) => {
+    const fim = s + g.nperseg;
+    const pnx = pctNaNDe(x, s, fim), pny = pctNaNDe(y, s, fim);
+    const pn = Math.max(pnx, pny);
+    const comum = {
+      index: i, tStartS: +(s / fs).toFixed(4), tCenterS: +((s + g.nperseg / 2) / fs).toFixed(4),
+      pctNan: +pn.toFixed(3)
+    };
+    const vazio = {};
+    lista.forEach(b => { vazio[b.id] = null; });
+    if (pn > maxNanPct) return Object.assign({ byBand: vazio, nSegmentsEffective: 0 }, comum, {
+      reason: `${pn.toFixed(1)}% de amostras ausentes na janela, acima do máximo de ${maxNanPct}%`
+    });
+    const sx = x.subarray ? x.subarray(s, fim) : x.slice(s, fim);
+    const sy = y.subarray ? y.subarray(s, fim) : y.slice(s, fim);
+    const c = coherence(sx, sy, fs, { nperseg: nperCoh, overlap: overlapCoh, alpha });
+    if (!c || !c.cxy) return Object.assign({ byBand: vazio, nSegmentsEffective: 0 }, comum, {
+      reason: (c && c.reason) || 'coerência não calculável nesta janela'
+    });
+    const porBanda = {};
+    lista.forEach(b => {
+      const cb = coherenceBand(c, b.lo, b.hi);
+      porBanda[b.id] = cb ? {
+        coherence: cb.peakCoherence, meanCoherence: cb.meanCoherence,
+        imag: cb.imagAtPeak, phaseDeg: cb.phaseAtPeakDeg, peakHz: cb.peakHz,
+        threshold: cb.thresholdBandCorrected, significant: cb.significant,
+        volumeConductionSuspected: cb.volumeConductionSuspected,
+        nBins: cb.nBins
+      } : null;
+    });
+    return Object.assign({
+      byBand: porBanda,
+      nSegments: c.nSegments, nSegmentsEffective: c.nSegmentsEffective,
+      nSegmentsDropped: c.nSegmentsDropped,
+      expectedNullCoherence: c.expectedNullCoherence,
+      thresholdPerBin: c.significanceThreshold,
+      f: c.f, cxy: c.cxy, imagCoherency: c.imagCoherency,
+      reason: null
+    }, comum);
+  });
+
+  /* resumo: fração de janelas acima do limiar CORRIGIDO por banda, e quantas
+     dessas têm parte imaginária praticamente nula — porque essas últimas não
+     sustentam a leitura de acoplamento */
+  const resumo = {};
+  lista.forEach(b => {
+    const vals = janelas.map(j => j.byBand && j.byBand[b.id]).filter(Boolean);
+    const acima = vals.filter(v => v.significant);
+    const conduzidas = acima.filter(v => v.volumeConductionSuspected);
+    resumo[b.id] = {
+      nWindows: vals.length,
+      nAboveThreshold: acima.length,
+      fractionAboveThreshold: vals.length ? +(acima.length / vals.length).toFixed(4) : NaN,
+      nVolumeConductionSuspected: conduzidas.length,
+      fractionInterpretable: vals.length ? +((acima.length - conduzidas.length) / vals.length).toFixed(4) : NaN,
+      /* média dos PICOS da banda: enviesada para cima por ser um máximo sobre
+         bins, e é a que o olho vê no gráfico */
+      meanCoherence: vals.length ? fx(nanMean(vals.map(v => v.coherence)), 4) : NaN,
+      /* média da coerência MÉDIA da banda: é esta que, sob a nula, deve ficar
+         perto de 1/L_eff — e não perto de zero */
+      meanBandCoherence: vals.length ? fx(nanMean(vals.map(v => v.meanCoherence)), 4) : NaN,
+      meanImag: vals.length ? fx(nanMean(vals.map(v => v.imag)), 4) : NaN,
+      verdict: !vals.length ? 'nenhuma janela avaliável'
+        : !acima.length ? 'nenhuma janela passa do limiar corrigido nesta banda'
+          : conduzidas.length >= acima.length * 0.5
+            ? 'a maior parte das janelas acima do limiar tem fase praticamente zero — compatível com artefato ' +
+              'compartilhado ou condução de volume, não com acoplamento'
+            : `${acima.length - conduzidas.length} de ${vals.length} janelas têm coerência acima do limiar COM ` +
+              'defasagem, o que é incompatível com mistura instantânea'
+    };
+  });
+
+  const validas = janelas.filter(j => !j.reason);
+  return Object.assign({
+    ok: validas.length > 0, windows: janelas, nWindows: janelas.length, nValidWindows: validas.length,
+    byBand: resumo
+  }, base, { reason: validas.length ? null : 'nenhuma janela produziu coerência utilizável' });
+}
+
+/* ---------- core/metrics/odr.js ---------- */
+/* metrics/odr.js — Oscillatory Dynamics Ratio, por janela.
+
+   O QUE É. Um número por janela que combina três ritmos do STN:
+
+       ODR = (θ × γpico) / β_baixo
+
+   com θ = 4–8 Hz, β baixo = 12–20 Hz e γpico = pico individual de gama ± 2,5 Hz.
+   Sobe quando teta e gama sobem e quando beta cai — o padrão descrito nos
+   períodos de discinesia induzida por levodopa em Habets JGV, Merk T,
+   Mathiopoulou V, et al. Movement dependent neural substates within
+   levodopa-induced dyskinesia in Parkinson's disease. Brain 2026
+   (doi:10.1093/brain/awag256).
+
+   ═══════════════════════════════════════════════════════════════════════════
+   O PROBLEMA NUMÉRICO DA FÓRMULA LITERAL — resolvido, não contornado
+   ═══════════════════════════════════════════════════════════════════════════
+
+   A fórmula original é uma razão de POTÊNCIAS. O artigo, porém, z-score cada
+   banda ao longo do registro antes de combinar. Um valor z-scored cruza zero
+   POR CONSTRUÇÃO — a média de um z-score é zero —, e portanto o denominador
+   z(β) passa perto de zero necessariamente, e várias vezes, em qualquer
+   registro. A razão explode nessas janelas, e o sinal do ODR se inverte quando
+   z(β) muda de sinal.
+
+   As duas formulações são implementadas:
+
+     odrLog (PADRÃO):  z(log θ) + z(log γ) − z(log β)
+     odrLiteral:       (z(θ) × z(γ)) / z(β), exatamente como escrita
+
+   ÁLGEBRA. log[(θ·γ)/β] = log θ + log γ − log β. A razão em domínio
+   logarítmico vira soma e subtração, sem divisão — a MESMA quantidade,
+   monotonicamente transformada, e numericamente estável porque não há
+   denominador que cruze zero. O z-score é aplicado sobre a potência EM LOG, ao
+   longo do registro inteiro. É por isso que `odrLog` é o padrão, e o motivo
+   está dito na interface, não só aqui.
+
+   A DIVERGÊNCIA ENTRE AS DUAS É PROPRIEDADE DA FÓRMULA, NÃO ERRO DE
+   IMPLEMENTAÇÃO. Por isso saem as duas séries, a correlação de Spearman entre
+   elas e a fração de janelas em que a versão literal escapa de um intervalo
+   declarado — que é a assinatura direta do cruzamento de zero no denominador.
+
+   ═══════════════════════════════════════════════════════════════════════════
+   LIMITAÇÕES DO PERCEPT EM RELAÇÃO AO PROTOCOLO DE ORIGEM
+   ═══════════════════════════════════════════════════════════════════════════
+
+     SSD          o artigo otimiza SNR por decomposição espectro-espacial sobre
+                  vários canais por eletrodo. O Percept dá UM par bipolar por
+                  hemisfério: SSD não é implementável, e a sensibilidade cai,
+                  sobretudo em gama.
+     Estimulação  o protocolo original correu com estimulação DESLIGADA. Aqui
+                  ela tipicamente está ligada, e a gama entrained em f_stim/2
+                  cairia dentro do numerador. Ver a guarda de entrainment.
+     Condição     eletrodos externalizados em janela perioperatória lá; gerador
+                  implantado e registro crônico aqui. O efeito de lesão
+                  subtalâmica agudo do artigo está ausente neste dado.
+     Referência   o ODR do artigo é calculado sobre componentes SSD; aqui, sobre
+                  o bipolar bruto. Os valores ABSOLUTOS não são comparáveis.
+
+   O QUE ESPERAR. No artigo, o ODR como preditor univariado atingiu acurácia
+   balanceada média de 0,61 (DP 0,14), com detecção significativa em 8 de 21
+   sujeitos — e isso com SSD, estimulação desligada e rótulo clínico validado
+   por vídeo. É marcador EXPLORATÓRIO. Uma série suave e crescente sugere uma
+   confiabilidade que ele não tem, e por isso o número aparece na figura.
+
+   Unidades: potência em µV²; z-scores adimensionais; tempo em segundos.      */
+
+
+
+
+
+
+/* Spearman escrito aqui, e não importado de `profiles`, para não criar
+   dependência de `metrics` numa camada de configuração de doença: é só a
+   correlação de Pearson sobre os postos, e empates recebem o posto médio.  */
+function odrSpearman(a, b) {
+  const pares = [];
+  for (let i = 0; i < Math.min(a.length, b.length); i++) if (isFinite(a[i]) && isFinite(b[i])) pares.push([a[i], b[i]]);
+  if (pares.length < 4) return NaN;
+  const posto = v => {
+    const idx = v.map((x, i) => [x, i]).sort((p, q) => p[0] - q[0]);
+    const r = new Array(v.length);
+    let i = 0;
+    while (i < idx.length) {
+      let j = i;
+      while (j + 1 < idx.length && idx[j + 1][0] === idx[i][0]) j++;
+      const medio = (i + j) / 2 + 1;
+      for (let k = i; k <= j; k++) r[idx[k][1]] = medio;
+      i = j + 1;
+    }
+    return r;
+  };
+  const ra = posto(pares.map(p => p[0])), rb = posto(pares.map(p => p[1]));
+  const ma = mean(ra), mb = mean(rb);
+  let num = 0, da = 0, db = 0;
+  for (let i = 0; i < ra.length; i++) {
+    num += (ra[i] - ma) * (rb[i] - mb);
+    da += (ra[i] - ma) * (ra[i] - ma);
+    db += (rb[i] - mb) * (rb[i] - mb);
+  }
+  return (da > 0 && db > 0) ? num / Math.sqrt(da * db) : NaN;
+}
+
+/* ------------------------------------------------------------ constantes -- */
+
+const ODR_BANDS = {
+  theta: { id: 'theta', lo: 4, hi: 8, label: 'θ 4–8 Hz' },
+  alpha: { id: 'alpha', lo: 8, hi: 12, label: 'α 8–12 Hz' },
+  lowBeta: { id: 'lowBeta', lo: 12, hi: 20, label: 'β↓ 12–20 Hz' },
+  highBeta: { id: 'highBeta', lo: 20, hi: 35, label: 'β↑ 20–35 Hz' },
+  gammaBroad: { id: 'gammaBroad', lo: 60, hi: 90, label: 'γ larga 60–90 Hz' }
+};
+
+const ODR_PADRAO = {
+  windowS: 10,
+  overlap: 0,
+  gammaHalfWidthHz: 2.5,
+  gammaSearch: [60, 90],
+  entrainToleranceHz: 2.5,
+  gammaSource: 'peak',          /* 'peak' | 'broad' */
+  formulation: 'log',           /* 'log' | 'literal' */
+  allowWithoutGamma: false,     /* variante odrSemGama, só quando pedida */
+  literalClip: 10,              /* |odrLiteral| acima disto conta como escape  */
+  maxNanPct: 5,
+  minSegments: 3
+};
+
+const on = (v, k) => isFinite(v) ? +v.toFixed(k == null ? 4 : k) : NaN;
+
+/* z-score de um vetor com NaN, ignorando os ausentes e devolvendo NaN neles.
+   A média e o DP saem junto porque são o parâmetro que produziu o número.   */
+function odrZ(v) {
+  const ok = v.filter(isFinite);
+  if (ok.length < 3) return { z: v.map(() => NaN), mean: NaN, sd: NaN, n: ok.length };
+  const m = mean(ok), s = sd(ok);
+  if (!(s > 0)) return { z: v.map(() => NaN), mean: m, sd: s, n: ok.length };
+  return { z: v.map(x => isFinite(x) ? (x - m) / s : NaN), mean: m, sd: s, n: ok.length };
+}
+
+const odrLog10 = x => (isFinite(x) && x > 0) ? Math.log10(x) : NaN;
+
+/* Frequência de estimulação do hemisfério, com fontes em ordem de força.
+
+   `inferDeviceState` recebe um registro do domínio do TEMPO, que não carrega
+   TherapySnapshot — o snapshot vive no BrainSenseLfp da mesma sessão. Sem esta
+   varredura, f_stim volta NaN e a guarda de entrainment fica inerte, o que é o
+   pior desfecho possível: nem verifica, nem avisa que não verificou.        */
+function odrStimRate(parsed, hemi, estado) {
+  if (estado && isFinite(estado.rateHz) && estado.rateHz > 0)
+    return { hz: estado.rateHz, source: 'inferDeviceState (' + (estado.evidence || []).join('; ') + ')' };
+  const p = parsed || {};
+  for (const b of (p.bsLfp || [])) {
+    const per = b && b.therapy && b.therapy.perHemi;
+    const x = per && (per[hemi] || per.Left || per.Right);
+    if (x && isFinite(x.rate) && x.rate > 0) return { hz: x.rate, source: 'BrainSenseLfp.TherapySnapshot' };
+  }
+  const g = (p.groups || []).find(x => x && x.active) || (p.groups || [])[0];
+  const pr = g && (g.programs || []).find(x => x && isFinite(x.rate) && x.rate > 0);
+  if (pr) return { hz: pr.rate, source: `programa do grupo ${g.id || ''}`.trim() };
+  return { hz: NaN, source: null };
+}
+
+/* ========================================================================= */
+/*  1. Pico individual de gama                                                */
+/* ========================================================================= */
+
+/* gammaPeakOf(x, fs, opts) — localiza o pico de gama UMA VEZ, sobre o espectro
+   médio do registro inteiro.
+
+   POR QUE NÃO POR JANELA. Numa janela de 10 s o espectro de gama é ruidoso, o
+   pico salta de bin em bin e a banda γpico ± 2,5 Hz passaria a perseguir ruído.
+   O artigo define o pico individual do sujeito, não da janela.
+
+   Reaproveita `detectGamma`, que já separa gama endógena de gama *entrained*
+   em f_stim/2 e já traz a ressalva de que as duas leituras clínicas são
+   opostas.                                                                  */
+function gammaPeakOf(x, fs, opts) {
+  opts = opts || {};
+  const busca = Array.isArray(opts.gammaSearch) ? opts.gammaSearch : ODR_PADRAO.gammaSearch;
+  const tol = isFinite(opts.entrainToleranceHz) ? opts.entrainToleranceHz : ODR_PADRAO.entrainToleranceHz;
+  const halfW = isFinite(opts.gammaHalfWidthHz) ? opts.gammaHalfWidthHz : ODR_PADRAO.gammaHalfWidthHz;
+  const fStim = isFinite(opts.stimRateHz) && opts.stimRateHz > 0 ? opts.stimRateHz : NaN;
+
+  const w = welchPSD(x, fs, { nperseg: isFinite(opts.nperseg) ? opts.nperseg : Math.round(fs) });
+  if (!w || !w.p) return {
+    ok: false, source: 'none', peakHz: NaN, band: null,
+    reason: (w && w.reason) || 'não foi possível estimar o espectro médio do registro'
+  };
+
+  const g = detectGamma(w.f, w.p, {
+    stimRateHz: isFinite(fStim) ? fStim : undefined,
+    lo: Math.max(30, busca[0] - 20), hi: Math.min(fs / 2 - 1, busca[1] + 10),
+    tolHz: tol
+  });
+
+  const minProm = isFinite(opts.minGammaProminence) ? opts.minGammaProminence : 0.5;
+  const dentroDaBusca = pk => pk && pk.hz >= busca[0] && pk.hz <= busca[1];
+  const arrastado = g.entrained || null;
+
+  /* DUAS PENEIRAS ANTES DE ACEITAR UM PICO COMO O γpico DO ARTIGO.
+
+     (a) PROMINÊNCIA MÍNIMA. `detectGamma` aceita qualquer saliência acima de
+         0,15 sobre o fundo aperiódico, o que é adequado para descrever um
+         espectro mas frouxo demais para definir a banda de um biomarcador: uma
+         ondulação de ruído passa. Aqui o piso é `minGammaProminence`,
+         declarado na saída.
+
+     (b) NÃO SER MIGALHA AO LADO DO PICO ENTRAINED. Quando gama endógena e gama
+         entrained coexistem, aceitar a endógena só faz sentido se ela for
+         comparável à outra. Um pico setenta mil vezes mais fraco que o
+         subarmônico não é "gama finamente sintonizada coexistindo": é ruído ao
+         lado de um artefato de estimulação enorme, e usá-lo como γpico faria o
+         ODR medir ruído enquanto o espectro inteiro é dominado pelo engate 1:2.
+         O critério é `minPeakRatioToEntrained` da potência do pico endógeno
+         sobre a do entrained.                                                */
+  const minRazao = isFinite(opts.minPeakRatioToEntrained) ? opts.minPeakRatioToEntrained : 0.1;
+  const bruto = dentroDaBusca(g.ftg) ? g.ftg : null;
+  const promOk = bruto && isFinite(bruto.prominenceOverAperiodic) && bruto.prominenceOverAperiodic >= minProm;
+  const razao = (bruto && arrastado && isFinite(arrastado.power) && arrastado.power > 0)
+    ? bruto.power / arrastado.power : Infinity;
+  const naoEhMigalha = !arrastado || razao >= minRazao;
+  const endogeno = (promOk && naoEhMigalha) ? bruto : null;
+
+  /* O pico entrained DOMINA a faixa de gama? É esta a pergunta que decide a
+     recusa do ODR, e não "existe algum pico endógeno em algum lugar". */
+  const arrastadoDomina = !!(arrastado && dentroDaBusca(arrastado) && !endogeno);
+
+  return {
+    ok: !!endogeno,
+    source: endogeno ? 'peak' : 'none',
+    minProminence: minProm,
+    minPeakRatioToEntrained: minRazao,
+    rejectedCandidate: (bruto && !endogeno) ? {
+      hz: bruto.hz, prominenceOverAperiodic: bruto.prominenceOverAperiodic,
+      powerRatioToEntrained: isFinite(razao) ? +razao.toExponential(3) : null,
+      why: !promOk
+        ? `saliência de ${bruto.prominenceOverAperiodic} sobre o fundo aperiódico, abaixo do piso declarado de ${minProm}`
+        : `potência ${isFinite(razao) ? razao.toExponential(2) : '—'}× a do pico entrained em ` +
+          `${arrastado ? arrastado.hz.toFixed(1) : '—'} Hz, abaixo da razão mínima de ${minRazao} — é migalha ao lado ` +
+          'do subarmônico, não gama endógena'
+    } : null,
+    entrainedDominant: arrastadoDomina,
+    peakHz: endogeno ? endogeno.hz : NaN,
+    band: endogeno ? [+(endogeno.hz - halfW).toFixed(3), +(endogeno.hz + halfW).toFixed(3)] : null,
+    halfWidthHz: halfW,
+    prominenceOverAperiodic: endogeno ? endogeno.prominenceOverAperiodic : NaN,
+    bandwidthHz: endogeno ? endogeno.bandwidthHz : NaN,
+    stimRateHz: isFinite(fStim) ? fStim : null,
+    subharmonicHz: isFinite(fStim) ? +(fStim / 2).toFixed(2) : null,
+    entrainToleranceHz: tol,
+    entrained: arrastado,
+    entrainedInSearchRange: !!(arrastado && dentroDaBusca(arrastado)),
+    detectGammaVerdict: g.verdict,
+    searchRange: busca,
+    spectrumNperseg: w.nperseg,
+    reason: endogeno ? null
+      : arrastado
+        ? `o pico dominante de gama está em ${arrastado.hz.toFixed(1)} Hz, dentro de ${tol} Hz de f_stim/2 ` +
+          `(${(fStim / 2).toFixed(1)} Hz): é resposta subarmônica da rede à própria estimulação, não gama endógena` +
+          (bruto ? `. Há um segundo pico em ${bruto.hz.toFixed(1)} Hz, mas ele foi recusado como γpico` : '')
+        : `nenhum pico de gama se destaca do fundo aperiódico entre ${busca[0]} e ${busca[1]} Hz com saliência ` +
+          `mínima de ${minProm}`
+  };
+}
+
+/* ========================================================================= */
+/*  2. odrSeries — a série por janela                                         */
+/* ========================================================================= */
+
+/* odrSeries(entrada, opts)
+
+   entrada = { hemispheres: { Left: {x, fs, record?}, Right: {...} }, parsed? }
+
+   Calcula por hemisfério e depois promedia os dois por janela. Com um
+   hemisfério só, calcula mesmo assim e devolve `nHemispheres: 1` — o artigo
+   promedia bilateralmente, e uma série unilateral NÃO é a mesma quantidade.  */
+function odrSeries(entrada, opts) {
+  const o = Object.assign({}, ODR_PADRAO, opts || {});
+  const e = entrada || {};
+  const hemis = e.hemispheres || {};
+  const lados = ['Left', 'Right'].filter(h => hemis[h] && hemis[h].x && hemis[h].x.length);
+
+  const comum = {
+    params: {
+      windowS: o.windowS, overlap: o.overlap,
+      bands: { theta: [ODR_BANDS.theta.lo, ODR_BANDS.theta.hi], lowBeta: [ODR_BANDS.lowBeta.lo, ODR_BANDS.lowBeta.hi] },
+      gammaSearch: o.gammaSearch, gammaHalfWidthHz: o.gammaHalfWidthHz,
+      gammaSource: o.gammaSource, formulation: o.formulation,
+      entrainToleranceHz: o.entrainToleranceHz,
+      zPolicy: 'z-score de cada banda ao longo do registro inteiro; na formulação log, sobre log10 da potência',
+      maxNanPct: o.maxNanPct, minSegments: o.minSegments,
+      literalClip: o.literalClip
+    },
+    limitations: ODR_LIMITACOES,
+    expectation: ODR_EXPECTATIVA
+  };
+
+  if (!lados.length) return Object.assign({ ok: false, nHemispheres: 0 }, comum, {
+    reason: 'nenhum hemisfério com sinal bruto utilizável — o ODR precisa do BrainSenseTimeDomain'
+  });
+
+  const porHemi = {}, recusas = [];
+  lados.forEach(h => {
+    const r = odrHemisferio(hemis[h], e.parsed, o, h);
+    porHemi[h] = r;
+    if (!r.ok) recusas.push(`${h}: ${r.reason}`);
+  });
+
+  const usaveis = lados.filter(h => porHemi[h].ok);
+  if (!usaveis.length) return Object.assign({ ok: false, nHemispheres: 0, byHemisphere: porHemi }, comum, {
+    reason: recusas.join(' · ')
+  });
+
+  /* média bilateral por janela, sobre a grade do hemisfério com mais janelas.
+     Janela sem valor em algum lado usa o lado que existe, e a saída diz quantos
+     lados entraram — porque a média de um lado só não é a mesma quantidade. */
+  const nJan = Math.max.apply(null, usaveis.map(h => porHemi[h].windows.length));
+  const janelas = [];
+  for (let i = 0; i < nJan; i++) {
+    const partes = usaveis.map(h => porHemi[h].windows[i]).filter(w => w);
+    const logs = partes.map(w => w.odrLog).filter(isFinite);
+    const lits = partes.map(w => w.odrLiteral).filter(isFinite);
+    const ref = partes[0];
+    janelas.push({
+      index: i,
+      tStartS: ref ? ref.tStartS : NaN,
+      tCenterS: ref ? ref.tCenterS : NaN,
+      odrLog: logs.length ? on(mean(logs), 5) : NaN,
+      odrLiteral: lits.length ? on(mean(lits), 5) : NaN,
+      nHemispheresInWindow: logs.length,
+      reason: logs.length ? null : (partes.map(w => w.reason).filter(Boolean)[0] || 'nenhum hemisfério válido nesta janela')
+    });
+  }
+
+  /* divergência entre as duas formulações — propriedade da fórmula */
+  const pares = janelas.filter(j => isFinite(j.odrLog) && isFinite(j.odrLiteral));
+  const rho = pares.length >= 4 ? odrSpearman(pares.map(j => j.odrLog), pares.map(j => j.odrLiteral)) : NaN;
+  const escapes = janelas.filter(j => isFinite(j.odrLiteral) && Math.abs(j.odrLiteral) > o.literalClip).length;
+  const comLiteral = janelas.filter(j => isFinite(j.odrLiteral)).length;
+
+  const serie = janelas.map(j => o.formulation === 'literal' ? j.odrLiteral : j.odrLog).filter(isFinite);
+
+  return Object.assign({
+    ok: true,
+    nHemispheres: usaveis.length,
+    hemispheres: usaveis,
+    byHemisphere: porHemi,
+    windows: janelas,
+    nWindows: janelas.length,
+    nValidWindows: janelas.filter(j => isFinite(j.odrLog)).length,
+    formulationUsed: o.formulation,
+    spearmanLogVsLiteral: isFinite(rho) ? on(rho, 4) : NaN,
+    literalEscapeFraction: comLiteral ? on(escapes / comLiteral, 4) : NaN,
+    literalEscapeCount: escapes,
+    literalClip: o.literalClip,
+    formulationNote:
+      `A divergência entre \`odrLog\` e \`odrLiteral\` é propriedade da fórmula, não erro de implementação: ` +
+      `a versão literal divide por um valor z-scored, que cruza zero por construção. ` +
+      (comLiteral
+        ? `Aqui ${escapes} de ${comLiteral} janela(s) (${(100 * escapes / comLiteral).toFixed(1)}%) têm |ODR literal| > ` +
+          `${o.literalClip}, o que é a assinatura direta desse cruzamento. `
+        : '') +
+      `Correlação de Spearman entre as duas séries: ${isFinite(rho) ? rho.toFixed(3) : '—'}. ` +
+      `O padrão é a formulação logarítmica, que é a MESMA razão sem divisão.`,
+    mean: serie.length ? on(mean(serie), 5) : NaN,
+    median: serie.length ? on(median(serie), 5) : NaN,
+    trendPerWindow: odrTendencia(janelas, o.formulation),
+    unilateralWarning: usaveis.length === 1
+      ? 'apenas um hemisfério entrou no cálculo. O artigo promedia os dois lados, e uma série unilateral não é a ' +
+        'mesma quantidade — não compare este valor com um bilateral'
+      : null,
+    refusals: recusas.length ? recusas : null
+  }, comum, { reason: null });
+}
+
+/* Inclinação simples do ODR ao longo das janelas, só para a leitura clínica
+   dizer "subiu" ou "não se moveu". Não é teste. */
+function odrTendencia(janelas, formulacao) {
+  const y = [], xs = [];
+  janelas.forEach(j => {
+    const v = formulacao === 'literal' ? j.odrLiteral : j.odrLog;
+    if (isFinite(v)) { y.push(v); xs.push(j.index); }
+  });
+  if (y.length < 6) return { slope: NaN, n: y.length, note: 'poucas janelas para descrever tendência' };
+  const mx = mean(xs), my = mean(y);
+  let sxy = 0, sxx = 0;
+  for (let i = 0; i < y.length; i++) { sxy += (xs[i] - mx) * (y[i] - my); sxx += (xs[i] - mx) * (xs[i] - mx); }
+  const b = sxx > 0 ? sxy / sxx : NaN;
+  return {
+    slope: on(b, 6), n: y.length,
+    note: 'inclinação por janela, descritiva — não é teste de tendência'
+  };
+}
+
+/* --------------------------------------------------------- por hemisfério - */
+
+function odrHemisferio(lado, parsed, o, hemiId) {
+  const x = lado.x, fs = lado.fs;
+  const est = nanStats(x);
+
+  /* 1. estado do dispositivo, que decide a guarda de entrainment */
+  const estado = lado.record
+    ? inferDeviceState(lado.record, parsed, { modality: 'BrainSenseTimeDomain' })
+    : { state: 'UNKNOWN', amplitudeMa: NaN, rateHz: NaN, evidence: [], confidence: 'nenhuma' };
+  const rate = isFinite(lado.stimRateHz)
+    ? { hz: lado.stimRateHz, source: 'informada pelo chamador' }
+    : odrStimRate(parsed, hemiId, estado);
+  const fStim = rate.hz;
+
+  /* 2. pico individual de gama, uma vez sobre o registro inteiro */
+  const gama = gammaPeakOf(x, fs, Object.assign({}, o, { stimRateHz: fStim }));
+
+  /* 3. as guardas, antes de qualquer conta */
+  let bandaGama = null, fonteGama = 'none', motivoGama = gama.reason;
+  if (o.gammaSource === 'broad') {
+    bandaGama = [ODR_BANDS.gammaBroad.lo, ODR_BANDS.gammaBroad.hi];
+    fonteGama = 'broad';
+    motivoGama = 'banda larga pedida explicitamente pelo usuário — NÃO é o pico individual do artigo, e cada linha ' +
+      'exportada sai marcada com gamma_source = broad';
+  } else if (gama.ok) {
+    bandaGama = gama.band;
+    fonteGama = 'peak';
+    motivoGama = null;
+  }
+
+  /* A guarda de entrainment SÓ É UMA GUARDA quando f_stim é conhecida. Sem ela
+     não há como distinguir gama endógena de resposta subarmônica à própria
+     estimulação — e as duas leituras clínicas são opostas. Aqui o cálculo
+     prossegue, mas a não verificação é marcada e viaja até a linha exportada:
+     verificação não feita não é verificação com resultado negativo. */
+  const entrainmentChecked = isFinite(fStim) && fStim > 0;
+
+  /* guarda 1: gama entrained em f_stim/2 domina a faixa.
+     A condição NÃO é "existe algum pico endógeno em algum lugar" — é se o pico
+     que seria usado no numerador é o subarmônico. */
+  const arrastadoRelevante = gama.entrainedDominant && fonteGama !== 'broad';
+  if (arrastadoRelevante && !o.allowWithoutGamma) return {
+    ok: false, hemisphere: hemiId, deviceState: estado, gamma: gama,
+    entrainmentRefusal: true,
+    reason: `o pico de gama deste hemisfério cai a ${Math.abs(gama.entrained.deltaHz).toFixed(2)} Hz de f_stim/2 ` +
+      `(${gama.subharmonicHz} Hz, tolerância ${o.entrainToleranceHz} Hz). O numerador do ODR estaria medindo a ` +
+      'resposta subarmônica da rede à própria estimulação, e não gama endógena — e as duas leituras clínicas são ' +
+      'OPOSTAS: gama finamente sintonizada é marcador pró-cinético, gama entrained é engate 1:2 da rede à ' +
+      'estimulação. O ODR não é calculado. A variante odrSemGama = z(log θ) − z(log β) fica disponível como escolha ' +
+      'explícita, com o aviso de que NÃO é o biomarcador do artigo e não tem a mesma sustentação'
+  };
+
+  /* guarda 2: sem pico individual e sem substituição pedida */
+  const semGama = fonteGama === 'none';
+  if (semGama && !o.allowWithoutGamma) return {
+    ok: false, hemisphere: hemiId, deviceState: estado, gamma: gama,
+    reason: `${motivoGama}. A substituição por gama de banda larga NÃO é feita em silêncio: peça-a em ` +
+      '`gammaSource: "broad"` e ela sai marcada em cada linha exportada. Alternativamente, use a variante ' +
+      'odrSemGama, que não é o biomarcador do artigo'
+  };
+
+  /* 4. potência por banda por janela */
+  const bandas = [
+    ODR_BANDS.theta, ODR_BANDS.alpha, ODR_BANDS.lowBeta, ODR_BANDS.highBeta, ODR_BANDS.gammaBroad
+  ].map(b => ({ id: b.id, lo: b.lo, hi: b.hi }));
+  if (bandaGama) bandas.push({ id: 'gammaPeak', lo: bandaGama[0], hi: bandaGama[1] });
+
+  const pot = windowedBandPower(x, fs, bandas, {
+    windowS: o.windowS, overlap: o.overlap, maxNanPct: o.maxNanPct, minSegments: o.minSegments
+  });
+  if (!pot.ok) return {
+    ok: false, hemisphere: hemiId, deviceState: estado, gamma: gama,
+    reason: pot.reason || 'não foi possível estimar potência por janela neste hemisfério'
+  };
+
+  /* 5. z-scores ao longo do registro — em log (padrão) e em potência (literal) */
+  const serie = id => pot.windows.map(w => (w.power && isFinite(w.power[id])) ? w.power[id] : NaN);
+  const gid = bandaGama ? (fonteGama === 'broad' ? 'gammaBroad' : 'gammaPeak') : null;
+
+  const pTheta = serie('theta'), pBeta = serie('lowBeta');
+  const pGamma = gid ? serie(gid) : pot.windows.map(() => NaN);
+
+  const zLogTheta = odrZ(pTheta.map(odrLog10));
+  const zLogBeta = odrZ(pBeta.map(odrLog10));
+  const zLogGamma = odrZ(pGamma.map(odrLog10));
+  const zTheta = odrZ(pTheta), zBeta = odrZ(pBeta), zGamma = odrZ(pGamma);
+
+  const usarGama = !semGama;
+  const janelas = pot.windows.map((w, i) => {
+    const motivo = w.reason;
+    const zlt = zLogTheta.z[i], zlb = zLogBeta.z[i], zlg = zLogGamma.z[i];
+    const zt = zTheta.z[i], zb = zBeta.z[i], zg = zGamma.z[i];
+
+    let logv = NaN, litv = NaN, razao = motivo;
+    if (!motivo) {
+      if (usarGama) {
+        logv = (isFinite(zlt) && isFinite(zlg) && isFinite(zlb)) ? zlt + zlg - zlb : NaN;
+        litv = (isFinite(zt) && isFinite(zg) && isFinite(zb) && Math.abs(zb) > 1e-12) ? (zt * zg) / zb : NaN;
+      } else {
+        /* variante declarada: sem o termo de gama */
+        logv = (isFinite(zlt) && isFinite(zlb)) ? zlt - zlb : NaN;
+        litv = (isFinite(zt) && isFinite(zb) && Math.abs(zb) > 1e-12) ? zt / zb : NaN;
+      }
+      if (!isFinite(logv)) razao = 'z-score indefinido nesta janela (banda sem variância ao longo do registro)';
+    }
+
+    return {
+      index: i, tStartS: w.tStartS, tCenterS: w.tCenterS, pctNan: w.pctNan,
+      power: w.power,
+      nSegmentsUsed: w.nSegmentsUsed, nSegmentsDropped: w.nSegmentsDropped,
+      zThetaLog: on(zlt, 5), zGammaLog: on(zlg, 5), zLowBetaLog: on(zlb, 5),
+      zTheta: on(zt, 5), zGammaPeak: on(zg, 5), zLowBeta: on(zb, 5),
+      odrLog: on(logv, 5), odrLiteral: on(litv, 5),
+      reason: razao || null
+    };
+  });
+
+  return {
+    ok: true, hemisphere: hemiId,
+    windows: janelas, nWindows: janelas.length,
+    nValidWindows: janelas.filter(j => isFinite(j.odrLog)).length,
+    gamma: gama, gammaSource: fonteGama, gammaBand: bandaGama, gammaNote: motivoGama,
+    entrainmentChecked,
+    entrainmentNote: entrainmentChecked
+      ? `pico de gama conferido contra f_stim/2 = ${(fStim / 2).toFixed(1)} Hz (tolerância ${o.entrainToleranceHz} Hz): ` +
+        (gama.entrainedInSearchRange ? 'CAI dentro da tolerância' : 'fora da tolerância, compatível com gama endógena')
+      : 'a frequência de estimulação NÃO está declarada neste arquivo, então o pico de gama não pôde ser conferido ' +
+        'contra f_stim/2. Não é o mesmo que dizer que não é entrained: é dizer que não foi possível verificar, e as ' +
+        'duas leituras clínicas do achado são opostas',
+    stimRateSource: rate.source,
+    withoutGamma: semGama || arrastadoRelevante,
+    withoutGammaNote: (semGama || arrastadoRelevante)
+      ? 'esta série é a variante odrSemGama = z(log θ) − z(log β): NÃO é o biomarcador do artigo, porque o termo de ' +
+        'gama — que é justamente o que liga o ODR a discinesia — está ausente'
+      : null,
+    deviceState: estado,
+    stimRateHz: isFinite(fStim) ? fStim : NaN,
+    zStats: {
+      thetaLog: { mean: on(zLogTheta.mean, 6), sd: on(zLogTheta.sd, 6), n: zLogTheta.n },
+      lowBetaLog: { mean: on(zLogBeta.mean, 6), sd: on(zLogBeta.sd, 6), n: zLogBeta.n },
+      gammaLog: { mean: on(zLogGamma.mean, 6), sd: on(zLogGamma.sd, 6), n: zLogGamma.n }
+    },
+    quality: {
+      pctNan: on(est.pctNan, 3), nValid: est.nValid,
+      longestGapSamples: est.longestGapSamples,
+      nWindowsDropped: janelas.filter(j => j.reason).length
+    },
+    reason: null
+  };
+}
+
+/* ========================================================================= */
+/*  3. Variação espectral por banda — envelope do artigo                      */
+/* ========================================================================= */
+
+/* odrSpectralVariation(lado, opts) — CV do envelope nas três bandas do ODR,
+   sobre a MESMA grade de janelas, para que as colunas se alinhem na tabela. */
+function odrSpectralVariation(lado, opts) {
+  const o = Object.assign({}, ODR_PADRAO, opts || {});
+  const x = lado && lado.x, fs = lado && lado.fs;
+  if (!x || !x.length) return { ok: false, reason: 'sinal vazio', byBand: {} };
+  const bandas = { theta: [4, 8], lowBeta: [12, 20] };
+  if (o.gammaBand) bandas.gammaPeak = o.gammaBand;
+  const saida = {};
+  Object.keys(bandas).forEach(id => {
+    saida[id] = spectralVariation(x, fs, bandas[id][0], bandas[id][1], {
+      windowS: o.windowS, overlap: o.overlap, maxNanPct: o.maxNanPct,
+      perWindow: !!o.cvPerWindow, minMeanFrac: o.minMeanFrac
+    });
+  });
+  const alguma = Object.keys(saida).some(k => saida[k].ok);
+  return {
+    ok: alguma, byBand: saida,
+    bands: bandas,
+    windowS: o.windowS,
+    note: 'o CV depende do comprimento da janela: comparar CVs de janelas diferentes é erro',
+    reason: alguma ? null : 'nenhuma banda produziu CV utilizável'
+  };
+}
+
+/* ------------------------------------------------------------------------- */
+
+const ODR_LIMITACOES = [
+  {
+    item: 'Otimização de SNR',
+    artigo: 'SSD (decomposição espectro-espacial) por banda, por eletrodo',
+    percept: 'um par bipolar por hemisfério',
+    consequencia: 'SSD não é implementável. A sensibilidade cai, sobretudo em gama.'
+  },
+  {
+    item: 'Estimulação',
+    artigo: 'desligada durante todo o protocolo',
+    percept: 'tipicamente ligada',
+    consequencia: 'gama entrained em f_stim/2 cairia dentro do numerador do ODR — há guarda que recusa o cálculo.'
+  },
+  {
+    item: 'Condição de registro',
+    artigo: 'eletrodos externalizados, janela perioperatória',
+    percept: 'gerador implantado, registro crônico',
+    consequencia: 'o efeito de lesão subtalâmica agudo presente no artigo está ausente aqui.'
+  },
+  {
+    item: 'Referência do ODR',
+    artigo: 'calculado sobre componentes SSD',
+    percept: 'calculado sobre o bipolar bruto',
+    consequencia: 'os valores absolutos NÃO são comparáveis com os do artigo.'
+  }
+];
+
+const ODR_EXPECTATIVA =
+  'No estudo que propôs o ODR (Habets et al., Brain 2026), ele atingiu como preditor univariado acurácia balanceada ' +
+  'média de 0,61 (DP 0,14), com detecção significativa em 8 de 21 sujeitos — e isso com SSD, estimulação desligada e ' +
+  'rótulo clínico validado por vídeo. É um marcador exploratório: uma série suave e crescente sugere uma ' +
+  'confiabilidade que ele não tem.';
+
+/* ---------- core/metrics/windowed.js ---------- */
+/* metrics/windowed.js — coerência inter-STN por janela, tabela tidy e CSV.
+
+   Complementa `metrics/odr.js`. Aqui moram as duas peças que precisam dos DOIS
+   hemisférios ao mesmo tempo: a coerência entre eles e a tabela de uma linha por
+   janela × hemisfério que alimenta figura, CSV e os scripts em R.
+
+   ═══════════════════════════════════════════════════════════════════════════
+   COERÊNCIA INTER-STN: A GUARDA VEM ANTES DO CÁLCULO
+   ═══════════════════════════════════════════════════════════════════════════
+
+   Só faz sentido calcular quando os dois canais vierem do MESMO registro:
+   mesmo `FirstPacketDateTime`, mesma fs efetiva, mesmo comprimento, mesma base
+   de ticks. Canais de sessões diferentes não têm base de tempo comum, e a
+   coerência entre eles é ficção — não é "coerência baixa", é um número sem
+   referente. A função recusa, dizendo quais valores não bateram.
+
+   ═══════════════════════════════════════════════════════════════════════════
+   TRÊS CONFUNDIDORES QUE PRODUZEM COERÊNCIA ALTA SEM INTERAÇÃO NENHUMA
+   ═══════════════════════════════════════════════════════════════════════════
+
+   1. ARTEFATO DE ESTIMULAÇÃO COMPARTILHADO. Os dois hemisférios recebem o
+      artefato do MESMO gerador. Chega simultaneamente aos dois: fase zero.
+   2. ARTEFATO CARDÍACO COMPARTILHADO. O QRS aparece nos dois lados, e o
+      batimento e seus harmônicos caem em delta, teta e alfa — exatamente onde
+      o artigo relata aumento de coerência. `detectRPeaks` roda nos dois canais
+      e as bandas afetadas saem marcadas.
+   3. CONDUÇÃO DE VOLUME. Também de fase zero.
+
+   O DISCRIMINANTE É A PARTE IMAGINÁRIA DA COERÊNCIA. Ela é insensível a
+   mistura instantânea: só sobrevive o que tem defasagem, isto é, o que levou
+   tempo para propagar. Coerência alta com parte imaginária praticamente nula é
+   compatível com os três confundidores acima e NÃO deve ser reportada como
+   acoplamento inter-hemisférico. O veredito de `coherenceBand` é propagado
+   para cada janela e para o resumo.
+
+   O QUE O ARTIGO MOSTROU. Coerência inter-subtalâmica aumentou em teta e
+   diminuiu em beta baixo durante períodos discinéticos sem movimento — o mesmo
+   sentido dos padrões locais de cada STN. Gama de pico mostrou aumento pequeno
+   mas significativo; alfa e gama larga não diferiram.
+   (Habets et al., Brain 2026, doi:10.1093/brain/awag256.)
+
+   Unidades: coerência e parte imaginária adimensionais; fase em graus; tempo
+   em segundos; frequência em Hz.                                             */
+
+
+
+const wn = (v, k) => isFinite(v) ? +v.toFixed(k == null ? 4 : k) : NaN;
+const wcsv = v => (v == null || (typeof v === 'number' && !isFinite(v))) ? '' : String(v);
+
+/* ========================================================================= */
+/*  1. Pareamento — a guarda                                                  */
+/* ========================================================================= */
+
+/* pairableRecords(a, b, opts) — os dois canais vieram do mesmo registro?
+
+   Devolve { ok, reason, mismatches } sem calcular nada. Chamada separada para
+   que a figura possa explicar a recusa antes de tentar desenhar.            */
+function pairableRecords(a, b, opts) {
+  opts = opts || {};
+  const tolFs = isFinite(opts.fsToleranceHz) ? opts.fsToleranceHz : 0.01;
+  const divergencias = [];
+  if (!a || !b) return {
+    ok: false, mismatches: [],
+    reason: 'faltam os dois hemisférios: a coerência inter-STN exige sinal bruto simultâneo dos dois lados'
+  };
+
+  const t0a = a.t0 || (a.record && a.record.t0) || null;
+  const t0b = b.t0 || (b.record && b.record.t0) || null;
+  if (String(t0a || '') !== String(t0b || '')) divergencias.push({
+    field: 'FirstPacketDateTime', left: t0a || '(ausente)', right: t0b || '(ausente)'
+  });
+
+  const fsa = a.fs, fsb = b.fs;
+  if (!isFinite(fsa) || !isFinite(fsb) || Math.abs(fsa - fsb) > tolFs) divergencias.push({
+    field: 'fs efetiva', left: isFinite(fsa) ? +fsa.toFixed(4) : '(ausente)', right: isFinite(fsb) ? +fsb.toFixed(4) : '(ausente)'
+  });
+
+  const na = a.x ? a.x.length : 0, nb = b.x ? b.x.length : 0;
+  if (na !== nb) divergencias.push({ field: 'comprimento (amostras)', left: na, right: nb });
+
+  const ta = a.record && a.record.packets && a.record.packets.tickBase;
+  const tb = b.record && b.record.packets && b.record.packets.tickBase;
+  if (ta != null && tb != null && ta !== tb) divergencias.push({ field: 'base de ticks', left: ta, right: tb });
+
+  if (divergencias.length) return {
+    ok: false, mismatches: divergencias,
+    reason: 'os dois canais NÃO vêm do mesmo registro (' +
+      divergencias.map(d => `${d.field}: ${d.left} vs ${d.right}`).join('; ') +
+      '). Sem base de tempo comum, a coerência entre eles não é baixa nem alta — é um número sem referente, e por ' +
+      'isso não é calculada.'
+  };
+  return { ok: true, mismatches: [], reason: null, n: na, fs: fsa, t0: t0a };
+}
+
+/* ========================================================================= */
+/*  2. Contaminação cardíaca compartilhada                                    */
+/* ========================================================================= */
+
+/* Detecta QRS nos DOIS canais e marca as bandas em que o batimento e seus
+   harmônicos caem. Não remove nada: marca, para que a coerência daquelas
+   bandas seja lida com a explicação alternativa à vista.                    */
+function wecgCompartilhado(a, b, fs, bandas) {
+  const roda = x => {
+    try {
+      const nMax = Math.min(x.length, Math.round(60 * fs));
+      const trecho = Float64Array.from(x.subarray ? x.subarray(0, nMax) : x.slice(0, nMax), v => isFinite(v) ? v : 0);
+      const d = detectRPeaks(trecho, fs, {});
+      if (!d || !d.peaks || d.peaks.length < 8) return { ok: false, bpm: NaN, nPeaks: d && d.peaks ? d.peaks.length : 0 };
+      const dur = trecho.length / fs;
+      const bpm = 60 * d.peaks.length / Math.max(1e-6, dur);
+      return { ok: bpm >= 40 && bpm <= 140, bpm: wn(bpm, 1), nPeaks: d.peaks.length };
+    } catch (e) { return { ok: false, bpm: NaN, nPeaks: 0, error: String(e && e.message || e) }; }
+  };
+  const A = roda(a), B = roda(b);
+  const compartilhado = A.ok && B.ok && isFinite(A.bpm) && isFinite(B.bpm) && Math.abs(A.bpm - B.bpm) < 10;
+  const fFund = compartilhado ? (A.bpm + B.bpm) / 120 : NaN;   /* Hz */
+  const afetadas = [];
+  if (compartilhado) bandas.forEach(bd => {
+    for (let h = 1; h <= 8; h++) {
+      const f = h * fFund;
+      if (f >= bd.lo && f <= bd.hi) { afetadas.push({ band: bd.id, harmonic: h, hz: wn(f, 2) }); break; }
+    }
+  });
+  return {
+    detected: compartilhado,
+    left: A, right: B,
+    fundamentalHz: wn(fFund, 3),
+    affectedBands: afetadas,
+    note: compartilhado
+      ? `QRS detectado nos dois canais em frequências compatíveis (${A.bpm} e ${B.bpm} bpm). O batimento e seus ` +
+        `harmônicos caem em ${afetadas.map(x => x.band).join(', ') || 'nenhuma banda avaliada'} e produzem coerência ` +
+        'com fase praticamente zero, sem interação nenhuma entre os hemisférios'
+      : 'nenhuma contaminação cardíaca compartilhada foi detectada nos dois canais (o que não é o mesmo que não haver)'
+  };
+}
+
+/* ========================================================================= */
+/*  3. interSTNCoherence                                                      */
+/* ========================================================================= */
+
+/* interSTNCoherence(left, right, opts)
+
+   `left` e `right`: { x, fs, t0, record }. `opts.gammaBand` permite usar a
+   banda do pico individual de gama vinda de `metrics/odr.js`.               */
+function interSTNCoherence(left, right, opts) {
+  opts = opts || {};
+  const windowS = isFinite(opts.windowS) ? opts.windowS : 10;
+  const overlap = isFinite(opts.overlap) ? opts.overlap : 0;
+  const alpha = isFinite(opts.alpha) ? opts.alpha : 0.05;
+
+  const bandas = [
+    { id: 'theta', lo: ODR_BANDS.theta.lo, hi: ODR_BANDS.theta.hi },
+    { id: 'alpha', lo: ODR_BANDS.alpha.lo, hi: ODR_BANDS.alpha.hi },
+    { id: 'lowBeta', lo: ODR_BANDS.lowBeta.lo, hi: ODR_BANDS.lowBeta.hi },
+    { id: 'highBeta', lo: ODR_BANDS.highBeta.lo, hi: ODR_BANDS.highBeta.hi },
+    { id: 'gammaBroad', lo: ODR_BANDS.gammaBroad.lo, hi: ODR_BANDS.gammaBroad.hi }
+  ];
+  if (Array.isArray(opts.gammaBand) && isFinite(opts.gammaBand[0]))
+    bandas.push({ id: 'gammaPeak', lo: opts.gammaBand[0], hi: opts.gammaBand[1] });
+
+  const par = pairableRecords(left, right, opts);
+  if (!par.ok) return {
+    ok: false, pairing: par, bands: bandas, windowS,
+    reason: par.reason, confounders: null, windows: [], byBand: {}
+  };
+
+  const coh = windowedCoherence(left.x, right.x, par.fs, {
+    windowS, overlap, alpha, bands: bandas,
+    maxNanPct: isFinite(opts.maxNanPct) ? opts.maxNanPct : 5
+  });
+  if (!coh.ok) return {
+    ok: false, pairing: par, bands: bandas, windowS,
+    reason: coh.reason, confounders: null, windows: [], byBand: {}
+  };
+
+  const ecg = wecgCompartilhado(left.x, right.x, par.fs, bandas);
+  const estim = {
+    stimRateHz: isFinite(opts.stimRateHz) ? opts.stimRateHz : NaN,
+    note: 'os dois hemisférios recebem o artefato do MESMO gerador, que chega simultaneamente aos dois lados e ' +
+      'produz coerência de fase zero. É por isso que a parte imaginária, e não a magnitude, é o discriminante'
+  };
+
+  /* espectro médio de coerência ao longo das janelas — para o painel (c) */
+  const validas = coh.windows.filter(w => w.f && w.cxy);
+  let fMedia = null, cxyMedia = null, imagMedia = null;
+  if (validas.length) {
+    const nB = validas[0].cxy.length;
+    fMedia = Array.from(validas[0].f);
+    cxyMedia = new Array(nB).fill(0);
+    imagMedia = new Array(nB).fill(0);
+    validas.forEach(w => { for (let k = 0; k < nB; k++) { cxyMedia[k] += w.cxy[k]; imagMedia[k] += w.imagCoherency[k]; } });
+    for (let k = 0; k < nB; k++) { cxyMedia[k] /= validas.length; imagMedia[k] /= validas.length; }
+  }
+
+  /* o resumo por banda ganha a marca de confundidor */
+  const porBanda = {};
+  Object.keys(coh.byBand).forEach(id => {
+    const r = Object.assign({}, coh.byBand[id]);
+    const cardiaca = ecg.affectedBands.find(x => x.band === id);
+    r.sharedCardiacContamination = !!cardiaca;
+    r.cardiacHarmonicHz = cardiaca ? cardiaca.hz : NaN;
+    r.interpretable = r.fractionInterpretable > 0 && !cardiaca;
+    r.confounderNote = cardiaca
+      ? `o ${cardiaca.harmonic}º harmônico do batimento cai em ${cardiaca.hz} Hz, dentro desta banda: parte da ` +
+        'coerência aqui pode ser o mesmo QRS aparecendo nos dois canais'
+      : null;
+    porBanda[id] = r;
+  });
+
+  return {
+    ok: true,
+    pairing: par,
+    bands: bandas,
+    windowS: coh.windowS, stepS: coh.stepS, overlap: coh.overlap,
+    coherenceParams: coh.coherenceParams,
+    windows: coh.windows.map(w => ({
+      index: w.index, tStartS: w.tStartS, tCenterS: w.tCenterS, pctNan: w.pctNan,
+      byBand: w.byBand,
+      nSegments: w.nSegments, nSegmentsEffective: w.nSegmentsEffective,
+      expectedNullCoherence: w.expectedNullCoherence,
+      thresholdPerBin: w.thresholdPerBin,
+      reason: w.reason
+    })),
+    nWindows: coh.nWindows, nValidWindows: coh.nValidWindows,
+    byBand: porBanda,
+    meanSpectrum: fMedia ? { f: fMedia, cxy: cxyMedia, imag: imagMedia, nWindows: validas.length } : null,
+    confounders: { sharedStimulation: estim, sharedCardiac: ecg, volumeConduction: {
+      note: 'condução de volume também produz fase zero; o veredito por banda vem de `coherenceBand` e está em ' +
+        '`nVolumeConductionSuspected` e `fractionInterpretable`'
+    } },
+    nullNote: coh.nullNote, imagNote: coh.imagNote,
+    articleNote:
+      'No artigo (Habets et al., Brain 2026) a coerência inter-subtalâmica AUMENTOU em teta e DIMINUIU em beta baixo ' +
+      'durante períodos discinéticos sem movimento — o mesmo sentido dos padrões locais de cada STN. Gama de pico ' +
+      'mostrou aumento pequeno mas significativo; alfa e gama larga não diferiram. Aqui não há rótulo clínico: o que ' +
+      'esta figura descreve é a dinâmica da coerência ao longo do tempo, não a presença de discinesia.',
+    reason: null
+  };
+}
+
+/* ========================================================================= */
+/*  4. Tabela tidy — uma linha por janela × hemisfério                        */
+/* ========================================================================= */
+
+/* windowedFeatureTable(entrada) — junta ODR, CV e coerência numa tabela longa.
+
+   entrada = {
+     odr:  saída de odrSeries
+     cv:   { Left: saída de odrSpectralVariation, Right: ... }
+     coh:  saída de interSTNCoherence (opcional)
+     channels: { Left: 'label', Right: 'label' }
+   }
+
+   Cabeçalhos em INGLÊS, porque quem consome isso são scripts em R.          */
+function windowedFeatureTable(entrada) {
+  const e = entrada || {};
+  const odr = e.odr;
+  if (!odr || !odr.ok) return { ok: false, rows: [], columns: WINDOWED_COLUMNS, reason: (odr && odr.reason) || 'sem ODR' };
+
+  const linhas = [];
+  (odr.hemispheres || []).forEach(h => {
+    const bh = odr.byHemisphere[h];
+    if (!bh || !bh.ok) return;
+    const cv = (e.cv && e.cv[h]) || null;
+    const canal = (e.channels && e.channels[h]) || '';
+    const fsEff = (e.fs && e.fs[h]) || NaN;
+    const estado = bh.deviceState || {};
+
+    bh.windows.forEach((w, i) => {
+      const global = odr.windows[i] || {};
+      const cvBanda = id => {
+        const b = cv && cv.byBand && cv.byBand[id];
+        const j = b && b.windows && b.windows[i];
+        return j && isFinite(j.cv) ? j.cv : NaN;
+      };
+      const cw = e.coh && e.coh.ok ? e.coh.windows[i] : null;
+      const cb = id => (cw && cw.byBand && cw.byBand[id]) || null;
+
+      linhas.push({
+        window_index: w.index,
+        t_start_s: w.tStartS,
+        t_center_s: w.tCenterS,
+        window_s: odr.params.windowS,
+        hemisphere: h,
+        channel: canal,
+        fs_effective: isFinite(fsEff) ? wn(fsEff, 4) : NaN,
+        pct_nan: w.pctNan,
+
+        theta_power: w.power ? w.power.theta : NaN,
+        alpha_power: w.power ? w.power.alpha : NaN,
+        low_beta_power: w.power ? w.power.lowBeta : NaN,
+        high_beta_power: w.power ? w.power.highBeta : NaN,
+        gamma_peak_power: w.power ? (w.power.gammaPeak == null ? NaN : w.power.gammaPeak) : NaN,
+        gamma_broad_power: w.power ? w.power.gammaBroad : NaN,
+        gamma_peak_hz: isFinite(bh.gamma && bh.gamma.peakHz) ? bh.gamma.peakHz : NaN,
+
+        theta_z: w.zThetaLog,
+        low_beta_z: w.zLowBetaLog,
+        gamma_peak_z: w.zGammaLog,
+
+        odr_log: global.odrLog,
+        odr_literal: global.odrLiteral,
+
+        cv_theta: cvBanda('theta'),
+        cv_low_beta: cvBanda('lowBeta'),
+        cv_gamma_peak: cvBanda('gammaPeak'),
+
+        coh_theta: cb('theta') ? cb('theta').coherence : NaN,
+        coh_low_beta: cb('lowBeta') ? cb('lowBeta').coherence : NaN,
+        coh_gamma_peak: cb('gammaPeak') ? cb('gammaPeak').coherence : NaN,
+        imag_coh_theta: cb('theta') ? cb('theta').imag : NaN,
+        imag_coh_low_beta: cb('lowBeta') ? cb('lowBeta').imag : NaN,
+        imag_coh_gamma_peak: cb('gammaPeak') ? cb('gammaPeak').imag : NaN,
+        coh_null_expected: cw ? cw.expectedNullCoherence : NaN,
+        coh_threshold_band: cb('lowBeta') ? cb('lowBeta').threshold : NaN,
+
+        device_state: estado.state || 'UNKNOWN',
+        stim_rate_hz: isFinite(estado.rateHz) ? estado.rateHz : NaN,
+        stim_amplitude_ma: isFinite(estado.amplitudeMa) ? estado.amplitudeMa : NaN,
+
+        gamma_source: bh.gammaSource || 'none',
+        /* fora da lista mínima da especificação, e de propósito: sem esta
+           coluna, uma linha em que a conferência contra f_stim/2 NÃO foi
+           possível é indistinguível de uma em que ela passou */
+        entrainment_checked: bh.entrainmentChecked ? 1 : 0,
+        odr_valid: isFinite(global.odrLog) ? 1 : 0,
+        odr_reason: w.reason || global.reason || ''
+      });
+    });
+  });
+
+  return { ok: linhas.length > 0, rows: linhas, columns: WINDOWED_COLUMNS, nRows: linhas.length, reason: null };
+}
+
+const WINDOWED_COLUMNS = [
+  'window_index', 't_start_s', 't_center_s', 'window_s', 'hemisphere', 'channel',
+  'fs_effective', 'pct_nan',
+  'theta_power', 'alpha_power', 'low_beta_power', 'high_beta_power', 'gamma_peak_power',
+  'gamma_broad_power', 'gamma_peak_hz',
+  'theta_z', 'low_beta_z', 'gamma_peak_z',
+  'odr_log', 'odr_literal',
+  'cv_theta', 'cv_low_beta', 'cv_gamma_peak',
+  'coh_theta', 'coh_low_beta', 'coh_gamma_peak',
+  'imag_coh_theta', 'imag_coh_low_beta', 'imag_coh_gamma_peak',
+  'coh_null_expected', 'coh_threshold_band',
+  'device_state', 'stim_rate_hz', 'stim_amplitude_ma',
+  'gamma_source', 'entrainment_checked', 'odr_valid', 'odr_reason'
+];
+
+/* ========================================================================= */
+/*  5. CSV com bloco de metadados em comentário                               */
+/* ========================================================================= */
+
+/* windowedFeatureMeta(entrada, versao) — o bloco de comentário do topo do CSV,
+   no mesmo padrão de `metaEspectrograma` da F30. Sem ele, o arquivo perde o
+   que separa o número da opinião: janela, bandas, política de z-score,
+   definição do pico de gama, verificação contra f_stim/2, estado da
+   estimulação e a declaração de que o passo de SSD não foi aplicado.        */
+function windowedFeatureMeta(entrada, versao) {
+  const e = entrada || {};
+  const odr = e.odr || {};
+  const p = odr.params || {};
+  const L = [];
+  const add = (k, v) => L.push(`# ${k}: ${v}`);
+
+  add('software', `Percept LFP Studio ${versao || ''}`.trim());
+  add('generated_at', new Date().toISOString());
+  add('feature_set', 'ODR, spectral variation and inter-STN coherence (Habets et al., Brain 2026, doi:10.1093/brain/awag256)');
+  add('window_s', p.windowS);
+  add('overlap', p.overlap);
+  add('bands_hz', `theta ${ODR_BANDS.theta.lo}-${ODR_BANDS.theta.hi}, alpha ${ODR_BANDS.alpha.lo}-${ODR_BANDS.alpha.hi}, ` +
+    `low_beta ${ODR_BANDS.lowBeta.lo}-${ODR_BANDS.lowBeta.hi}, high_beta ${ODR_BANDS.highBeta.lo}-${ODR_BANDS.highBeta.hi}, ` +
+    `gamma_broad ${ODR_BANDS.gammaBroad.lo}-${ODR_BANDS.gammaBroad.hi}`);
+  add('gamma_peak_definition', `individual peak in ${(p.gammaSearch || [])[0]}-${(p.gammaSearch || [])[1]} Hz ` +
+    `+/- ${p.gammaHalfWidthHz} Hz, located once over the mean spectrum of the whole recording`);
+  add('gamma_source', p.gammaSource);
+  add('z_score_policy', p.zPolicy);
+  add('odr_formulation_used', odr.formulationUsed);
+  add('odr_formulation_note', 'odr_log = z(log theta) + z(log gamma) - z(log low_beta); odr_literal = ' +
+    '(z(theta) * z(gamma)) / z(low_beta). Divergence between the two is a property of the formula: the literal ' +
+    'version divides by a z-scored value, which crosses zero by construction');
+  add('odr_log_vs_literal_spearman', odr.spearmanLogVsLiteral);
+  add('odr_literal_escape_fraction', `${odr.literalEscapeFraction} (|odr_literal| > ${odr.literalClip})`);
+  add('entrainment_check', `gamma peak tested against f_stim/2 with tolerance ${p.entrainToleranceHz} Hz`);
+  (odr.hemispheres || []).forEach(h => {
+    const bh = odr.byHemisphere[h] || {};
+    add(`hemisphere_${h.toLowerCase()}_entrainment_checked`, bh.entrainmentChecked ? 'yes' : 'NO - stimulation rate not declared in this file');
+  });
+
+  (odr.hemispheres || []).forEach(h => {
+    const bh = odr.byHemisphere[h] || {};
+    const ds = bh.deviceState || {};
+    add(`hemisphere_${h.toLowerCase()}_gamma_peak_hz`, (bh.gamma && bh.gamma.peakHz) || 'not found');
+    add(`hemisphere_${h.toLowerCase()}_gamma_source`, bh.gammaSource || 'none');
+    add(`hemisphere_${h.toLowerCase()}_device_state`, `${ds.state || 'UNKNOWN'} (confidence: ${ds.confidence || 'none'})`);
+    add(`hemisphere_${h.toLowerCase()}_stim_rate_hz`, isFinite(ds.rateHz) ? ds.rateHz : 'not declared');
+    add(`hemisphere_${h.toLowerCase()}_stim_amplitude_ma`, isFinite(ds.amplitudeMa) ? ds.amplitudeMa : 'not declared');
+  });
+
+  if (e.coh) {
+    add('coherence_pairing', e.coh.ok ? 'both channels from the same recording' : `refused: ${e.coh.reason}`);
+    if (e.coh.ok) {
+      add('coherence_nperseg', e.coh.coherenceParams.nperseg);
+      add('coherence_alpha', e.coh.coherenceParams.alpha);
+      add('coherence_null_note', 'with L effective segments the null coherence is 1/L, not zero; the band threshold ' +
+        'is Sidak-corrected for the number of bins in the band');
+      add('coherence_imag_note', 'high coherence with near-zero imaginary part is compatible with shared stimulation ' +
+        'artefact, shared cardiac artefact and volume conduction, and is NOT reported as coupling');
+      const ecg = e.coh.confounders && e.coh.confounders.sharedCardiac;
+      add('shared_cardiac_contamination', ecg && ecg.detected
+        ? `detected (${ecg.fundamentalHz} Hz fundamental), affecting: ${(ecg.affectedBands || []).map(b => b.band).join(', ') || 'none of the analysed bands'}`
+        : 'not detected (which is not the same as absent)');
+    }
+  }
+
+  add('ssd_not_applied', 'the source protocol optimises SNR by spatio-spectral decomposition over several channels ' +
+    'per electrode. The Percept exposes ONE bipolar pair per hemisphere: SSD is not implementable here, sensitivity ' +
+    'is lower (especially in gamma), and absolute values are NOT comparable with the published ones');
+  add('stimulation_difference', 'the source protocol ran with stimulation OFF and externalised electrodes; this ' +
+    'recording typically has stimulation ON with an implanted generator');
+  add('expected_performance', 'in the original study the ODR reached a mean balanced accuracy of 0.61 (SD 0.14) as a ' +
+    'univariate predictor, with significant detection in 8 of 21 subjects');
+  add('not_a_medical_device', 'research and decision-support tool; no clinical label is used or produced here');
+
+  return L.join('\n');
+}
+
+/* windowedFeatureCsv(entrada, versao) — CSV completo, metadados no topo. */
+function windowedFeatureCsv(entrada, versao) {
+  const t = windowedFeatureTable(entrada);
+  const cab = windowedFeatureMeta(entrada, versao);
+  const linhas = [cab, WINDOWED_COLUMNS.join(',')];
+  (t.rows || []).forEach(r => linhas.push(WINDOWED_COLUMNS.map(c => {
+    const v = r[c];
+    const s = wcsv(v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }).join(',')));
+  return linhas.join('\n');
+}
+
+/* Reexportados para que a figura precise importar de um lugar só. */
+
 /* ---------- core/qc/alarm.js ---------- */
 /* qc/alarm.js — alarme ATIVO de artefato, em linguagem de consultório.
 
@@ -14726,6 +16298,9 @@ function fitDoseResponse(ma, power, opts) {
 
 
 
+
+
+
 const API = {
   parsePercept, parsePerceptText, MODALITIES, BANDS, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId,
   fft, nextPow2, welchPSD, spectrogram, bandpassFFT, hilbertEnvelope, detectBursts, fitAperiodic,
@@ -14751,7 +16326,7 @@ const API = {
   createProvenance, verifyManifest, sha256Hex, canonical,
   generateChecklist, checklistDocx, CHECKLIST_ITEMS,
   /* leituras em linguagem clínica e semáforo de QC (Onda 8.1) */
-  clinicalReadings, qcTrafficLight,
+  clinicalReadings, qcTrafficLight, odrReading,
   makeZip, makeDocx, crc32, writeEdf, buildBidsLike, buildPdf, textWidth, unmappedChars,
   /* idiomas (Onda 8.2) */
   t, setLanguage, getLanguage, IDIOMAS, translationCoverage,
@@ -14780,6 +16355,11 @@ const API = {
   sensingConfigOf, configBlocks, segmentTrendByConfig, crossBlockWarning,
   PASSPORT_VERSION, biomarkerPassport, passportSensingSuggestion, passportMatchesConfig, passportCompare,
   AGENDA_VERSION, sessionAgenda,
+  /* features por janela: ODR, variação espectral e coerência inter-STN (Onda 12) */
+  windowGrid, spectralVariation, windowedBandPower, windowedCoherence,
+  ODR_BANDS, ODR_LIMITACOES, ODR_EXPECTATIVA, gammaPeakOf, odrSeries, odrSpectralVariation,
+  pairableRecords, interSTNCoherence, windowedFeatureTable, windowedFeatureMeta,
+  windowedFeatureCsv, WINDOWED_COLUMNS,
   /* alarme ativo de artefato, em linguagem de consultório (Onda 11) */
   artifactAlarm,
   /* cronobiologia não paramétrica e ponto de mudança (Onda 11) */
@@ -19702,6 +21282,305 @@ const FIGURES = [
     }
   },
 
+
+  /* ----------------------------------------------------------------- F34 */
+  {
+    id: 'F34', title: 'ODR e features por janela — dinâmica multi-banda do registro agudo',
+    sub: 'Oscillatory Dynamics Ratio nas duas formulações · bandas z-scored · coerência inter-STN · variação espectral',
+    has: d => d.bsTimeDomain.length || d.montageTD.length,
+    render(node, d) {
+      const janela = opt('F34', 'win', 10);
+      const sobrep = opt('F34', 'ov', 0);
+      const form = opt('F34', 'form', 'log');
+      const fonteG = opt('F34', 'gamma', 'peak');
+      const tolEnt = opt('F34', 'tol', 2.5);
+      const semGama = opt('F34', 'nogamma', false);
+
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('janela', [
+          { value: 5, label: '5 s' }, { value: 10, label: '10 s (artigo)' }, { value: 30, label: '30 s' }
+        ], janela, v => setOpt('F34', 'win', +v)),
+        ctrlSelect('sobreposição', [
+          { value: 0, label: 'sem sobreposição' }, { value: 0.5, label: '50%' }, { value: 0.75, label: '75%' }
+        ], sobrep, v => setOpt('F34', 'ov', +v)),
+        ctrlSelect('formulação do ODR', [
+          { value: 'log', label: 'logarítmica (estável)' },
+          { value: 'literal', label: 'literal do artigo (instável)' }
+        ], form, v => setOpt('F34', 'form', v)),
+        ctrlSelect('origem da gama', [
+          { value: 'peak', label: 'pico individual ± 2,5 Hz' },
+          { value: 'broad', label: 'banda larga 60–90 Hz' }
+        ], fonteG, v => setOpt('F34', 'gamma', v)),
+        ctrlNumber('tolerância f_stim/2 (Hz)', tolEnt, 0.5, 10, 0.5, v => setOpt('F34', 'tol', v)),
+        ctrlCheck('permitir variante sem gama', semGama, v => setOpt('F34', 'nogamma', v))
+      ]));
+
+      /* --- montagem dos hemisférios a partir do registro bruto ------------ */
+      const brutos = (d.bsTimeDomain.length ? d.bsTimeDomain : d.montageTD);
+      const hemis = {};
+      brutos.forEach(td => {
+        if (!hemis[td.hemisphere] && td.data && td.data.length) hemis[td.hemisphere] = {
+          x: td.data, fs: td.fsEff || td.fs, t0: td.t0, record: td, label: td.label
+        };
+      });
+      if (!Object.keys(hemis).length) return node.appendChild(el('div', {
+        class: 'empty', text: 'nenhum canal com sinal bruto no domínio do tempo neste arquivo'
+      }));
+
+      const p0 = activeFiles()[0] && activeFiles()[0].parsed;
+      const odr = C.odrSeries({ hemispheres: hemis, parsed: p0 }, {
+        windowS: janela, overlap: sobrep, formulation: form, gammaSource: fonteG,
+        entrainToleranceHz: tolEnt, allowWithoutGamma: semGama
+      });
+
+      /* ---------------- (a) série do ODR --------------------------------- */
+      node.appendChild(el('h4', { class: 'qc-title', html: '<b>(a) ODR ao longo do registro — as duas formulações</b>' }));
+      let boxA = null;
+      if (!odr.ok) {
+        /* recusa mostra o MOTIVO no lugar da curva, nunca uma curva vazia */
+        node.appendChild(el('div', { class: 'warnbox', html: `<b>O ODR não foi calculado.</b> ${odr.reason}` }));
+      } else {
+        const xs = odr.windows.map(w => w.tCenterS);
+        const yl = odr.windows.map(w => w.odrLog);
+        const yt = odr.windows.map(w => w.odrLiteral);
+        const todos = yl.concat(yt).filter(isFinite);
+        const lo = Math.min.apply(null, todos), hi = Math.max.apply(null, todos);
+        boxA = plotBox(node, 240);
+        const ch = new P.Chart(boxA.canvas, {
+          width: boxA.width, height: boxA.height,
+          xlim: [Math.min.apply(null, xs), Math.max.apply(null, xs)],
+          ylim: [lo - 0.1 * (hi - lo) - 0.1, hi + 0.1 * (hi - lo) + 0.1],
+          xlabel: 'tempo do registro (s)', ylabel: 'ODR (z)',
+          title: `ODR por janela de ${odr.params.windowS} s · ${odr.nHemispheres} hemisfério(s)`,
+          pad: { l: 62, r: 20, t: 24, b: 42 }
+        });
+        ch.axes({ nx: 8 });
+        ch.hline(0, { color: COL.rule, width: 1, dash: [3, 3] });
+        ch.line(xs, yt, { color: COL.muted, width: 0.9, label: 'literal (z(θ)·z(γ)/z(β))' });
+        ch.line(xs, yl, { color: COL.accent, width: 2, label: 'logarítmica (padrão)' });
+
+        /* marcas de tomada, quando existirem, no eixo de tempo do registro */
+        const t0ms = hemis[odr.hemispheres[0]].t0 ? Date.parse(hemis[odr.hemispheres[0]].t0) : NaN;
+        const doses = C.doseMarkers(d.snapshots, offMin(), { pattern: /medica|levodopa|dose/i });
+        if (isFinite(t0ms) && doses.ok) {
+          const dentro = doses.doses.map(x => (x.t - t0ms) / 1000).filter(s => s >= xs[0] && s <= xs[xs.length - 1]);
+          dentro.forEach(s => ch.marker(s, hi, { shape: 'tridown', size: 7, color: COL.warn, halo: true }));
+          if (dentro.length) ch.text(ch.x0 + 8, ch.Y(hi) - 14, `▼ ${dentro.length} tomada(s) marcada(s)`, { color: COL.warn });
+        }
+        ch.legend({ x: ch.x0 + 8, y: ch.y1 + 6 });
+
+        node.appendChild(el('div', {
+          class: 'note', html: `<b>Por que duas curvas.</b> ${odr.formulationNote}`
+        }));
+        if (odr.unilateralWarning) node.appendChild(el('div', { class: 'warnbox', html: `<b>Um lado só.</b> ${odr.unilateralWarning}` }));
+        (odr.hemispheres || []).forEach(h => {
+          const bh = odr.byHemisphere[h];
+          if (bh && bh.withoutGamma) node.appendChild(el('div', {
+            class: 'warnbox', html: `<b>STN ${hname(h)} — variante sem gama.</b> ${bh.withoutGammaNote}`
+          }));
+          if (bh && bh.entrainmentChecked === false) node.appendChild(el('div', {
+            class: 'warnbox', html: `<b>STN ${hname(h)} — não verificado.</b> ${bh.entrainmentNote}`
+          }));
+        });
+      }
+
+      /* ---------------- (b) as três bandas z-scored ----------------------- */
+      node.appendChild(el('h4', { class: 'qc-title', html: '<b>(b) Qual termo está movendo o ODR</b>' }));
+      let boxB = null;
+      const primeiro = odr.ok ? odr.byHemisphere[odr.hemispheres[0]] : null;
+      if (!primeiro) {
+        node.appendChild(el('div', { class: 'note', text: 'sem série de bandas para mostrar — o ODR não foi calculado' }));
+      } else {
+        const xs = primeiro.windows.map(w => w.tCenterS);
+        const series = [
+          { id: 'zThetaLog', label: 'θ 4–8 Hz', color: '#2F6E8E' },
+          { id: 'zGammaLog', label: primeiro.gammaSource === 'broad' ? 'γ larga 60–90 Hz' : `γ pico ${f(primeiro.gamma.peakHz, 1)} Hz`, color: '#8E3B4E' },
+          { id: 'zLowBetaLog', label: 'β↓ 12–20 Hz', color: '#B8912A' }
+        ];
+        const tudo = series.flatMap(s => primeiro.windows.map(w => w[s.id])).filter(isFinite);
+        boxB = plotBox(node, 220);
+        const ch = new P.Chart(boxB.canvas, {
+          width: boxB.width, height: boxB.height,
+          xlim: [xs[0], xs[xs.length - 1]],
+          ylim: [Math.min.apply(null, tudo) - 0.3, Math.max.apply(null, tudo) + 0.3],
+          xlabel: 'tempo do registro (s)', ylabel: 'z (log potência)',
+          title: `STN ${hname(primeiro.hemisphere)} — bandas z-scored ao longo do registro`,
+          pad: { l: 62, r: 20, t: 24, b: 42 }
+        });
+        ch.axes({ nx: 8 });
+        ch.hline(0, { color: COL.rule, width: 1, dash: [3, 3] });
+        series.forEach(s => ch.line(xs, primeiro.windows.map(w => w[s.id]), { color: s.color, width: 1.6, label: s.label }));
+        ch.legend({ x: ch.x0 + 8, y: ch.y1 + 6 });
+        node.appendChild(el('div', {
+          class: 'note', html: '<b>Sem este painel o ODR é caixa-preta.</b> Ele sobe tanto porque teta e gama subiram ' +
+            'quanto porque beta caiu, e as três leituras clínicas são diferentes. A curva de baixo é o que o denominador ' +
+            'está fazendo.'
+        }));
+      }
+
+      /* ---------------- (c) coerência inter-STN --------------------------- */
+      node.appendChild(el('h4', { class: 'qc-title', html: '<b>(c) Coerência inter-STN</b>' }));
+      const gBand = primeiro && primeiro.gammaBand ? primeiro.gammaBand : null;
+      const coer = (hemis.Left && hemis.Right)
+        ? C.interSTNCoherence(hemis.Left, hemis.Right, {
+          windowS: janela, overlap: sobrep, gammaBand: gBand,
+          stimRateHz: primeiro ? primeiro.stimRateHz : undefined
+        })
+        : { ok: false, reason: 'este arquivo tem sinal bruto de um hemisfério só — a coerência inter-STN exige os dois lados no mesmo registro' };
+
+      let boxC = null;
+      if (!coer.ok) {
+        node.appendChild(el('div', { class: 'note', html: `<b>Não calculada.</b> ${coer.reason}` }));
+      } else {
+        boxC = plotBox(node, 240);
+        const ms = coer.meanSpectrum;
+        const fmax = 90;
+        const idx = ms.f.map((v, i) => i).filter(i => ms.f[i] <= fmax);
+        const ch = new P.Chart(boxC.canvas, {
+          width: boxC.width, height: boxC.height, xlim: [0, fmax], ylim: [0, 1],
+          xlabel: 'frequência (Hz)', ylabel: 'coerência',
+          title: `espectro médio de coerência entre os dois STN (${ms.nWindows} janelas)`,
+          pad: { l: 62, r: 20, t: 24, b: 42 }
+        });
+        ch.axes({ nx: 8 });
+        /* bandas do ODR marcadas ao fundo */
+        [['theta', '#2F6E8E'], ['lowBeta', '#B8912A']].forEach(([id, cor]) => {
+          const b = coer.bands.find(x => x.id === id);
+          if (b) ch.span(b.lo, b.hi, { color: cor, alpha: 0.08 });
+        });
+        ch.line(idx.map(i => ms.f[i]), idx.map(i => ms.cxy[i]), { color: COL.accent, width: 1.8, label: 'coerência de magnitude' });
+        ch.line(idx.map(i => ms.f[i]), idx.map(i => Math.abs(ms.imag[i])), { color: COL.warn, width: 1.3, dash: [4, 3], label: '|parte imaginária|' });
+        const w0 = coer.windows.find(w => isFinite(w.expectedNullCoherence));
+        if (w0) {
+          ch.hline(w0.expectedNullCoherence, { color: COL.muted, width: 1, dash: [2, 3] });
+          ch.text(ch.x1 - 150, ch.Y(w0.expectedNullCoherence) - 5, `1/L = ${f(w0.expectedNullCoherence, 3)} (nula)`, { color: COL.muted });
+          const lb = coer.bands.find(x => x.id === 'lowBeta');
+          const thr = w0.byBand && w0.byBand.lowBeta ? w0.byBand.lowBeta.threshold : NaN;
+          if (isFinite(thr)) {
+            ch.hline(thr, { color: COL.Right, width: 1, dash: [5, 3] });
+            ch.text(ch.x1 - 150, ch.Y(thr) - 5, `limiar da banda ${f(thr, 3)}`, { color: COL.Right });
+          }
+          void lb;
+        }
+        ch.legend({ x: ch.x0 + 8, y: ch.y1 + 6 });
+
+        node.appendChild(table(
+          ['banda', 'coer. média (pico)', 'coer. média (banda)', 'imag. média', 'janelas > limiar', 'fase ~0', 'veredito'],
+          Object.keys(coer.byBand).map(id => {
+            const b = coer.byBand[id];
+            return [
+              id + (b.sharedCardiacContamination ? ' ⚠' : ''),
+              b.meanCoherence, b.meanBandCoherence, b.meanImag,
+              `${b.nAboveThreshold}/${b.nWindows}`,
+              b.nVolumeConductionSuspected,
+              { html: b.interpretable ? b.verdict : `<b style="color:var(--warn)">${b.verdict}</b>` }
+            ];
+          })));
+
+        const ecg = coer.confounders.sharedCardiac;
+        node.appendChild(el('div', {
+          class: ecg.detected ? 'warnbox' : 'note',
+          html: `<b>Confundidores de fase zero.</b> ${coer.confounders.sharedStimulation.note}. ${ecg.note}`
+        }));
+        node.appendChild(el('div', { class: 'note', html: `<b>Limiar.</b> ${coer.nullNote}. ${coer.imagNote}.` }));
+        node.appendChild(el('div', { class: 'note', html: `<b>O que o artigo mostrou.</b> ${coer.articleNote}` }));
+      }
+
+      /* ---------------- (d) variação espectral ---------------------------- */
+      node.appendChild(el('h4', { class: 'qc-title', html: '<b>(d) Variação espectral (CV do envelope) por banda</b>' }));
+      const cvs = {};
+      Object.keys(hemis).forEach(h => {
+        cvs[h] = C.odrSpectralVariation(hemis[h], {
+          windowS: janela, overlap: sobrep,
+          gammaBand: odr.ok && odr.byHemisphere[h] ? odr.byHemisphere[h].gammaBand : null
+        });
+      });
+      const cvRef = cvs[primeiro ? primeiro.hemisphere : Object.keys(hemis)[0]];
+      let boxD = null;
+      if (!cvRef || !cvRef.ok) {
+        node.appendChild(el('div', { class: 'note', text: (cvRef && cvRef.reason) || 'variação espectral não calculável neste registro' }));
+      } else {
+        const ids = Object.keys(cvRef.byBand).filter(id => cvRef.byBand[id].ok);
+        const xs = cvRef.byBand[ids[0]].windows.map(w => w.tCenterS);
+        const tudo = ids.flatMap(id => cvRef.byBand[id].windows.map(w => w.cv)).filter(isFinite);
+        boxD = plotBox(node, 210);
+        const cores = { theta: '#2F6E8E', lowBeta: '#B8912A', gammaPeak: '#8E3B4E' };
+        const ch = new P.Chart(boxD.canvas, {
+          width: boxD.width, height: boxD.height,
+          xlim: [xs[0], xs[xs.length - 1]],
+          ylim: [0, Math.max.apply(null, tudo) * 1.15],
+          xlabel: 'tempo do registro (s)', ylabel: 'CV do envelope',
+          title: `variação espectral por janela de ${cvRef.windowS} s`,
+          pad: { l: 62, r: 20, t: 24, b: 42 }
+        });
+        ch.axes({ nx: 8 });
+        ids.forEach(id => ch.line(xs, cvRef.byBand[id].windows.map(w => w.cv), {
+          color: cores[id] || COL.accent, width: 1.6, label: id
+        }));
+        ch.legend({ x: ch.x0 + 8, y: ch.y1 + 6 });
+        node.appendChild(el('div', {
+          class: 'note', html: `<b>Método.</b> ${cvRef.byBand[ids[0]].edgePolicy}. ${cvRef.note} — por isso a janela ` +
+            `usada (${cvRef.windowS} s) sai em toda exportação.`
+        }));
+      }
+
+      /* ---------------- limitações, fronteira e exportação ---------------- */
+      node.appendChild(table(['item', 'no artigo', 'no Percept', 'consequência'],
+        C.ODR_LIMITACOES.map(l => [l.item, l.artigo, l.percept, l.consequencia])));
+
+      node.appendChild(el('div', {
+        class: 'warnbox', html: '<b>Limitações desta implementação.</b> Estas features reproduzem as de Habets et al. ' +
+          '(Brain 2026) com as limitações do registro de Percept: <b>sem SSD</b> — um par bipolar por hemisfério, em ' +
+          'vez de decomposição espectro-espacial para otimizar razão sinal-ruído — e, tipicamente, <b>com estimulação ' +
+          'ligada</b>, ao contrário do protocolo original, que foi conduzido com estimulação desligada e eletrodos ' +
+          'externalizados. Os valores absolutos não são comparáveis com os do artigo. No estudo original, o ODR como ' +
+          'preditor univariado atingiu acurácia balanceada de <b>0,61 (DP 0,14)</b>, com detecção significativa em ' +
+          '<b>8 de 21 sujeitos</b>.'
+      }));
+      node.appendChild(el('div', {
+        class: 'warnbox', html: '<b>A fronteira desta figura.</b> Sem rótulo clínico, ela descreve a dinâmica das ' +
+          'features ao longo do tempo. Ela <b>não afirma detecção de discinesia</b>: para isso seria necessário um ' +
+          'rótulo importado — diário, vídeo ou escala aplicada no momento — que não faz parte do que o arquivo do ' +
+          'Percept contém.'
+      }));
+
+      const entrada = {
+        odr, cv: cvs, coh: coer.ok ? coer : null,
+        channels: Object.keys(hemis).reduce((a, h) => { a[h] = hemis[h].label; return a; }, {}),
+        fs: Object.keys(hemis).reduce((a, h) => { a[h] = hemis[h].fs; return a; }, {})
+      };
+      const tab = odr.ok ? C.windowedFeatureTable(entrada) : { ok: false, rows: [] };
+      if (tab.ok) node.appendChild(el('div', {
+        class: 'seal', text: `${tab.rows.length} linha(s) · janela ${odr.params.windowS} s · sobreposição ` +
+          `${odr.params.overlap} · formulação ${odr.formulationUsed} · gama ${odr.params.gammaSource} · ` +
+          `ρ(log × literal) = ${odr.spearmanLogVsLiteral}`
+      }));
+
+      const botoes = [];
+      if (boxA) botoes.push({ label: '⤓ PNG — ODR', fn: () => P.downloadCanvas(boxA.canvas, 'F34a_odr') });
+      if (boxB) botoes.push({ label: '⤓ PNG — bandas', fn: () => P.downloadCanvas(boxB.canvas, 'F34b_bandas_z') });
+      if (boxC) botoes.push({ label: '⤓ PNG — coerência', fn: () => P.downloadCanvas(boxC.canvas, 'F34c_coerencia') });
+      if (boxD) botoes.push({ label: '⤓ PNG — CV', fn: () => P.downloadCanvas(boxD.canvas, 'F34d_cv') });
+      if (tab.ok) botoes.push({
+        label: '⤓ CSV — features por janela',
+        fn: () => P.downloadText(C.windowedFeatureCsv(entrada, ''), 'F34_features_por_janela.csv', 'text/csv')
+      });
+      if (odr.ok) botoes.push({
+        label: '⤓ JSON', fn: () => P.downloadText(JSON.stringify({
+          odr: Object.assign({}, odr, {
+            byHemisphere: Object.keys(odr.byHemisphere).reduce((a, h) => {
+              a[h] = Object.assign({}, odr.byHemisphere[h], { windows: undefined });
+              return a;
+            }, {})
+          }),
+          coherenceSummary: coer.ok ? { byBand: coer.byBand, confounders: coer.confounders, pairing: coer.pairing } : coer,
+          limitations: C.ODR_LIMITACOES, expectation: C.ODR_EXPECTATIVA
+        }, null, 2), 'F34_odr.json', 'application/json')
+      });
+      if (botoes.length) node.appendChild(exportRow(botoes));
+    }
+  },
+
   /* ----------------------------------------------------------------- F30 */
   {
     id: 'F30', title: 'Espectrograma — análise tempo-frequência no padrão do BRAVO',
@@ -20362,7 +22241,7 @@ const ABAS = [
   },
   {
     id: 'agudo', label: 'Agudo', sub: 'sessão · experimento', camada: 'agudo',
-    figuras: ['F1', 'F2', 'F5', 'F6', 'F7', 'F12', 'F18', 'F19', 'F20', 'F21', 'F22', 'F24', 'F30'],
+    figuras: ['F1', 'F2', 'F5', 'F6', 'F7', 'F12', 'F18', 'F19', 'F20', 'F21', 'F22', 'F24', 'F30', 'F34'],
     orient: {
       titulo: 'Registro agudo — sessão controlada',
       camada: 'agudo · experimental',
@@ -21561,6 +23440,75 @@ async function buildProvenance() {
       outlierRule: 'mediana ± 4×MAD', bootstrap: 'blocos por dia inteiro', nBoot: o9.boot || 200
     }, { figure: 'F9' });
     prov.record('stats.permutationTest', { nPerm: 3000, scope: 'comparações das figuras F7/F10/F12' });
+  }
+
+  /* --- Onda 12: features por janela, com os parâmetros EFETIVOS --------- */
+  const brutosProv = d.bsTimeDomain.length ? d.bsTimeDomain : d.montageTD;
+  if (brutosProv.length) {
+    const o34 = S.opts.F34 || {};
+    const janelaP = o34.win || 10, sobrepP = o34.ov || 0;
+    const hemisP = {};
+    brutosProv.forEach(td => {
+      if (!hemisP[td.hemisphere] && td.data && td.data.length) hemisP[td.hemisphere] = {
+        x: td.data, fs: td.fsEff || td.fs, t0: td.t0, record: td, label: td.label
+      };
+    });
+    const odrP = C.odrSeries({ hemispheres: hemisP, parsed: d.all[0] }, {
+      windowS: janelaP, overlap: sobrepP,
+      formulation: o34.form || 'log', gammaSource: o34.gamma || 'peak',
+      entrainToleranceHz: o34.tol || 2.5, allowWithoutGamma: !!o34.nogamma
+    });
+    const lado0 = odrP.ok ? odrP.byHemisphere[odrP.hemispheres[0]] : null;
+    const gP = lado0 ? lado0.gamma : null;
+    prov.record('metrics.odr', {
+      windowS: janelaP, overlap: sobrepP,
+      bands: { theta: [4, 8], lowBeta: [12, 20] },
+      gammaSearch: (C.ODR_BANDS && [60, 90]), gammaHalfWidthHz: 2.5,
+      gammaSource: lado0 ? lado0.gammaSource : (o34.gamma || 'peak'),
+      gammaPeakHz: gP && isFinite(gP.peakHz) ? gP.peakHz : NaN,
+      gammaBroad: '60–90',
+      formulation: odrP.ok ? odrP.formulationUsed : (o34.form || 'log'),
+      spearmanLogVsLiteral: odrP.ok ? odrP.spearmanLogVsLiteral : NaN,
+      literalEscapeFraction: odrP.ok ? odrP.literalEscapeFraction : NaN,
+      zPolicy: 'z-score de cada banda ao longo do registro inteiro; na formulação log, sobre log10 da potência',
+      entrainToleranceHz: o34.tol || 2.5,
+      entrainmentChecked: lado0 ? !!lado0.entrainmentChecked : false,
+      subharmonicHz: gP && gP.subharmonicHz != null ? gP.subharmonicHz : null,
+      entrainedDominant: gP ? !!gP.entrainedDominant : null,
+      deviceState: lado0 && lado0.deviceState
+        ? `${lado0.deviceState.state} (${lado0.deviceState.amplitudeMa} mA, ${lado0.deviceState.rateHz} Hz; confiança ${lado0.deviceState.confidence})`
+        : null,
+      refused: !odrP.ok, refusalReason: odrP.ok ? null : odrP.reason
+    }, { figure: 'F34', nIn: brutosProv.length, nOut: odrP.ok ? odrP.nValidWindows : 0 });
+
+    prov.record('dsp.spectralVariation', {
+      bands: { theta: [4, 8], lowBeta: [12, 20], gammaPeak: lado0 ? lado0.gammaBand : null },
+      windowS: janelaP, overlap: sobrepP,
+      edgePolicy: 'filtro e envelope sobre o registro inteiro, fatiados depois — sem transiente de borda por janela',
+      envelope: 'Hilbert', minMeanFrac: 0.02,
+      windowNote: 'o CV cresce com o comprimento da janela; comparar CVs de janelas diferentes é erro'
+    }, { figure: 'F34' });
+
+    if (hemisP.Left && hemisP.Right) {
+      const cP = C.interSTNCoherence(hemisP.Left, hemisP.Right, {
+        windowS: janelaP, overlap: sobrepP, gammaBand: lado0 ? lado0.gammaBand : null
+      });
+      const w0 = cP.ok ? cP.windows.find(w => isFinite(w.expectedNullCoherence)) : null;
+      const lb = cP.ok ? cP.byBand.lowBeta : null;
+      prov.record('dsp.windowedCoherence', {
+        windowS: janelaP, overlap: sobrepP,
+        nperseg: cP.ok ? cP.coherenceParams.nperseg : null,
+        alpha: cP.ok ? cP.coherenceParams.alpha : 0.05,
+        nSegmentsEffective: w0 ? w0.nSegmentsEffective : null,
+        expectedNullCoherence: w0 ? w0.expectedNullCoherence : null,
+        thresholdPerBin: w0 ? w0.thresholdPerBin : null,
+        thresholdBandCorrected: w0 && w0.byBand.lowBeta ? w0.byBand.lowBeta.threshold : null,
+        correction: 'Šidák sobre o número de bins da banda',
+        nVolumeConductionSuspected: lb ? lb.nVolumeConductionSuspected : null,
+        sharedCardiacDetected: cP.ok ? !!(cP.confounders.sharedCardiac || {}).detected : null,
+        pairingOk: cP.ok, pairingReason: cP.ok ? null : cP.reason
+      }, { figure: 'F34' });
+    }
   }
   return prov;
 }

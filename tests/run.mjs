@@ -3288,6 +3288,308 @@ sec('ritmo não paramétrico, ponto de mudança, alarme ativo e agenda da próxi
   });
 }
 
+
+/* ------------- ODR, coerência inter-STN e variação espectral por janela --- */
+sec('ODR, coerência inter-STN e variação espectral por janela (Onda 12)');
+{
+  const FSJ = 250;
+  /* gerador determinístico: nenhum Math.random, semente explícita */
+  const prngJ = seed => { let s = seed >>> 0; return () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296 - 0.5; }; };
+  const sinalJ = (durS, fn, seed) => {
+    const n = Math.round(durS * FSJ), x = new Float64Array(n), r = prngJ(seed);
+    for (let i = 0; i < n; i++) x[i] = fn(i / FSJ, i) + 1.2 * r();
+    return x;
+  };
+  const oscJ = (t, f, a) => a * Math.sin(2 * Math.PI * f * t);
+  const mJ = v => v.reduce((s, x) => s + x, 0) / v.length;
+  /* Spearman local, para não depender de qual módulo o exporta */
+  const spearJ = (a, b) => {
+    const posto = v => {
+      const idx = v.map((x, i) => [x, i]).sort((p, q) => p[0] - q[0]);
+      const r = new Array(v.length);
+      let i = 0;
+      while (i < idx.length) {
+        let j = i;
+        while (j + 1 < idx.length && idx[j + 1][0] === idx[i][0]) j++;
+        const md = (i + j) / 2 + 1;
+        for (let k = i; k <= j; k++) r[idx[k][1]] = md;
+        i = j + 1;
+      }
+      return r;
+    };
+    const ra = posto(a), rb = posto(b), ma = mJ(ra), mb = mJ(rb);
+    let n = 0, da = 0, db = 0;
+    for (let i = 0; i < ra.length; i++) { n += (ra[i] - ma) * (rb[i] - mb); da += (ra[i] - ma) ** 2; db += (rb[i] - mb) ** 2; }
+    return n / Math.sqrt(da * db);
+  };
+
+  /* 1a. a formulação logarítmica É a mesma razão ---------------------------- */
+  t('odrLog é a razão do artigo em domínio logarítmico, e isso é verificável', () => {
+    const x = sinalJ(300, tt => {
+      const k = Math.floor(tt / 10);
+      return oscJ(tt, 6, 3 + 0.7 * ((k * 7) % 9)) + oscJ(tt, 16, 3 + 0.7 * ((k * 5) % 11)) + oscJ(tt, 72, 3 + 0.6 * ((k * 3) % 13));
+    }, 17);
+    const odr = C.odrSeries({ hemispheres: { Left: { x, fs: FSJ, stimRateHz: 130 } } }, { windowS: 10 });
+    assert(odr.ok, 'ODR não calculado: ' + odr.reason);
+    const bh = odr.byHemisphere.Left;
+    const razao = [], log = [];
+    bh.windows.forEach(w => {
+      const r = Math.log10(w.power.theta * w.power.gammaPeak / w.power.lowBeta);
+      if (isFinite(r) && isFinite(w.odrLog)) { razao.push(r); log.push(w.odrLog); }
+    });
+    assert(razao.length >= 20, 'poucas janelas para a comparação: ' + razao.length);
+    const rho = spearJ(razao, log);
+    assert(rho > 0.98, `odrLog deveria ser função monotônica de log(θγ/β); Spearman deu ${rho.toFixed(4)}`);
+    return `${razao.length} janelas · Spearman odrLog × log(θ·γ/β) = ${rho.toFixed(4)}`;
+  });
+
+  /* 1b. e a versão literal é instável — o teste verifica que isso é REPORTADO */
+  t('a versão literal explode quando z(β) cruza zero, e o módulo reporta isso', () => {
+    /* uma janela com potência de beta praticamente igual à média do registro:
+       é ali que o z-score do denominador passa por zero */
+    const x = sinalJ(300, tt => {
+      const k = Math.floor(tt / 10);
+      const a = k === 15 ? 6.7 : (k < 15 ? 3 : 9);
+      return oscJ(tt, 6, 5) + oscJ(tt, 16, a) + oscJ(tt, 72, 4);
+    }, 29);
+    const odr = C.odrSeries({ hemispheres: { Left: { x, fs: FSJ, stimRateHz: 130 } } }, { windowS: 10 });
+    assert(odr.ok, 'ODR não calculado: ' + odr.reason);
+    const zb = odr.byHemisphere.Left.windows[15].zLowBeta;
+    assert(Math.abs(zb) < 0.06, `a construção não colocou z(β) perto de zero: ${zb}`);
+    const lit = odr.windows.map(w => w.odrLiteral).filter(isFinite).map(Math.abs);
+    const log = odr.windows.map(w => w.odrLog).filter(isFinite).map(Math.abs);
+    const maxLit = Math.max.apply(null, lit), maxLog = Math.max.apply(null, log);
+    assert(maxLit > 4 * maxLog, `a versão literal deveria explodir: max|literal| ${maxLit.toFixed(1)} vs max|log| ${maxLog.toFixed(2)}`);
+    assert(maxLog < 6, 'a versão logarítmica deveria ficar limitada, deu ' + maxLog.toFixed(2));
+    assert(odr.literalEscapeCount >= 1, 'a divergência existe mas não foi contabilizada em literalEscapeCount');
+    assert(isFinite(odr.spearmanLogVsLiteral), 'a correlação entre as duas formulações não foi reportada');
+    assert(/propriedade da fórmula/.test(odr.formulationNote), 'a saída não explica que a divergência é da fórmula');
+    return `z(β) = ${zb} · max|literal| ${maxLit.toFixed(1)} vs max|log| ${maxLog.toFixed(2)} · ` +
+      `${odr.literalEscapeCount} escape(s) · ρ = ${odr.spearmanLogVsLiteral}`;
+  });
+
+  /* 2. direção do ODR ------------------------------------------------------ */
+  t('o ODR sobe no trecho com teta e gama altos e beta baixo, e volta depois', () => {
+    const dentroDe = [40, 80];
+    const x = sinalJ(120, tt => {
+      const d = tt >= dentroDe[0] && tt < dentroDe[1];
+      return oscJ(tt, 6, d ? 9 : 3) + oscJ(tt, 16, d ? 2 : 8) + oscJ(tt, 72, d ? 5 : 1.5);
+    }, 11);
+    const odr = C.odrSeries({ hemispheres: { Left: { x, fs: FSJ, stimRateHz: 130 } } }, { windowS: 10 });
+    assert(odr.ok, 'ODR não calculado: ' + odr.reason);
+    const dentro = odr.windows.filter(w => w.tCenterS >= dentroDe[0] && w.tCenterS < dentroDe[1]).map(w => w.odrLog);
+    const fora = odr.windows.filter(w => w.tCenterS < dentroDe[0] || w.tCenterS >= dentroDe[1]).map(w => w.odrLog);
+    assert(dentro.length >= 3 && fora.length >= 6, 'partição das janelas inesperada');
+    assert(mJ(dentro) > mJ(fora) + 1, `o ODR deveria subir no trecho construído: ${mJ(dentro).toFixed(2)} vs ${mJ(fora).toFixed(2)}`);
+    const ultimas = odr.windows.slice(-3).map(w => w.odrLog);
+    assert(mJ(ultimas) < mJ(dentro) - 1, 'o ODR não voltou ao nível de base depois do trecho');
+    return `dentro ${mJ(dentro).toFixed(2)} · fora ${mJ(fora).toFixed(2)} · pico de gama em ${odr.byHemisphere.Left.gamma.peakHz} Hz`;
+  });
+
+  /* 3. recusa por entrainment ---------------------------------------------- */
+  t('gama em f_stim/2 faz o ODR recusar o cálculo, e a variante sem gama só sai se pedida', () => {
+    const x = sinalJ(120, tt => oscJ(tt, 6, 4) + oscJ(tt, 16, 5) + oscJ(tt, 65, 7), 13);
+    const r = C.odrSeries({ hemispheres: { Left: { x, fs: FSJ, stimRateHz: 130 } } }, { windowS: 10 });
+    assert(!r.ok, 'calculou o ODR sobre gama entrained em f_stim/2');
+    assert(/f_stim\/2|subarmônica/.test(r.reason), 'recusou sem dar o motivo correto: ' + r.reason);
+    assert(/opostas/i.test(r.reason), 'não disse que as duas leituras clínicas são opostas');
+    const bh = r.byHemisphere.Left;
+    assert(bh.entrainmentRefusal === true, 'a recusa não ficou marcada no hemisfério');
+    /* a variante sem gama existe, mas só quando pedida explicitamente */
+    const v = C.odrSeries({ hemispheres: { Left: { x, fs: FSJ, stimRateHz: 130 } } }, { windowS: 10, allowWithoutGamma: true });
+    assert(v.ok, 'a variante odrSemGama não saiu nem quando pedida');
+    assert(v.byHemisphere.Left.withoutGamma === true, 'a variante não foi marcada como sem gama');
+    assert(/NÃO é o biomarcador do artigo/.test(v.byHemisphere.Left.withoutGammaNote), 'a variante não avisa que não é o biomarcador do artigo');
+    /* e sem a frequência de estimulação, a checagem não é feita — e isso é dito */
+    const semFstim = C.odrSeries({ hemispheres: { Left: { x, fs: FSJ } } }, { windowS: 10 });
+    if (semFstim.ok) assert(semFstim.byHemisphere.Left.entrainmentChecked === false,
+      'sem f_stim a checagem foi marcada como feita');
+    return `recusado · variante sob pedido marcada · sem f_stim: entrainmentChecked = ` +
+      `${semFstim.ok ? semFstim.byHemisphere.Left.entrainmentChecked : 'recusado antes'}`;
+  });
+
+  /* 3b. sem pico individual, nada de troca silenciosa ---------------------- */
+  t('sem pico individual de gama o ODR recusa, em vez de trocar por banda larga em silêncio', () => {
+    const x = sinalJ(120, tt => oscJ(tt, 6, 4) + oscJ(tt, 16, 5), 19);
+    const r = C.odrSeries({ hemispheres: { Left: { x, fs: FSJ, stimRateHz: 130 } } }, { windowS: 10 });
+    assert(!r.ok, 'calculou o ODR sem pico de gama identificado');
+    assert(/gama|saliência/i.test(r.reason), 'recusou sem explicar: ' + r.reason);
+    const larga = C.odrSeries({ hemispheres: { Left: { x, fs: FSJ, stimRateHz: 130 } } }, { windowS: 10, gammaSource: 'broad' });
+    assert(larga.ok, 'a banda larga não saiu nem sendo pedida explicitamente');
+    assert(larga.byHemisphere.Left.gammaSource === 'broad', 'a origem da gama não foi marcada');
+    const tab = C.windowedFeatureTable({ odr: larga, channels: { Left: '0-2' } });
+    assert(tab.rows.every(l => l.gamma_source === 'broad'), 'a origem da gama não sai marcada em cada linha exportada');
+    return `recusa sem pico · banda larga só sob pedido, marcada em ${tab.rows.length} linha(s)`;
+  });
+
+  /* 4. coerência sob a nula ------------------------------------------------ */
+  t('sob a nula a coerência fica perto de 1/L, não de zero, e o limiar corrigido segura o falso positivo', () => {
+    const a = sinalJ(200, () => 0, 21), b = sinalJ(200, () => 0, 99);
+    const r = C.windowedCoherence(a, b, FSJ, { windowS: 10, alpha: 0.05, bands: [{ id: 'lowBeta', lo: 12, hi: 20 }] });
+    assert(r.ok, 'coerência não calculada: ' + r.reason);
+    const Lef = r.windows[0].nSegmentsEffective;
+    const nula = 1 / Lef;
+    const s = r.byBand.lowBeta;
+    assert(Math.abs(s.meanBandCoherence - nula) < 0.05,
+      `a coerência média da banda deveria ficar perto de 1/L = ${nula.toFixed(3)}, deu ${s.meanBandCoherence}`);
+    assert(s.meanBandCoherence > 0.02, 'a coerência sob a nula NÃO é zero — se der zero, o cálculo está errado');
+    assert(s.fractionAboveThreshold <= 0.15,
+      `com limiar corrigido a fração de falsos positivos deveria ficar perto de α = 0,05, deu ${s.fractionAboveThreshold}`);
+    /* o limiar da banda tem de ser MAIOR que o do bin: é a correção de Šidák */
+    assert(r.windows[0].byBand.lowBeta.threshold > r.windows[0].thresholdPerBin,
+      'o limiar da banda não está corrigido para o número de bins — trocar por limiar fixo passa despercebido aqui');
+    return `L_eff ${Lef} · 1/L ${nula.toFixed(3)} · coerência média da banda ${s.meanBandCoherence} · ` +
+      `fração acima ${s.fractionAboveThreshold} · limiar bin ${r.windows[0].thresholdPerBin} → banda ${r.windows[0].byBand.lowBeta.threshold}`;
+  });
+
+  /* 5. discriminante de fase zero ------------------------------------------ */
+  t('sinal compartilhado dá coerência alta com parte imaginária nula; com atraso, a imaginária sobe', () => {
+    const base = sinalJ(120, tt => oscJ(tt, 16, 6) + oscJ(tt, 6, 3), 31);
+    const copia = Float64Array.from(base);
+    const dAmostras = Math.round(0.008 * FSJ);           /* 8 ms */
+    const atrasado = new Float64Array(base.length);
+    for (let i = 0; i < base.length; i++) atrasado[i] = base[Math.max(0, i - dAmostras)];
+    const B = [{ id: 'lowBeta', lo: 12, hi: 20 }];
+    const r0 = C.windowedCoherence(base, copia, FSJ, { windowS: 10, bands: B });
+    const r8 = C.windowedCoherence(base, atrasado, FSJ, { windowS: 10, bands: B });
+    const s0 = r0.byBand.lowBeta, s8 = r8.byBand.lowBeta;
+    assert(s0.meanCoherence > 0.9, 'sinal idêntico deveria dar coerência ~1, deu ' + s0.meanCoherence);
+    assert(Math.abs(s0.meanImag) < 0.05, 'com atraso zero a parte imaginária deveria ser ~0, deu ' + s0.meanImag);
+    assert(s0.nVolumeConductionSuspected === s0.nAboveThreshold && s0.nAboveThreshold > 0,
+      'o veredito de condução de volume não foi levantado em todas as janelas de fase zero');
+    assert(Math.abs(s8.meanImag) > 0.3, 'com 8 ms de atraso a parte imaginária deveria subir, deu ' + s8.meanImag);
+    assert(s8.nVolumeConductionSuspected === 0, 'com defasagem real o veredito de condução de volume não deveria ser levantado');
+    return `atraso 0: coer ${s0.meanCoherence}, imag ${s0.meanImag}, ${s0.nVolumeConductionSuspected}/${s0.nAboveThreshold} marcadas · ` +
+      `atraso 8 ms: coer ${s8.meanCoherence}, imag ${s8.meanImag}, ${s8.nVolumeConductionSuspected} marcadas`;
+  });
+
+  /* 5b. pareamento --------------------------------------------------------- */
+  t('canais de registros diferentes não geram coerência: a recusa vem antes do cálculo', () => {
+    const a = sinalJ(60, tt => oscJ(tt, 16, 5), 61);
+    const b = sinalJ(60, tt => oscJ(tt, 16, 5), 62);
+    const bom = C.interSTNCoherence(
+      { x: a, fs: FSJ, t0: '2025-01-06T11:40:00Z' },
+      { x: b, fs: FSJ, t0: '2025-01-06T11:40:00Z' }, { windowS: 10 });
+    assert(bom.ok, 'recusou dois canais do mesmo registro: ' + bom.reason);
+    const ruim = C.interSTNCoherence(
+      { x: a, fs: FSJ, t0: '2025-01-06T11:40:00Z' },
+      { x: b, fs: FSJ, t0: '2025-02-10T09:00:00Z' }, { windowS: 10 });
+    assert(!ruim.ok, 'calculou coerência entre canais de sessões diferentes');
+    assert(/mesmo registro|base de tempo/.test(ruim.reason), 'recusou sem explicar: ' + ruim.reason);
+    assert(ruim.pairing.mismatches.some(m => /FirstPacketDateTime/.test(m.field)), 'não disse qual campo divergiu');
+    const curto = C.interSTNCoherence(
+      { x: a, fs: FSJ, t0: 'x' }, { x: b.subarray(0, 1000), fs: FSJ, t0: 'x' }, { windowS: 10 });
+    assert(!curto.ok, 'aceitou canais de comprimentos diferentes');
+    return `mesmo registro: aceito · data diferente e comprimento diferente: recusados com o campo divergente nomeado`;
+  });
+
+  /* 6. bordas da variação espectral ---------------------------------------- */
+  t('o CV depende da política de borda e do comprimento da janela — e a diferença é medida', () => {
+    const x = sinalJ(120, tt => oscJ(tt, 16, 5 * (1 + 0.5 * Math.sin(2 * Math.PI * 0.05 * tt))), 41);
+    const inteiro = C.spectralVariation(x, FSJ, 12, 20, { windowS: 10 });
+    const isolada = C.spectralVariation(x, FSJ, 12, 20, { windowS: 10, perWindow: true });
+    const j30 = C.spectralVariation(x, FSJ, 12, 20, { windowS: 30 });
+    assert(inteiro.ok && isolada.ok && j30.ok, 'algum modo não produziu CV');
+    const dif = Math.abs(isolada.meanCv - inteiro.meanCv) / inteiro.meanCv;
+    assert(dif > 0.01, 'os dois modos deram o MESMO CV — a política de borda deixou de ter efeito, o que não é esperado');
+    assert(j30.meanCv > inteiro.meanCv * 1.3,
+      `o CV deveria crescer com a janela: 10 s deu ${inteiro.meanCv}, 30 s deu ${j30.meanCv}`);
+    assert(inteiro.windowS === 10 && j30.windowS === 30, 'o comprimento da janela não sai na saída');
+    assert(/registro inteiro/.test(inteiro.edgePolicy) && /janela isolada/.test(isolada.edgePolicy),
+      'a política de borda não é declarada');
+    return `registro inteiro ${inteiro.meanCv} · janela isolada ${isolada.meanCv} (${(100 * dif).toFixed(1)}% de diferença) · ` +
+      `janela de 30 s ${j30.meanCv}`;
+  });
+
+  /* 7. propagação de NaN --------------------------------------------------- */
+  t('janela com lacuna sai NaN com motivo nas três features, nunca calculada sobre o que sobrou', () => {
+    const x = sinalJ(120, tt => oscJ(tt, 6, 4) + oscJ(tt, 16, 5) + oscJ(tt, 72, 4), 51);
+    for (let i = 30 * FSJ; i < 34 * FSJ; i++) x[i] = NaN;
+    const y = sinalJ(120, tt => oscJ(tt, 16, 5), 52);
+    const cv = C.spectralVariation(x, FSJ, 12, 20, { windowS: 10 });
+    const bp = C.windowedBandPower(x, FSJ, [{ id: 'lowBeta', lo: 12, hi: 20 }], { windowS: 10 });
+    const co = C.windowedCoherence(x, y, FSJ, { windowS: 10, bands: [{ id: 'lowBeta', lo: 12, hi: 20 }] });
+    const k = 3;                                  /* janela de 30 a 40 s */
+    assert(!isFinite(cv.windows[k].cv), 'o CV foi calculado sobre uma janela com 40% de lacuna');
+    assert(/ausentes/.test(cv.windows[k].reason || ''), 'o CV saiu NaN sem motivo');
+    assert(!isFinite(bp.windows[k].power.lowBeta), 'a potência foi calculada sobre uma janela com lacuna');
+    assert(/ausentes/.test(bp.windows[k].reason || ''), 'a potência saiu NaN sem motivo');
+    assert(!co.windows[k].byBand.lowBeta, 'a coerência foi calculada sobre uma janela com lacuna');
+    assert(/ausentes/.test(co.windows[k].reason || ''), 'a coerência saiu nula sem motivo');
+    /* e as janelas vizinhas continuam válidas: a lacuna não contamina o resto */
+    assert(isFinite(cv.windows[0].cv) && isFinite(bp.windows[0].power.lowBeta), 'a lacuna contaminou janelas sem lacuna');
+    assert(cv.windows[k].pctNan > 30, 'a contabilidade da lacuna não foi reportada');
+    return `janela ${k}: ${cv.windows[k].pctNan}% de lacuna · CV, potência e coerência ausentes com motivo · vizinhas intactas`;
+  });
+
+  /* 8. tabela tidy e CSV --------------------------------------------------- */
+  t('a tabela por janela × hemisfério tem cabeçalho em inglês e o CSV se explica sozinho', () => {
+    const x = sinalJ(120, tt => oscJ(tt, 6, 4) + oscJ(tt, 16, 5) + oscJ(tt, 72, 4), 71);
+    const odr = C.odrSeries({ hemispheres: { Left: { x, fs: FSJ, stimRateHz: 130 } } }, { windowS: 10 });
+    assert(odr.ok, 'ODR não calculado: ' + odr.reason);
+    const cvv = { Left: C.odrSpectralVariation({ x, fs: FSJ }, { windowS: 10, gammaBand: odr.byHemisphere.Left.gammaBand }) };
+    const ent = { odr, cv: cvv, channels: { Left: '0-2' }, fs: { Left: FSJ } };
+    const tab = C.windowedFeatureTable(ent);
+    assert(tab.ok && tab.rows.length === odr.byHemisphere.Left.windows.length, 'tabela com número de linhas inesperado');
+    C.WINDOWED_COLUMNS.forEach(c => {
+      assert(/^[a-z0-9_]+$/.test(c), 'cabeçalho fora do padrão em inglês minúsculo: ' + c);
+      assert(c in tab.rows[0], 'coluna declarada e ausente da linha: ' + c);
+    });
+    ['window_index', 't_center_s', 'odr_log', 'odr_literal', 'cv_theta', 'device_state', 'gamma_source', 'odr_valid']
+      .forEach(c => assert(C.WINDOWED_COLUMNS.indexOf(c) >= 0, 'coluna obrigatória ausente: ' + c));
+    const csv = C.windowedFeatureCsv(ent, 'teste');
+    const linhas = csv.split('\n');
+    const meta = linhas.filter(l => l.startsWith('#'));
+    assert(meta.length >= 12, 'bloco de metadados curto demais: ' + meta.length + ' linhas');
+    ['window_s', 'z_score_policy', 'gamma_peak_definition', 'entrainment_check', 'ssd_not_applied']
+      .forEach(k => assert(meta.some(l => l.startsWith('# ' + k)), 'metadado obrigatório ausente: ' + k));
+    assert(/SSD is not implementable/.test(csv), 'o CSV não declara que o passo de SSD não foi aplicado');
+    assert(/balanced accuracy of 0.61/.test(csv), 'o CSV não declara o desempenho esperado do marcador');
+    const cab = linhas.find(l => !l.startsWith('#'));
+    assert(cab === C.WINDOWED_COLUMNS.join(','), 'o cabeçalho do CSV não bate com as colunas declaradas');
+    return `${tab.rows.length} linha(s) · ${C.WINDOWED_COLUMNS.length} colunas · ${meta.length} linhas de metadado`;
+  });
+
+  /* 9. as limitações não ficam só no código -------------------------------- */
+  t('as limitações do Percept em relação ao protocolo de origem saem na estrutura, não em nota de rodapé', () => {
+    assert(Array.isArray(C.ODR_LIMITACOES) && C.ODR_LIMITACOES.length >= 4, 'a tabela de limitações não está exportada');
+    const texto = C.ODR_LIMITACOES.map(l => `${l.item} ${l.artigo} ${l.percept} ${l.consequencia}`).join(' | ');
+    ['SSD', 'estimulação', 'externalizados', 'não são comparáveis'].forEach(k =>
+      assert(new RegExp(k, 'i').test(texto), 'limitação ausente: ' + k));
+    C.ODR_LIMITACOES.forEach(l => {
+      assert(l.artigo && l.percept && l.consequencia, 'limitação sem artigo/percept/consequência: ' + l.item);
+    });
+    assert(/0,61/.test(C.ODR_EXPECTATIVA) && /8 de 21/.test(C.ODR_EXPECTATIVA),
+      'a expectativa de desempenho do artigo não está declarada');
+    assert(/exploratório/.test(C.ODR_EXPECTATIVA), 'a expectativa não diz que o marcador é exploratório');
+    return `${C.ODR_LIMITACOES.length} limitações estruturadas · expectativa com os números do artigo`;
+  });
+
+  /* 10. F34 ---------------------------------------------------------------- */
+  t('F34 existe, mora na aba Agudo e renderiza', () => {
+    const fig = H.FIGURES.find(x => x.id === 'F34');
+    assert(fig, 'F34 não está registrada');
+    const aba = H.ABAS.find(a => (a.figuras || []).indexOf('F34') >= 0);
+    assert(aba && aba.id === 'agudo', 'F34 deveria morar na aba Agudo');
+    const d = H.ds();
+    assert(fig.has(d), 'F34 se declara indisponível sobre o exemplo, que tem sinal bruto');
+    const n = document.createElement('div');
+    fig.render(n, d);
+    const varre = (x, acc) => {
+      acc.tags.push(x.tagName || (typeof x.getContext === 'function' ? 'CANVAS' : '?'));
+      acc.txt += ' ' + (x.textContent || '') + ' ' + (x.innerHTML || '');
+      (x.children || []).forEach(c => varre(c, acc));
+      return acc;
+    };
+    const a = varre(n, { tags: [], txt: '' });
+    assert(a.tags.filter(x => x === 'CANVAS').length >= 2, 'F34 desenhou menos painéis do que deveria');
+    assert(/sem SSD|SSD/.test(a.txt), 'F34 não avisa na interface que o passo de SSD não foi aplicado');
+    assert(/0,61|0\.61/.test(a.txt), 'F34 não mostra a acurácia balanceada do estudo original');
+    assert(/não afirma|não é detecção|sem rótulo/i.test(a.txt), 'F34 não escreve a fronteira: sem rótulo clínico não há detecção de discinesia');
+    return `${a.tags.filter(x => x === 'CANVAS').length} painéis · limitações e fronteira no texto da interface`;
+  });
+}
+
 /* ------------------------------------------------------------- resultado -- */
 console.log(`\n${'='.repeat(58)}`);
 console.log(`  ${ok} passaram   ${falhas} falharam   ${pulados} sem dados`);
