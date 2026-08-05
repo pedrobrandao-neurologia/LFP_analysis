@@ -2,6 +2,7 @@
    Gerado do refactor modular (Prompt 0.1). Ver docs/arquitetura.md. */
 
 import { fft, hann, nextPow2 } from './fft.js';
+import { fftAny } from './bluestein.js';
 import { detrendLinearNaN, segmentsWithoutNan, nanStats } from './nan.js';
 
 /* PSD de Welch (Hann, sobreposição 50%, detrend linear por segmento).
@@ -17,18 +18,26 @@ import { detrendLinearNaN, segmentsWithoutNan, nanStats } from './nan.js';
    por isso o default é 0. Use tolerância apenas de forma deliberada, e leia
    `pctNan` e `pctDataUsed` junto com o resultado. Perda de pacote real é
    contígua (pacotes inteiros), então o descarte estrito costuma preservar a
-   maior parte dos segmentos.                                                */
+   maior parte dos segmentos.
+
+   opts.nfft (Onda 13): força o comprimento da transformada. Por padrão o NFFT
+   é arredondado para a próxima potência de 2 — mais rápido, e a diferença de
+   resolução é irrelevante para leitura por banda. Quando um protocolo publicado
+   especifica um NFFT que não é potência de 2 (por exemplo 1000 pontos a 250 Hz,
+   que dá exatamente 0,25 Hz), passar `nfft` reproduz o número publicado usando
+   a transformada de Bluestein, que aceita qualquer comprimento.               */
 export function welchPSD(x, fs, opts) {
   opts = opts || {};
   const nper = opts.nperseg || Math.min(nextPow2(Math.floor(fs)), nextPow2(x.length));
-  const nfft = nextPow2(nper);
+  const nfft = opts.nfft ? Math.max(nper, Math.round(opts.nfft)) : nextPow2(nper);
+  const potencia2 = (nfft & (nfft - 1)) === 0;
   const overlap = opts.overlap == null ? 0.5 : opts.overlap;
   const step = Math.max(1, Math.floor(nper * (1 - overlap)));
   const maxNanPct = isFinite(opts.maxNanPct) ? opts.maxNanPct : 0;
   const w = hann(nper);
   let U = 0; for (let i = 0; i < nper; i++) U += w[i] * w[i];
   U *= fs;
-  const nBins = nfft / 2 + 1;
+  const nBins = Math.floor(nfft / 2) + 1;
   const acc = new Float64Array(nBins);
 
   const sel = segmentsWithoutNan(x, nper, step, maxNanPct);
@@ -38,16 +47,19 @@ export function welchPSD(x, fs, opts) {
     const seg = detrendLinearNaN(x.subarray ? x.subarray(s, s + nper) : x.slice(s, s + nper));
     const re = new Float64Array(nfft), im = new Float64Array(nfft);
     for (let i = 0; i < nper; i++) re[i] = isFinite(seg[i]) ? seg[i] * w[i] : 0;
-    fft(re, im, false);
+    if (potencia2) fft(re, im, false); else fftAny(re, im, false);
+    /* o bin 0 e — só quando NFFT é par — o bin de Nyquist não têm par
+       espelhado; com NFFT ímpar o último bin TEM par e também dobra */
+    const nyq = nfft % 2 === 0 ? nfft / 2 : -1;
     for (let k = 0; k < nBins; k++) {
       const mag = (re[k] * re[k] + im[k] * im[k]) / U;
-      acc[k] += (k === 0 || k === nBins - 1) ? mag : 2 * mag;
+      acc[k] += (k === 0 || k === nyq) ? mag : 2 * mag;
     }
     segs++;
   }
   const meta = {
     segments: segs, nSegments: segs, nSegmentsDropped: sel.dropped,
-    nperseg: nper, df: fs / nfft,
+    nperseg: nper, nfft, df: fs / nfft,
     pctDataUsed: sel.total ? 100 * segs / sel.total : 0,
     pctNan: est.pctNan
   };

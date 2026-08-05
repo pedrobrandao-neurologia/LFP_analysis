@@ -49,6 +49,7 @@ const DIC = {
     'Domínio do tempo — traçado, espectrograma e bursts': 'Time domain — trace, spectrogram and bursts',
     'Streaming com estimulação — potência × amplitude': 'Streaming with stimulation — power × amplitude',
     'Timeline crônico — série temporal multi-dia ou dia a dia': 'Chronic Timeline — multi-day time series or day-by-day panels',
+    'MRDS — (des)sincronização relacionada ao movimento': 'MRDS — movement-related desynchronization or synchronization',
     'Ritmo circadiano — heatmap, perfil polar e cosinor': 'Circadian rhythm — heatmap, polar profile and cosinor',
     'Resposta alinhada a evento': 'Event-aligned response',
     'Distribuição da potência e limiares de aDBS': 'Power distribution and aDBS thresholds',

@@ -90,6 +90,15 @@ export const CHECKLIST_ITEMS = [
     ['stim_state_window', 'Estado da estimulação durante o registro analisado'],
     ['coherence_segments', 'Coerência: segmentos efetivos, limiar sob a nula e veredito de condução de volume'],
     ['ssd_declaration', 'Declaração de que o passo de SSD do protocolo de origem não foi aplicado']
+  ]],
+  ['Contraste movimento vs repouso (MRDS)', [
+    ['mrds_epoch_assignment', 'Quem declarou qual época é repouso e qual é movimento, e com que critério'],
+    ['mrds_zscore_scope', 'Escopo do z-score (por gravação, por sessão ou nenhum) e a consequência declarada'],
+    ['mrds_welch_params', 'Janela de Welch, sobreposição e NFFT usados no contraste'],
+    ['mrds_levels', 'Se o ΔMRDS foi calculado, ou se só o primeiro nível estava disponível'],
+    ['mrds_broadband', 'Decomposição banda-larga vs específica de banda para cada MRDS relatado'],
+    ['mrds_n_units', 'n de unidades pareadas e n de indivíduos, separados'],
+    ['mrds_p_floor', 'Menor p alcançável com o n disponível, e qual teste produziu o p relatado']
   ]]
 ];
 
@@ -157,6 +166,48 @@ function valorDe(chave, prov, metrics, profile) {
       return 'o passo de SSD (decomposição espectro-espacial) do protocolo de origem NÃO foi aplicado: o Percept expõe ' +
         'um par bipolar por hemisfério. A sensibilidade é menor, sobretudo em gama, e os valores absolutos não são ' +
         'comparáveis com os do artigo';
+    }
+    /* MRDS — nenhum destes é derivável do arquivo: o desenho movimento vs
+       repouso depende de uma declaração humana que o JSON não carrega. Quando
+       o passo não foi executado, o item volta null e o checklist o mostra como
+       "não verificável neste registro", que é a resposta correta. */
+    case 'mrds_epoch_assignment': {
+      const p = passo('metrics.mrds');
+      if (!p) return null;
+      return `atribuição declarada por quem analisou, no modo "${p.params.assignmentMode}": ` +
+        `${p.params.cellsDeclared} época(s) em ${p.params.nUnits} unidade(s). ` +
+        'O JSON do Percept não carrega rótulo de tarefa';
+    }
+    case 'mrds_zscore_scope': {
+      const p = passo('metrics.mrds'); if (!p) return null;
+      return `${p.params.zscoreScope} — ${p.params.zscoreConsequence}`;
+    }
+    case 'mrds_welch_params': {
+      const p = passo('metrics.mrds'); if (!p) return null;
+      return `janela de ${p.params.windowSamples} amostras, sobreposição de ${100 * p.params.overlap}%, ` +
+        `NFFT ${p.params.nfft} (resolução ${p.params.resolutionHz} Hz)`;
+    }
+    case 'mrds_levels': {
+      const p = passo('metrics.mrds'); if (!p) return null;
+      return p.params.hasBothMoments
+        ? 'ΔMRDS calculado (pós − basal): modulação de movimento estável nos dois momentos cancela'
+        : 'apenas o primeiro nível (movimento − repouso): NÃO é um contraste corrigido para artefato de movimento';
+    }
+    case 'mrds_broadband': {
+      const p = passo('metrics.mrds'); if (!p) return null;
+      return `${p.params.nBroadbandOnly} de ${p.params.nUnits} unidade(s) com mudança de banda larga sem ` +
+        `mudança de fração de banda (piso de ${100 * p.params.relativeFloor}%)`;
+    }
+    case 'mrds_n_units': {
+      const p = passo('metrics.mrds'); if (!p) return null;
+      return `${p.params.nUnits} unidade(s) pareada(s) em ${p.params.nSubjects} indivíduo(s)`;
+    }
+    case 'mrds_p_floor': {
+      const p = passo('metrics.mrds'); if (!p || !isFinite(p.params.minAchievableP)) return null;
+      return `menor p alcançável com este n: ${p.params.minAchievableP}` +
+        (p.params.testsDisagree
+          ? '; permutação exata e t pareado discordam, e a diferença é a suposição de normalidade'
+          : '');
     }
     case 'device_model': return val(arq.deviceModel || sub.device_model);
     case 'firmware': return val(arq.firmware || sub.firmware);

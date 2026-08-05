@@ -234,3 +234,28 @@ Três invariantes da camada:
 A cobertura de cada dia (`coverage`) é exportada junto com o painel e escrita
 na legenda, para que um dia com 4 h de registro e um dia completo não tenham
 a mesma aparência de "dia".
+
+## Contraste movimento vs repouso (MRDS)
+
+`metrics/mrds.js` implementa o desenho de Alves et al. (Mov Disord 2025) — ver
+`docs/mrds.md` para o detalhe metodológico. Três pontos importam para quem
+mexe na arquitetura:
+
+1. **O módulo não infere condição.** `mrdsDesign` recebe unidades já com as
+   épocas atribuídas às células do desenho. A atribuição vem da UI (F35) ou de
+   quem chama a função, nunca do arquivo — o JSON do Percept não carrega
+   rótulo de tarefa. Se alguém acrescentar heurística de detecção automática de
+   movimento aqui, ela tem de entrar como sugestão explícita, com confirmação, e
+   nunca como valor padrão.
+2. **O passo de proveniência só existe se houver declaração.** `metrics.mrds`
+   não é registrado quando não há atribuição, e os sete itens do checklist
+   voltam vazios. Preencher esses itens com valor derivado do arquivo seria
+   inventar a única informação que o arquivo não tem.
+3. **`welchPSD` ganhou `opts.nfft`.** Por padrão o NFFT continua indo para a
+   próxima potência de 2; passar `nfft` usa `fftAny` (Bluestein) e reproduz
+   comprimentos arbitrários — o que permite reproduzir um protocolo publicado
+   sem mudar o comportamento de nenhuma outra figura. O tratamento do bin de
+   Nyquist muda com a paridade do NFFT, e isso está no código.
+
+`ds()` passou a expor `indefiniteStreaming` (Record Streaming, tempo-domínio
+sem estimulação). O parser já o lia; até a F35 nenhuma figura o consumia.

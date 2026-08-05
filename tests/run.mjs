@@ -4247,6 +4247,231 @@ sec('Timeline dia a dia: painel por dia civil, lacuna que corta o traçado');
   });
 }
 
+/* ========================================================================= */
+sec('MRDS — movimento vs repouso, ΔMRDS e o que o n permite concluir');
+{
+  /* gerador determinístico: nenhum teste deste arquivo pode depender de sorteio */
+  const semente = s => () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
+  const FS = 250, DUR = 180, N = FS * DUR;
+  /* sinal com β em 22 Hz, γ em 70 Hz e ruído; `escala` multiplica TUDO, que é
+     como artefato de banda larga e mudança de ganho entram no registro */
+  const sinal = (rnd, aBeta, aGama, escala) => {
+    const x = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      const t = i / FS;
+      x[i] = (escala == null ? 1 : escala) *
+        (aBeta * Math.sin(2 * Math.PI * 22 * t + 0.3) + aGama * Math.sin(2 * Math.PI * 70 * t + 1.1)
+          + 0.6 * (rnd() * 2 - 1));
+    }
+    return x;
+  };
+
+  t('a decomposição banda-larga × específica é uma identidade exata, não uma heurística', () => {
+    const r = semente(11);
+    const rest = C.mrdsEpochPSD(sinal(r, 1, .5, 1), FS, {});
+    const move = C.mrdsEpochPSD(sinal(r, .6, .65, 1.3), FS, {});
+    const par = C.mrdsPair(rest, move, {});
+    assert(par.ok, 'par não calculado');
+    let pior = 0;
+    par.bands.forEach(b => {
+      const resid = (1 + b.mrds) - (1 + b.mrdsRelative) * (1 + par.mrdsTotal);
+      pior = Math.max(pior, Math.abs(resid));
+    });
+    assert(pior < 1e-12, `identidade 1+abs=(1+rel)(1+total) violada em ${pior}`);
+    return `resíduo máximo ${pior.toExponential(1)} — decomposição exata`;
+  });
+
+  t('o escopo do z-score muda o MRDS absoluto e NÃO muda o relativo', () => {
+    const mk = () => { const r = semente(23); return { rest_baseline: sinal(r, 1, .5, 1), move_baseline: sinal(r, .6, .65, 1) }; };
+    const uS = C.mrdsDesign([{ id: 'u', subject: 's', hemisphere: 'Left', cells: mk(), fs: FS }], { zscoreScope: 'session' });
+    const uR = C.mrdsDesign([{ id: 'u', subject: 's', hemisphere: 'Left', cells: mk(), fs: FS }], { zscoreScope: 'record' });
+    const bS = uS.units[0].baseline.bands.find(b => b.key === 'beta');
+    const bR = uR.units[0].baseline.bands.find(b => b.key === 'beta');
+    /* o relativo é invariante a escala — é justamente por isso que ele é o
+       candidato honesto a efeito específico de banda */
+    assert(Math.abs(bS.mrdsRelative - bR.mrdsRelative) < 1e-9,
+      `MRDS relativo mudou com o escopo: ${bS.mrdsRelative} vs ${bR.mrdsRelative}`);
+    assert(Math.abs(bS.mrds - bR.mrds) > 1e-3,
+      'o MRDS absoluto deveria depender do escopo, e não dependeu');
+    /* e a consequência algébrica do z-score por gravação fica visível */
+    assert(Math.abs(uR.units[0].baseline.varianceRatio - 1) < 1e-9,
+      `z-score por gravação deveria forçar razão de variâncias 1, deu ${uR.units[0].baseline.varianceRatio}`);
+    assert(uR.units[0].normalization.forcesUnitVariance === true, 'a consequência não foi declarada');
+    return `β absoluto ${bS.mrds.toFixed(3)} (sessão) vs ${bR.mrds.toFixed(3)} (gravação); relativo idêntico ${bR.mrdsRelative.toFixed(4)}`;
+  });
+
+  t('o ΔMRDS cancela modulação de movimento presente nos dois momentos', () => {
+    /* Artefato de movimento IDÊNTICO no basal e no pós (escala 1,4 em toda a
+       época de movimento). Efeito real: β cai a mais só depois da intervenção.
+       O MRDS de cada momento carrega o artefato; o ΔMRDS não pode. */
+    const r = semente(31);
+    const cells = {
+      rest_baseline: sinal(r, 1, .5, 1), move_baseline: sinal(r, 1, .5, 1.4),
+      rest_post: sinal(r, 1, .5, 1), move_post: sinal(r, .7, .5, 1.4)
+    };
+    const res = C.mrdsDesign([{ id: 'u', subject: 's', hemisphere: 'Left', cells, fs: FS }], { zscoreScope: 'none' });
+    const u = res.units[0];
+    const bBas = u.baseline.bands.find(b => b.key === 'beta');
+    const bPos = u.post.bands.find(b => b.key === 'beta');
+    const gDelta = u.delta.find(x => x.key === 'gamma').delta;
+    const bDelta = u.delta.find(x => x.key === 'beta').delta;
+    /* no basal, movimento só multiplicou: MRDS de β é o artefato puro, positivo */
+    assert(bBas.mrds > 0.5, `MRDS β basal deveria refletir o artefato (~0,96), deu ${bBas.mrds.toFixed(3)}`);
+    assert(bPos.mrds < bBas.mrds, 'o efeito real de β não apareceu no momento pós');
+    /* γ não tem efeito real: o artefato entra nos dois MRDS e sai no delta */
+    assert(Math.abs(gDelta) < 0.06, `ΔMRDS de γ deveria cancelar o artefato, deu ${gDelta.toFixed(3)}`);
+    assert(bDelta < -0.3, `ΔMRDS de β deveria captar a queda real, deu ${bDelta.toFixed(3)}`);
+    return `β: MRDS ${bBas.mrds.toFixed(2)}→${bPos.mrds.toFixed(2)}, Δ ${bDelta.toFixed(2)} · γ (sem efeito real): Δ ${gDelta.toFixed(3)}`;
+  });
+
+  t('o MRDS sozinho NÃO separa artefato de banda larga de dessincronização', () => {
+    /* só escala: nenhuma banda muda de fração do espectro */
+    const r = semente(41);
+    const base = sinal(r, 1, .5, 1);
+    const escalado = Float64Array.from(base, v => v * 1.5);
+    const par = C.mrdsPair(C.mrdsEpochPSD(base, FS, {}), C.mrdsEpochPSD(escalado, FS, {}), {});
+    const v = C.mrdsBroadbandVerdict(par, { relativeFloor: 0.05 });
+    assert(v.broadband, 'não reconheceu mudança de banda larga');
+    assert(!v.bandSpecific.length, `apontou banda específica onde só houve escala: ${v.bandSpecific.join(',')}`);
+    assert(/artefato|escala/.test(v.verdict), 'o veredito não nomeia a alternativa');
+    par.bands.forEach(b => assert(Math.abs(b.mrdsRelative) < 0.02,
+      `${b.key}: MRDS relativo deveria ser ~0 sob escala pura, deu ${b.mrdsRelative}`));
+    assert(par.bands.every(b => b.mrds > 0.9), 'o MRDS absoluto deveria ter subido em todas as bandas');
+    return `escala de 1,5×: MRDS absoluto ~${par.bands[0].mrds.toFixed(2)} em toda banda, relativo ~0 — veredito de banda larga`;
+  });
+
+  t('o NFFT do protocolo é reproduzível: 0,25 Hz exatos e 89 segmentos em 180 s', () => {
+    const r = semente(53);
+    const x = sinal(r, 1, .5, 1);
+    const exato = C.mrdsEpochPSD(x, FS, { exactNfft: true });
+    const pot2 = C.mrdsEpochPSD(x, FS, { exactNfft: false });
+    assert(exato.nfft === 1000, `NFFT exato deveria ser 1000, deu ${exato.nfft}`);
+    assert(Math.abs(exato.df - 0.25) < 1e-12, `resolução ${exato.df}, esperada 0,25 Hz`);
+    assert(pot2.nfft === 1024, `sem NFFT exato deveria ir para 1024, deu ${pot2.nfft}`);
+    assert(exato.nSegments === 89, `180 s com janela de 4 s e 50% dão 89 segmentos, deu ${exato.nSegments}`);
+    /* e a diferença entre os dois não muda a leitura por banda */
+    const pa = C.bandPower(exato.f, exato.p, 13, 35), pb = C.bandPower(pot2.f, pot2.p, 13, 35);
+    assert(Math.abs(pa - pb) / pa < 0.01, 'a escolha de NFFT mudou a potência de banda em mais de 1%');
+    return `1000 → 0,2500 Hz · 1024 → ${pot2.df.toFixed(4)} Hz · potência de β difere ${(100 * Math.abs(pa - pb) / pa).toFixed(2)}%`;
+  });
+
+  t('com 4 unidades pareadas nenhum p pode chegar a 0,05, e o teste diz isso', () => {
+    const d = [-0.19, -0.19, -0.17, -0.19];
+    const a = C.mrdsSignFlipTest(d, { nUnits: 4, nSubjects: 2 });
+    const b = C.mrdsSignFlipTest(d, { nUnits: 4, nSubjects: 2 });
+    assert(a.exact && a.nPermutations === 16, `esperava enumeração de 16 sinais, veio ${a.nPermutations}`);
+    assert(a.p === b.p, 'o teste não é determinístico — dois cálculos deram p diferente');
+    assert(Math.abs(a.minAchievableP - 0.125) < 1e-12, `menor p possível ${a.minAchievableP}, esperado 0,125`);
+    assert(a.underpowered === true, 'não declarou que o n limita o p antes do dado');
+    assert(a.p >= 0.125 - 1e-12, `p ${a.p} abaixo do mínimo possível`);
+    /* o t pareado desce abaixo de 0,05 no MESMO dado: a diferença é a
+       suposição de normalidade, e as duas saídas têm de coexistir */
+    assert(a.tTest && a.tTest.p < 0.05, `o t pareado deveria descer abaixo de 0,05, deu ${a.tTest && a.tTest.p}`);
+    assert(a.testsDisagree === true, 'a discordância entre os testes não foi sinalizada');
+    assert(/hemisférios do mesmo paciente/.test(a.subjectNote || ''), 'a pseudorreplicação não foi declarada');
+    return `permutação exata p=${a.p} (mínimo 0,125) · t pareado p=${a.tTest.p.toFixed(4)} · 4 hemisférios, 2 indivíduos`;
+  });
+
+  t('F35 recusa calcular sem a atribuição das épocas, e calcula quando ela existe', () => {
+    const ds = H.ds();
+    const fig = H.FIGURES.find(x => x.id === 'F35');
+    assert(fig && fig.has(ds), 'F35 sem dados no exemplo');
+    const txt = n => {
+      let s = (n.textContent || '') + ' ' + (n.innerHTML || '');
+      (n.children || []).forEach(c => { s += ' ' + txt(c); });
+      return s;
+    };
+    /* sem atribuição: nenhuma tabela de MRDS, e o motivo escrito */
+    H.S.opts.F35 = { modo: 'registros', atrib: {} };
+    const a = document.createElement('div'); fig.render(a, ds);
+    const ta = txt(a);
+    assert(/não carrega rótulo de tarefa/.test(ta), 'não explicou por que a atribuição é necessária');
+    assert(!/MRDS relativo/.test(ta), 'calculou MRDS sem atribuição declarada');
+
+    /* com atribuição: as quatro células dentro de uma gravação longa */
+    const reg = ds.bsTimeDomain.concat(ds.indefiniteStreaming)[0];
+    const dur = Math.floor(reg.data.length / reg.fs);
+    const q = Math.floor(dur / 4);
+    H.S.opts.F35 = {
+      modo: 'janelas', reg: 0, z: 'session',
+      janelas: {
+        rest_baseline: [0, q], move_baseline: [q, 2 * q],
+        rest_post: [2 * q, 3 * q], move_post: [3 * q, 4 * q]
+      }
+    };
+    const b = document.createElement('div'); fig.render(b, ds);
+    const tb = txt(b);
+    assert(/MRDS relativo/.test(tb), 'não produziu a tabela de MRDS com a atribuição declarada');
+    assert(/1 \+ MRDS relativo/.test(tb), 'não declarou a decomposição exata');
+    assert(/Razão de variâncias/.test(tb), 'não expôs a razão de variâncias');
+    H.S.opts.F35 = {};
+    return `sem atribuição: recusa com motivo · com 4 janelas de ${q} s: tabela completa`;
+  });
+
+  t('F35 declara que o primeiro nível não é corrigido para artefato de movimento', () => {
+    const ds = H.ds();
+    const fig = H.FIGURES.find(x => x.id === 'F35');
+    const txt = n => {
+      let s = (n.textContent || '') + ' ' + (n.innerHTML || '');
+      (n.children || []).forEach(c => { s += ' ' + txt(c); });
+      return s;
+    };
+    const reg = ds.bsTimeDomain.concat(ds.indefiniteStreaming)[0];
+    const dur = Math.floor(reg.data.length / reg.fs);
+    /* só o momento basal: a figura tem de dizer o que falta e por quê */
+    H.S.opts.F35 = {
+      modo: 'janelas', reg: 0,
+      janelas: {
+        rest_baseline: [0, Math.floor(dur / 2)], move_baseline: [Math.floor(dur / 2), dur],
+        rest_post: [0, 0], move_post: [0, 0]
+      }
+    };
+    const n = document.createElement('div'); fig.render(n, ds);
+    const s = txt(n);
+    assert(/não<\/b> é corrigido|não. é corrigido/.test(s), 'não avisou que o primeiro nível carrega o artefato');
+    assert(/pós − basal|pós - basal/.test(s), 'não apontou o ΔMRDS como o nível que cancela');
+    assert(C.MRDS_LIMITACOES.some(x => /não um contraste corrigido/.test(x)), 'a limitação não está no núcleo');
+    H.S.opts.F35 = {};
+    return 'com um único momento, a figura nomeia o que falta em vez de entregar o número sozinho';
+  });
+
+  await ta('sem atribuição declarada, o checklist marca os itens de MRDS como não verificáveis', async () => {
+    const ds = H.ds();
+    /* estado limpo: ninguém declarou nada */
+    H.S.opts.F35 = {};
+    const semProv = await H.buildProvenance();
+    const passoAusente = (semProv.manifest().steps || []).find(s => s.step === 'metrics.mrds');
+    assert(!passoAusente, 'o passo de MRDS entrou na proveniência sem atribuição declarada');
+    const ckSem = C.generateChecklist(semProv.manifest(), null, null);
+    const grupo = ckSem.items.find(g => /MRDS/.test(g.grupo));
+    assert(grupo, 'o grupo de MRDS não está no checklist');
+    assert(grupo.itens.every(i => !i.preenchido), 'algum item de MRDS veio preenchido sem declaração humana');
+
+    /* com atribuição: o passo aparece e os itens fecham */
+    const reg = ds.bsTimeDomain.concat(ds.indefiniteStreaming)[0];
+    const dur = Math.floor(reg.data.length / reg.fs), q = Math.floor(dur / 4);
+    H.S.opts.F35 = {
+      modo: 'janelas', reg: 0, z: 'session',
+      janelas: {
+        rest_baseline: [0, q], move_baseline: [q, 2 * q],
+        rest_post: [2 * q, 3 * q], move_post: [3 * q, 4 * q]
+      }
+    };
+    const comProv = await H.buildProvenance();
+    const passo = (comProv.manifest().steps || []).find(s => s.step === 'metrics.mrds');
+    assert(passo, 'o passo de MRDS não entrou na proveniência com a atribuição declarada');
+    assert(/não carrega rótulo de tarefa/.test(passo.params.assignmentSource), 'a origem da atribuição não foi registrada');
+    const ck = C.generateChecklist(comProv.manifest(), null, null);
+    const g2 = ck.items.find(g => /MRDS/.test(g.grupo));
+    const cheios = g2.itens.filter(i => i.preenchido);
+    assert(cheios.length >= 5, `só ${cheios.length} de ${g2.itens.length} itens de MRDS foram preenchidos`);
+    const niveis = g2.itens.find(i => i.chave === 'mrds_levels');
+    assert(/ΔMRDS calculado/.test(niveis.valor), `item de níveis: ${niveis.valor}`);
+    H.S.opts.F35 = {};
+    return `sem declaração: 0/${grupo.itens.length} · com declaração: ${cheios.length}/${g2.itens.length} itens preenchidos`;
+  });
+}
+
 /* ------------------------------------------------------------- resultado -- */
 console.log(`\n${'='.repeat(58)}`);
 console.log(`  ${ok} passaram   ${falhas} falharam   ${pulados} sem dados`);
