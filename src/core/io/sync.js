@@ -229,15 +229,56 @@ export function alignByStimArtifact(lfp, ext, fs, opts) {
 }
 
 /* Alinhamento pelo timestamp declarado. Barato, disponível e não verificado. */
+/* Protocolo de sincronização RECOMENDADO PELO FABRICANTE.
+   Medtronic UC202012929cEN FY24, p. 12 ("Synchronization of data").          */
+export const SYNC_PROTOCOL = {
+  source: 'Medtronic UC202012929cEN FY24, p. 12',
+  coarse: [
+    'garantir que o tablet esteja em WIFI, para sincronizar o relógio do tablet com a hora de rede',
+    'interrogar o neuroestimulador',
+    'abrir a tela "About" pelo menu de navegação',
+    'confirmar que o Time Source diz "Tablet" e pressionar "Update Device Time"'
+  ],
+  coarseNote: 'sem este passo o carimbo absoluto do aparelho pode estar arbitrariamente errado — e é justamente ' +
+    'nele que alignByTimestamp confia',
+  fine: [
+    'posicionar eletrodos de EEG sobre o gerador e sobre o trépano',
+    'entregar estimulação de BAIXA FREQUÊNCIA (por exemplo 50 Hz) e BAIXA AMPLITUDE, que pode ser imperceptível',
+    'iniciar o streaming no Percept e a gravação no equipamento externo',
+    'ao terminar a atividade, entregar NOVAMENTE um período de baixa frequência e/ou baixa amplitude, com o ' +
+      'streaming ainda ligado',
+    'alinhar os pulsos de estimulação entre o LFP bruto e o equipamento externo pelos marcadores do INÍCIO e do FIM'
+  ],
+  fineNote: 'o marcador no FIM não é redundância: com marcador só no início, deslocamento fixo e deriva de relógio ' +
+    'são indistinguíveis. Com os dois, a diferença entre eles É a deriva',
+  cycling: 'em pacientes com ciclagem de estimulação configurada, os ciclos periódicos de liga/desliga podem ser ' +
+    'usados para a correlação durante o BrainSense Streaming'
+};
+
 export function alignByTimestamp(lfpT0Ms, extT0Ms) {
   if (!isFinite(lfpT0Ms) || !isFinite(extT0Ms)) return {
     ok: false, method: 'timestamp declarado', reason: 'um dos sinais não traz hora absoluta'
   };
+  /* O PISO DE INCERTEZA É ±1 s POR CONSTRUÇÃO, antes de qualquer deriva.
+
+     "FirstPacketDatetime — Labels each Streaming Sample with initial DateTime
+      value. 1 second resolution."  — Medtronic UC202012929cEN FY24, p. 21–24.
+
+     Reportar este deslocamento com duas casas decimais sugeria uma precisão que
+     o campo não tem. Com quantização de 1 s, o alinhamento por artefato de
+     estimulação deixa de ser preferência metodológica e passa a ser NECESSÁRIO
+     para qualquer resolução sub-segundo — que é toda análise de fase, de
+     latência evocada e de coerência com atraso.                              */
   return {
     ok: true, method: 'timestamp declarado', lagMs: +(extT0Ms - lfpT0Ms).toFixed(2),
     confidence: 'não verificado',
+    quantizationMs: 1000,
+    quantizationSource: 'FirstPacketDateTime tem resolução de 1 s (Medtronic UC202012929cEN FY24, p. 21–24)',
+    uncertaintyFloorMs: 1000,
     caveat: 'os relógios do neuroestimulador e do gravador externo não são sincronizados entre si. ' +
       'Este deslocamento vem do que cada arquivo declara e NÃO foi verificado contra o sinal — ' +
-      'deriva de segundos é comum. Confirme por artefato de estimulação antes de interpretar atraso de fase.'
+      'deriva de segundos é comum. Além disso, o carimbo do Percept tem resolução de 1 s: o piso de incerteza é ' +
+      '±1000 ms POR CONSTRUÇÃO, mesmo com relógios perfeitos. Para resolução sub-segundo o alinhamento por artefato ' +
+      'de estimulação não é preferível — é necessário.'
   };
 }

@@ -37,6 +37,42 @@ function statusAntesDe(parsed, tMs) {
 /* inferDeviceState(record, parsed, opts)
    `record` é uma série bruta (bsTimeDomain / montageTD / indefiniteStreaming) ou
    uma entrada de bsLfp. `opts.modality` ajuda quando não há outra evidência.  */
+export const DOC_FONTE = 'Medtronic UC202012929cEN FY24';
+
+/* Tabela modalidade → estado de estimulação DOCUMENTADO.
+
+   Substitui a expressão regular que classificava `CalibrationTests` como OFF.
+   `state`: 'OFF' | 'ON' | 'USER' (definido pelo usuário) | 'ANY' | null.     */
+export const DOCUMENTED_STIM_STATE = [
+  { match: /LFPMontage|LfpMontageTimeDomain|survey/i, structure: 'BrainSense Survey', state: 'OFF',
+    quote: 'Stimulation is off during the measurement', page: 4 },
+  { match: /IndefiniteStreaming|record\s*streaming/i, structure: 'Record Streaming (IndefiniteStreaming)', state: 'OFF',
+    quote: 'Stimulation will be off for the duration of data collection', page: 4 },
+  { match: /MostRecentInSessionSignalCheck/i, structure: 'MostRecentInSessionSignalCheck', state: 'OFF',
+    quote: 'stimulation is OFF', page: 15 },
+  { match: /SenseChannelTests/i, structure: 'SenseChannelTests', state: 'OFF',
+    quote: 'with stim OFF (3 channels per lead)', page: 15 },
+  { match: /CalibrationTests/i, structure: 'CalibrationTests', state: 'ON',
+    quote: 'with stim ON (2 channels per lead)', page: 15 },
+  { match: /BrainSenseTimeDomain|BrainSenseLfp/i, structure: 'BrainSense Streaming', state: 'USER',
+    quote: 'stimulation is in user defined state', page: 17 },
+  { match: /trend|timeline|snapshot|event/i, structure: 'Timeline / Events', state: 'ANY',
+    quote: 'Either (tabela Summary of Sensing Data)', page: 10 }
+];
+
+export function documentedStimState(modality) {
+  const m = String(modality || '');
+  /* CalibrationTests e SenseChannelTests contêm as palavras genéricas do Survey
+     em algumas grafias; a tabela é percorrida na ordem de especificidade acima,
+     e as entradas específicas vêm primeiro justamente por isso */
+  const esp = DOCUMENTED_STIM_STATE.filter(x => /SenseChannelTests|CalibrationTests|MostRecentInSession|Indefinite/i.test(x.match.source));
+  const resto = DOCUMENTED_STIM_STATE.filter(x => esp.indexOf(x) < 0);
+  for (const x of esp.concat(resto)) if (x.match.test(m)) return {
+    structure: x.structure, state: x.state, quote: x.quote, page: x.page, source: DOC_FONTE
+  };
+  return { structure: m || '(modalidade não informada)', state: null, quote: null, page: null, source: null };
+}
+
 export function inferDeviceState(record, parsed, opts) {
   opts = opts || {};
   const evidencia = [];
@@ -88,14 +124,32 @@ export function inferDeviceState(record, parsed, opts) {
     }
   }
 
-  /* 4. a própria modalidade: Survey costuma ser OFF; Streaming, ON */
+  /* 4. a modalidade, pela TABELA DOCUMENTADA do fabricante.
+
+     Isto era uma expressão regular, e ela tinha `calibration` no ramo do OFF —
+     que é exatamente o oposto do documentado. `CalibrationTests` é o segundo
+     passo da verificação de qualidade de sinal e roda com estimulação LIGADA;
+     `SenseChannelTests` é o primeiro e roda com ela desligada. Os dois são o
+     par OFF/ON do MESMO paciente na MESMA sessão, e classificá-los como dois
+     OFF fazia `statesComparable` deixar de disparar exatamente onde deveria.
+
+     Fonte de cada linha: Medtronic UC202012929cEN FY24, p. 15 (SenseChannelTests,
+     CalibrationTests, MostRecentInSessionSignalCheck), p. 4 (Survey e Record
+     Streaming), p. 16–17 (LfpMontageTimeDomain, IndefiniteStreaming,
+     BrainSenseTimeDomain, BrainSenseLfp) e p. 10 (tabela "Summary of Sensing
+     Data").                                                                  */
   if (estado === 'UNKNOWN' && opts.modality) {
-    if (/survey|montage|signalcheck|calibration/i.test(opts.modality)) {
+    const doc = documentedStimState(opts.modality);
+    if (doc.state === 'OFF') {
       estado = 'OFF';
-      evidencia.push('modalidade Survey/Signal Test — tipicamente com estimulação desligada (inferência fraca)');
-    } else if (/stream/i.test(opts.modality)) {
+      evidencia.push(`${doc.structure}: estimulação DESLIGADA (${doc.quote}; ${DOC_FONTE})`);
+    } else if (doc.state === 'ON') {
       estado = isFinite(ma) && ma > 0.05 ? 'ON_THERAPEUTIC' : 'ON_0mA';
-      evidencia.push('modalidade Streaming — tipicamente com estimulação ligada (inferência fraca)');
+      evidencia.push(`${doc.structure}: estimulação LIGADA (${doc.quote}; ${DOC_FONTE})`);
+    } else if (doc.state === 'USER') {
+      estado = isFinite(ma) && ma > 0.05 ? 'ON_THERAPEUTIC' : 'ON_0mA';
+      evidencia.push(`${doc.structure}: estimulação em estado definido pelo usuário (${doc.quote}; ${DOC_FONTE}) — ` +
+        'a modalidade NÃO determina o estado, e o valor acima vem da amplitude registrada');
     }
   }
   /* consistência: se há amplitude terapêutica, não pode estar OFF */
@@ -111,13 +165,21 @@ export function inferDeviceState(record, parsed, opts) {
     pulseWidthUs: isFinite(pw) ? pw : NaN,
     groupId,
     evidence: evidencia,
+    /* a confiança deixa de ser 'fraca' quando a fonte é o próprio fabricante */
     confidence: evidencia.length === 0 ? 'nenhuma'
-      : evidencia.some(e => /inferência fraca/.test(e)) ? 'fraca' : 'boa'
+      : evidencia.some(e => new RegExp(DOC_FONTE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).test(e)) ? 'documentada'
+        : evidencia.some(e => /inferência fraca/.test(e)) ? 'fraca' : 'boa',
+    documentedState: opts.modality ? documentedStimState(opts.modality) : null
   };
 }
 
 /* Dois espectros de estados diferentes não são diretamente comparáveis. */
 export function statesComparable(a, b) {
+  /* aceita tanto a string do estado quanto o objeto de inferDeviceState — os
+     dois circulam no software, e exigir um deles só produziria "[object Object]"
+     no meio de uma frase que existe para ser lida */
+  const nome = x => (x && typeof x === 'object') ? (x.state || 'UNKNOWN') : x;
+  a = nome(a); b = nome(b);
   if (!a || !b || a === 'UNKNOWN' || b === 'UNKNOWN')
     return { comparable: false, reason: 'estado do dispositivo desconhecido em pelo menos um dos registros' };
   if (a === b) return { comparable: true, reason: null };

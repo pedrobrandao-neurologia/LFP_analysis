@@ -167,9 +167,20 @@ function valorDe(chave, prov, metrics, profile) {
       const p = passo('parse.timeDomain'); return val(p && p.params.fsNominal) || '250 (default do Percept)';
     }
     case 'fs_effective': { const p = passo('parse.timeDomain'); return val(p && p.params.fsEffective); }
-    case 'hardware_filters': { const p = passo('parse.timeDomain'); return val(p && p.params.hardwareFilters); }
-    case 'blanking': { const p = passo('parse.timeDomain'); return val(p && p.params.blankingUs); }
-    case 'device_state': return val(ag.device_state) || NAO_DET + ' (inferência de estado é da Onda 1.3, ainda não implementada)';
+    case 'hardware_filters': {
+      const p = passo('parse.timeDomain');
+      return val(p && p.params.hardwareFilters);
+    }
+    case 'blanking': {
+      const p = passo('parse.timeDomain');
+      return val(p && p.params.blankingUs);
+    }
+    case 'device_state': {
+      const p = passo('whitepaper.compliance');
+      const doc = p && p.params.deviceStateSource;
+      return val(ag.device_state ? `${ag.device_state}${doc ? ' — ' + doc : ''}` : null)
+        || NAO_DET + ' — nenhuma modalidade deste arquivo permitiu inferir o estado da estimulação';
+    }
     case 'stim_params': { const p = passo('parse.stimulation'); return val(p && JSON.stringify(p.params)); }
     case 'sensing_center': return val(ag.sensing_center_hz ? `${ag.sensing_center_hz} Hz ± 2,5` : null);
     case 'packet_loss': {

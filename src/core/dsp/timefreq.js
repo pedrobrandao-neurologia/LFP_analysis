@@ -246,11 +246,21 @@ export function spectrogramSTFT(x, fs, opts) {
      avanço de 5 amostras por passo (tamanho do pacote no caminho de
      streaming); primeiras 100 bins do eixo (k/256)·fs.
 
-   A CONSTANTE 1/54. É empírica: sai do ganho coerente da janela e da
-   normalização de ponto fixo do firmware, e não está documentada pelo
-   fabricante. Fica parametrizável e explícita porque é o número que faz esta
-   emulação bater — ou não — com o que o aparelho reportou, e ninguém deveria
-   descobrir depois que havia uma constante mágica escondida no meio.
+   O EIXO DE FREQUÊNCIA ESTÁ CONFIRMADO PELO FABRICANTE. "The frequency bins are
+   0.98 Hz wide with centers from 0-96.68 Hz" (Medtronic UC202012929cEN FY24,
+   p. 4; a faixa reaparece na p. 8 para os snapshots de evento). Isso é
+   exatamente NFFT = 256 sobre 250 Hz com 99 bins: 250/256 = 0,9766 Hz de
+   largura, e 99 × 250/256 = 96,68 Hz de centro máximo. O zero-pad de 250 para
+   256 e o eixo (k/256)·fs estão, portanto, documentados.
+
+   A CONSTANTE 1/54 NÃO ESTÁ. É empírica: sai do ganho coerente da janela e da
+   normalização de ponto fixo do firmware. A BUSCA FOI FEITA no white paper de
+   sensing (UC202012929cEN FY24, documento inteiro) e a constante não aparece em
+   nenhum ponto — está registrado aqui e em docs/auditoria-whitepaper.md para
+   que ninguém repita o trabalho. Fica parametrizável e explícita porque é o
+   número que faz esta emulação bater — ou não — com o que o aparelho reportou,
+   e ninguém deveria descobrir depois que havia uma constante mágica escondida
+   no meio.
 
    POR QUE MAGNITUDE E NÃO POTÊNCIA. Porque é o que o aparelho reporta. Elevar
    ao quadrado aqui tornaria a comparação com o valor do próprio Percept
