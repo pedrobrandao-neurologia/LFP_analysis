@@ -467,6 +467,10 @@ function dsCompute() {
     all,
     trend: merge('trend'),
     montage: cat('montage'), montageTD: cat('montageTD'),
+    /* Record Streaming: tempo-domínio SEM estimulação. O parser já o lia; até
+       aqui nenhuma figura o expunha, e é justamente a modalidade que casa com
+       protocolos de estimulação desligada. */
+    indefiniteStreaming: cat('indefiniteStreaming'),
     bsTimeDomain: cat('bsTimeDomain'), bsLfp: cat('bsLfp'),
     snapshots: cat('snapshots'), signalCheck: cat('signalCheck'), sensingSetup: cat('sensingSetup'),
     eventLogs: cat('eventLogs'),
@@ -1051,6 +1055,21 @@ function exportRow(items) {
   items.forEach(i => d.appendChild(el('button', { class: 'btn', onclick: i.fn, text: i.label })));
   return d;
 }
+/* Tabela em que uma célula pode ser um controle (select, input) em vez de
+   texto: é o que permite declarar a atribuição de épocas na própria linha da
+   gravação, sem um formulário separado longe do dado que ele descreve. */
+function tabelaComControles(headers, rows) {
+  const t = el('table', { class: 'data' });
+  t.appendChild(el('thead', {}, [el('tr', {}, headers.map(h => el('th', { text: h })))]));
+  const tb = el('tbody');
+  rows.forEach(r => tb.appendChild(el('tr', {}, r.map(c => {
+    if (c && typeof c === 'object' && c.node) return el('td', {}, [c.node]);
+    if (c && typeof c === 'object' && c.html !== undefined) return el('td', { class: c.cls || '', html: c.html });
+    return el('td', { class: typeof c === 'number' ? 'num' : '', text: c == null ? '—' : String(c) });
+  }))));
+  t.appendChild(tb); return t;
+}
+
 function table(headers, rows) {
   const t = el('table', { class: 'data' });
   t.appendChild(el('thead', {}, [el('tr', {}, headers.map(h => el('th', { text: h })))]));
@@ -5071,6 +5090,303 @@ const FIGURES = [
     }
   },
 
+  /* ------------------------------------------------------------------ F35 */
+  /* MRDS — (des)sincronização relacionada ao movimento.
+
+     POR QUE EXISTE. O protocolo de Alves et al. (Mov Disord 2025) contrasta
+     potência sob movimento e em repouso, antes e depois de uma intervenção. É
+     um desenho que o Percept sustenta sozinho: duas épocas de tempo-domínio
+     por momento, sem sinal externo. O que o Percept NÃO tem é rótulo de
+     tarefa — qual época é repouso e qual é movimento é declarado por quem
+     analisa, e essa declaração entra na proveniência.
+
+     A figura separa deliberadamente os dois níveis. O MRDS sozinho é o
+     contraste movimento-repouso, e artefato de movimento entra inteiro nele;
+     só o ΔMRDS = pós - basal cancela modulação motora reprodutível.         */
+  {
+    id: 'F35', title: 'MRDS — (des)sincronização relacionada ao movimento',
+    sub: 'repouso vs movimento por hemisfério · ΔMRDS entre momentos · decomposição banda-larga vs específica',
+    has: d => (d.bsTimeDomain.length + d.indefiniteStreaming.length + d.montageTD.length) > 0,
+    render(node, d) {
+      const regs = d.indefiniteStreaming.concat(d.bsTimeDomain, d.montageTD)
+        .map((t, i) => Object.assign({}, t, { idx: i, dur: t.data.length / t.fs }));
+      if (!regs.length) return node.appendChild(el('div', { class: 'empty', text: 'Sem registro de tempo-domínio.' }));
+
+      const modo = opt('F35', 'modo', regs.length >= 2 ? 'registros' : 'janelas');
+      const escopo = opt('F35', 'z', 'session');
+      const exato = opt('F35', 'nfft', true);
+      const janelaS = opt('F35', 'win', 4);
+      const piso = opt('F35', 'piso', 5);
+
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('desenho', [
+          { value: 'registros', label: 'gravações separadas (uma por condição)' },
+          { value: 'janelas', label: 'janelas dentro de uma gravação' }
+        ], modo, v => setOpt('F35', 'modo', v)),
+        ctrlSelect('z-score', [
+          { value: 'session', label: 'por sessão (uma escala para todas as épocas)' },
+          { value: 'record', label: 'por gravação (variância 1 em cada época)' },
+          { value: 'none', label: 'sem normalização (µV²/Hz)' }
+        ], escopo, v => setOpt('F35', 'z', v)),
+        ctrlNumber('janela de Welch (s)', janelaS, 1, 20, 1, v => setOpt('F35', 'win', v)),
+        ctrlCheck('NFFT exato do protocolo (0,25 Hz)', exato, v => setOpt('F35', 'nfft', v)),
+        ctrlNumber('piso de efeito (%)', piso, 1, 50, 1, v => setOpt('F35', 'piso', v))
+      ]));
+
+      /* ---- atribuição das épocas às células do desenho ------------------ */
+      const unidades = [];
+      const atrib = opt('F35', 'atrib', {});
+      if (modo === 'registros') {
+        const linhas = regs.map(r => {
+          const val = atrib[r.idx] || '';
+          return [
+            `${r.label || r.channel} · ${hname(r.hemisphere)}`,
+            `${f(r.dur, 0)} s`,
+            r.t0 ? String(r.t0).slice(11, 19) : '—',
+            {
+              html: '', node: ctrlSelect('', [{ value: '', label: '— não usar —' }]
+                .concat(C.MRDS_CELLS.map(c => ({ value: c.key, label: c.label }))),
+                val, v => { const a = Object.assign({}, atrib); a[r.idx] = v; setOpt('F35', 'atrib', a); })
+            }
+          ];
+        });
+        node.appendChild(tabelaComControles(
+          ['gravação', 'duração', 'hora', 'condição no desenho'], linhas));
+
+        /* agrupa por hemisfério: cada hemisfério é uma unidade pareada */
+        const porHemi = {};
+        regs.forEach(r => {
+          const cel = atrib[r.idx];
+          if (!cel) return;
+          const h = r.hemisphere || '?';
+          porHemi[h] = porHemi[h] || { id: h, subject: sujeitoAtual() || 'sujeito', hemisphere: h, cells: {}, fs: r.fs, quality: {} };
+          porHemi[h].cells[cel] = r.data;
+          porHemi[h].quality[cel] = { lossPct: r.packets ? r.packets.pctMissing : NaN, dur: r.dur };
+        });
+        Object.keys(porHemi).forEach(h => unidades.push(porHemi[h]));
+      } else {
+        const iSel = opt('F35', 'reg', 0);
+        const r = regs[Math.min(iSel, regs.length - 1)];
+        node.appendChild(el('div', { class: 'ctrls' }, [
+          ctrlSelect('gravação', regs.map(x => ({ value: x.idx, label: `${x.label || x.channel} · ${hname(x.hemisphere)} · ${f(x.dur, 0)} s` })),
+            r.idx, v => setOpt('F35', 'reg', +v))
+        ]));
+        const meio = Math.round(r.dur / 2);
+        const jan = opt('F35', 'janelas', {
+          rest_baseline: [0, meio], move_baseline: [meio, Math.round(r.dur)],
+          rest_post: [0, 0], move_post: [0, 0]
+        });
+        node.appendChild(tabelaComControles(['condição', 'de (s)', 'até (s)'],
+          C.MRDS_CELLS.map(c => {
+            const v = jan[c.key] || [0, 0];
+            const mk = (i) => ctrlNumber('', v[i], 0, Math.ceil(r.dur), 1, nv => {
+              const j = Object.assign({}, jan); j[c.key] = i === 0 ? [nv, v[1]] : [v[0], nv];
+              setOpt('F35', 'janelas', j);
+            });
+            return [c.label, { node: mk(0) }, { node: mk(1) }];
+          })));
+        const u = { id: r.hemisphere || 'unidade', subject: sujeitoAtual() || 'sujeito', hemisphere: r.hemisphere || '?', cells: {}, fs: r.fs, quality: {} };
+        C.MRDS_CELLS.forEach(c => {
+          const v = jan[c.key] || [0, 0];
+          const a = Math.max(0, Math.round(v[0] * r.fs)), b = Math.min(r.data.length, Math.round(v[1] * r.fs));
+          if (b - a >= r.fs * janelaS) { u.cells[c.key] = r.data.slice(a, b); u.quality[c.key] = { dur: (b - a) / r.fs }; }
+        });
+        if (Object.keys(u.cells).length) unidades.push(u);
+      }
+
+      const temPar = unidades.some(u => u.cells.rest_baseline && u.cells.move_baseline);
+      if (!temPar) {
+        node.appendChild(el('div', {
+          class: 'note', html: `<b>Falta a atribuição.</b> O JSON do Percept <b>não carrega rótulo de tarefa</b>: ` +
+            `qual época é repouso e qual é movimento tem de ser declarado acima. O par mínimo é ` +
+            `<i>repouso · basal</i> e <i>movimento · basal</i>, no mesmo hemisfério. O eixo pós é opcional — ` +
+            `sem ele só o primeiro nível é calculável.`
+        }));
+        return;
+      }
+
+      const res = C.mrdsDesign(unidades, {
+        zscoreScope: escopo,
+        windowSamples: Math.round(janelaS * (unidades[0].fs || 250)),
+        exactNfft: exato, relativeFloor: piso / 100
+      });
+
+      /* ---- (a) PSD por condição, no formato do painel A/B do artigo ----- */
+      const u0 = res.units.find(u => u.baseline && u.baseline.ok) || res.units[0];
+      const box = plotBox(node, 260);
+      {
+        const psd = u0.psd;
+        const todos = ['rest_baseline', 'move_baseline', 'rest_post', 'move_post'].filter(k => psd[k] && psd[k].p);
+        let ymax = 0;
+        todos.forEach(k => { const r = psd[k]; for (let i = 0; i < r.f.length; i++) if (r.f[i] >= 2 && r.f[i] <= 100 && r.p[i] > ymax) ymax = r.p[i]; });
+        const ch = new P.Chart(box.canvas, {
+          width: box.width, height: box.height, xlim: [2, 100], ylim: [0, ymax * 1.1],
+          xlabel: 'frequência (Hz)', ylabel: `densidade de potência (${res.unit === 'µV²/Hz' ? 'µV²/Hz' : 'ad.'})`,
+          title: `PSD por condição — STN ${hname(u0.hemisphere)}`, pad: { l: 66, r: 14, t: 24, b: 42 }
+        });
+        ch.axes({ nx: 6 });
+        C.MRDS_BANDS.forEach(b => ch.span(b.lo, b.hi, { color: b.key === 'beta' ? CORBETA : '#8E3B4E', alpha: .07, label: b.label }));
+        const cor = { rest_baseline: '#1B4A72', move_baseline: '#9C3050', rest_post: '#4E86B8', move_post: '#C9748C' };
+        const rot = { rest_baseline: 'repouso · basal', move_baseline: 'movimento · basal', rest_post: 'repouso · pós', move_post: 'movimento · pós' };
+        todos.forEach(k => ch.line(Array.from(psd[k].f), Array.from(psd[k].p), {
+          color: cor[k], width: 1.5, dash: /post/.test(k) ? [4, 3] : null, label: rot[k]
+        }));
+        ch.legend({ x: ch.x1 - 150, y: ch.y1 + 6 });
+      }
+
+      /* ---- (b) MRDS por banda e por unidade ---------------------------- */
+      const boxB = plotBox(node, 230);
+      {
+        const uns = res.units.filter(u => u.baseline && u.baseline.ok);
+        const nB = res.bands.length;
+        const vals = [];
+        uns.forEach(u => res.bands.forEach(b => {
+          const x = u.baseline.bands.find(z => z.key === b.key);
+          if (x && isFinite(x.mrds)) vals.push(x.mrds);
+          const pos = u.post && u.post.ok ? u.post.bands.find(z => z.key === b.key) : null;
+          if (pos && isFinite(pos.mrds)) vals.push(pos.mrds);
+        }));
+        const lim = Math.max(0.2, Math.max.apply(null, vals.map(Math.abs).concat([0.2])) * 1.15);
+        const ch = new P.Chart(boxB.canvas, {
+          width: boxB.width, height: boxB.height, xlim: [-.5, nB - .5], ylim: [-lim, lim],
+          xlabel: 'banda', ylabel: 'MRDS (adimensional)',
+          title: 'MRDS por banda — negativo = dessincronização com o movimento', pad: { l: 66, r: 14, t: 24, b: 42 }
+        });
+        ch.axes({ nx: nB, xticks: res.bands.map((_, i) => i), xfmt: v => (res.bands[Math.round(v)] || {}).label || '' });
+        ch.hline(0, { color: '#5C7284', width: 1 });
+        uns.forEach((u, iu) => {
+          const dx = (iu - (uns.length - 1) / 2) * 0.16;
+          res.bands.forEach((b, ib) => {
+            const a = u.baseline.bands.find(z => z.key === b.key);
+            const c = u.post && u.post.ok ? u.post.bands.find(z => z.key === b.key) : null;
+            if (a && isFinite(a.mrds)) ch.marker(ib + dx - .05, a.mrds, { color: '#1B4A72', size: 5 });
+            if (c && isFinite(c.mrds)) {
+              ch.marker(ib + dx + .05, c.mrds, { color: '#9C3050', size: 5 });
+              ch.line([ib + dx - .05, ib + dx + .05], [a.mrds, c.mrds], { color: '#8A97A3', width: 1 });
+            }
+          });
+        });
+        ch.marker(-.42, lim * .88, { color: '#1B4A72', size: 5 });
+        ch.text(ch.X(-.36), ch.Y(lim * .88) + 4, 'basal', { color: '#1B4A72' });
+        if (res.hasBothMoments) {
+          ch.marker(-.42, lim * .72, { color: '#9C3050', size: 5 });
+          ch.text(ch.X(-.36), ch.Y(lim * .72) + 4, 'pós', { color: '#9C3050' });
+        }
+      }
+
+      /* ---- (c) tabela: MRDS, decomposição e ΔMRDS ---------------------- */
+      const linhasT = [];
+      res.units.forEach(u => [['basal', u.baseline], ['pós', u.post]].forEach(([mom, par]) => {
+        if (!par || !par.ok) return;
+        par.bands.forEach(b => {
+          /* o Δ é propriedade do PAR de momentos, não de um momento: repeti-lo
+             nas duas linhas leria como se cada momento tivesse o seu */
+          const dl = (mom === 'pós' && u.delta) ? u.delta.find(x => x.key === b.key) : null;
+          linhasT.push([
+            { html: `<span class="hemi-${String(u.hemisphere)[0]}">${hname(u.hemisphere)}</span>` }, mom, b.label,
+            `${f(100 * b.mrds, 1)}%`, `${f(100 * b.mrdsRelative, 1)}%`, `${f(100 * par.mrdsTotal, 1)}%`,
+            dl && isFinite(dl.delta) ? `${f(100 * dl.delta, 1)} pp` : '—',
+            { html: `${par.nSegmentsRest}/${par.nSegmentsMove}`, cls: 'num' }
+          ]);
+        });
+      }));
+      node.appendChild(table(['hemisfério', 'momento', 'banda', 'MRDS', 'MRDS relativo', 'MRDS total',
+        'ΔMRDS pós−basal', 'n seg. rep/mov'], linhasT));
+
+      /* ---- (d) o que o número quer dizer -------------------------------- */
+      {
+        const v0 = (u0.baseline && u0.baseline.verdict) || {};
+        if (v0.ok) node.appendChild(el('div', {
+          class: v0.broadband && !v0.bandSpecific.length ? 'warnbox' : 'note',
+          html: `<b>Banda larga ou específica?</b> ${v0.verdict}. A decomposição é exata: ` +
+            `1 + MRDS = (1 + MRDS relativo) × (1 + MRDS total). O fator total é o que muda em ` +
+            `<i>todo</i> o espectro — escala, ganho, artefato de movimento; só o fator relativo é ` +
+            `candidato a (des)sincronização específica de banda.`
+        }));
+        const vr = u0.baseline ? u0.baseline.varianceRatio : NaN;
+        node.appendChild(el('div', {
+          class: 'note', html: `<b>Normalização.</b> ${res.normalizationNote || res.units[0].normalization.note}. ` +
+            `Razão de variâncias movimento/repouso: <b>${f(vr, 4)}</b>` +
+            (escopo === 'record' ? ' — igual a 1 por construção, e é essa a consequência de normalizar por gravação.' : '.')
+        }));
+      }
+
+      /* ---- (e) estatística, com o piso de p declarado -------------------- */
+      if (res.hasBothMoments && !Object.keys(res.tests).length) {
+        node.appendChild(el('div', {
+          class: 'note', html: `<b>Sem teste pareado.</b> O ΔMRDS está calculado, mas com ` +
+            `${res.nUnits} unidade(s) não existe comparação pareada — um par precisa de ao menos duas ` +
+            `unidades. O número acima descreve este registro; não é inferência.`
+        }));
+      } else if (res.hasBothMoments) {
+        const linhasS = res.bands.map(b => {
+          const t = res.tests[b.key] || {};
+          return [b.label, { html: String(t.n || 0), cls: 'num' }, f(t.mean, 3), f(t.sd, 3),
+            isFinite(t.p) ? pTag(t.p) : '—',
+            t.tTest && isFinite(t.tTest.p) ? pTag(t.tTest.p) : '—',
+            isFinite(t.minAchievableP) ? pTag(t.minAchievableP) : '—'];
+        });
+        node.appendChild(table(['banda', 'n unidades', 'ΔMRDS médio', 'DP', 'p (permutação exata)',
+          'p (t pareado)', 'menor p possível'], linhasS));
+        const t0 = res.tests[res.bands[0].key] || {};
+        if (t0.underpowered) node.appendChild(el('div', {
+          class: 'warnbox', html: `<b>O n limita o p antes do dado.</b> ${t0.reason}. ` +
+            (t0.testsDisagree
+              ? `O t pareado devolve ${pTag(t0.tTest.p)} para os mesmos números — a diferença entre os dois ` +
+                `é <b>inteiramente</b> a suposição de normalidade, que ${t0.n} pontos não sustentam nem refutam.`
+              : '')
+        }));
+        if (t0.subjectNote) node.appendChild(el('div', { class: 'warnbox', html: `<b>Pseudorreplicação.</b> ${t0.subjectNote}.` }));
+      } else {
+        node.appendChild(el('div', {
+          class: 'warnbox', html: `<b>Só o primeiro nível.</b> Sem as épocas do momento pós-intervenção, ` +
+            `o que existe é o contraste movimento−repouso. Ele <b>não</b> é corrigido para artefato de ` +
+            `movimento: é justamente o contraste em que o artefato entra. O que cancela modulação motora ` +
+            `reprodutível é o ΔMRDS = pós − basal, e para isso são necessárias as quatro épocas.`
+        }));
+      }
+
+      /* ---- (f) o que o aparelho impõe sobre as bandas ------------------- */
+      {
+        const hp = (d.all[0] && d.all[0].filters) ? d.all[0].filters.highPassConfigurableHz : NaN;
+        node.appendChild(el('div', {
+          class: 'note', html: `<b>O aparelho antes do método.</b> ${C.HARDWARE_FILTERS.gammaCaveat}. ` +
+            (isFinite(hp) && hp >= 10
+              ? `<b>Além disso, o passa-alta está em ${hp} Hz</b>: a borda inferior de β (13 Hz) cai na ` +
+                `transição do filtro. ${C.HARDWARE_FILTERS.highPass10Caveat}.`
+              : '') + ` [${C.HARDWARE_FILTERS.source}]`
+        }));
+        node.appendChild(el('div', {
+          class: 'note', html: `<b>Protocolo.</b> Welch com janela de ${f(janelaS, 0)} s, sobreposição de 50%, ` +
+            `NFFT ${exato ? 'exato' : 'em potência de 2'} — resolução de ${f(u0.baseline ? u0.baseline.df : NaN, 3)} Hz. ` +
+            `Bandas β ${C.MRDS_BANDS[0].lo}–${C.MRDS_BANDS[0].hi} Hz e γ ${C.MRDS_BANDS[1].lo}–${C.MRDS_BANDS[1].hi} Hz. ` +
+            `Referência do desenho: ${C.MRDS_PROTOCOL.source}. Esta é uma ferramenta de pesquisa: a atribuição ` +
+            `das épocas às condições é declarada por quem analisa e sai em toda exportação.`
+        }));
+      }
+
+      node.appendChild(exportRow([
+        { label: '⤓ PNG (PSD)', fn: () => P.downloadCanvas(box.canvas, 'F35_psd_mrds') },
+        { label: '⤓ PNG (MRDS)', fn: () => P.downloadCanvas(boxB.canvas, 'F35_mrds') },
+        {
+          label: '⤓ CSV', fn: () => P.downloadText(
+            C.mrdsMeta(res) + '\n' + P.toCSV(C.mrdsTable(res)), 'F35_mrds.csv', 'text/csv')
+        },
+        {
+          label: '⤓ JSON', fn: () => P.downloadText(JSON.stringify({
+            version: C.MRDS_VERSION, protocol: C.MRDS_PROTOCOL,
+            zscoreScope: res.zscoreScope, unit: res.unit,
+            nUnits: res.nUnits, nSubjects: res.nSubjects,
+            assignment: modo === 'registros' ? atrib : opt('F35', 'janelas', {}),
+            assignmentMode: modo,
+            rows: C.mrdsTable(res), tests: res.tests,
+            limitations: C.MRDS_LIMITACOES
+          }, null, 2), 'F35_mrds.json', 'application/json')
+        }
+      ]));
+    }
+  },
+
   /* ----------------------------------------------------------------- F30 */
   {
     id: 'F30', title: 'Espectrograma — análise tempo-frequência no padrão do BRAVO',
@@ -5839,7 +6155,7 @@ const ABAS = [
   },
   {
     id: 'agudo', label: 'Agudo', sub: 'sessão · experimento', camada: 'agudo',
-    figuras: ['F1', 'F2', 'F5', 'F6', 'F7', 'F12', 'F18', 'F19', 'F20', 'F21', 'F22', 'F24', 'F30', 'F34'],
+    figuras: ['F1', 'F2', 'F5', 'F6', 'F7', 'F12', 'F18', 'F19', 'F20', 'F21', 'F22', 'F24', 'F30', 'F34', 'F35'],
     orient: {
       titulo: 'Registro agudo — sessão controlada',
       camada: 'agudo · experimental',
@@ -7165,6 +7481,80 @@ async function buildProvenance() {
         sharedCardiacDetected: cP.ok ? !!(cP.confounders.sharedCardiac || {}).detected : null,
         pairingOk: cP.ok, pairingReason: cP.ok ? null : cP.reason
       }, { figure: 'F34' });
+    }
+  }
+
+  /* ---- MRDS: só entra na proveniência se houver atribuição DECLARADA -----
+     Nenhum item do bloco MRDS é derivável do arquivo. Se ninguém declarou
+     quais épocas são repouso e quais são movimento, o passo não existe, e o
+     checklist mostra os itens como não verificáveis — que é a resposta certa,
+     e melhor do que um valor plausível vindo de palpite.                   */
+  {
+    const o35 = S.opts.F35 || {};
+    const regsP = d.indefiniteStreaming.concat(d.bsTimeDomain, d.montageTD);
+    const unidadesP = [];
+    if (o35.modo === 'janelas' && regsP.length) {
+      const r = regsP[Math.min(o35.reg || 0, regsP.length - 1)];
+      const jan = o35.janelas || {};
+      const u = { id: r.hemisphere || 'unidade', subject: sujeitoAtual() || 'sujeito', hemisphere: r.hemisphere || '?', cells: {}, fs: r.fs };
+      C.MRDS_CELLS.forEach(c => {
+        const v = jan[c.key] || [0, 0];
+        const a = Math.max(0, Math.round(v[0] * r.fs)), b2 = Math.min(r.data.length, Math.round(v[1] * r.fs));
+        if (b2 - a >= r.fs * (o35.win || 4)) u.cells[c.key] = r.data.slice(a, b2);
+      });
+      if (u.cells.rest_baseline && u.cells.move_baseline) unidadesP.push(u);
+    } else if (o35.atrib && Object.keys(o35.atrib).length) {
+      const porH = {};
+      regsP.forEach((r, i) => {
+        const cel = o35.atrib[i];
+        if (!cel) return;
+        const h = r.hemisphere || '?';
+        porH[h] = porH[h] || { id: h, subject: sujeitoAtual() || 'sujeito', hemisphere: h, cells: {}, fs: r.fs };
+        porH[h].cells[cel] = r.data;
+      });
+      Object.keys(porH).forEach(h => { if (porH[h].cells.rest_baseline && porH[h].cells.move_baseline) unidadesP.push(porH[h]); });
+    }
+    if (unidadesP.length) {
+      const mres = C.mrdsDesign(unidadesP, {
+        zscoreScope: o35.z || 'session',
+        windowSamples: Math.round((o35.win || 4) * (unidadesP[0].fs || 250)),
+        exactNfft: o35.nfft !== false, relativeFloor: (o35.piso || 5) / 100
+      });
+      const u0 = mres.units[0];
+      const par0 = u0.baseline || u0.post;
+      const t0 = mres.tests[(mres.bands[0] || {}).key] || {};
+      const larga = mres.units.filter(u => {
+        const v = (u.baseline && u.baseline.verdict) || {};
+        return v.ok && v.broadband && !v.bandSpecific.length;
+      }).length;
+      prov.record('metrics.mrds', {
+        formula: 'MRDS_x = (P_movimento_x − P_repouso_x) / P_repouso_x',
+        secondLevel: 'ΔMRDS = MRDS(pós) − MRDS(basal)',
+        protocol: C.MRDS_PROTOCOL.source,
+        assignmentMode: o35.modo === 'janelas' ? 'janelas dentro de uma gravação' : 'gravações separadas',
+        assignmentSource: 'declarada por quem analisa — o JSON do Percept não carrega rótulo de tarefa',
+        cellsDeclared: unidadesP.reduce((a, u) => a + Object.keys(u.cells).length, 0),
+        nUnits: mres.nUnits, nSubjects: mres.nSubjects,
+        zscoreScope: mres.zscoreScope,
+        zscoreConsequence: u0.normalization.note,
+        unit: mres.unit,
+        windowSamples: (u0.psd.rest_baseline || u0.psd.rest_post || {}).windowSamples,
+        overlap: (u0.psd.rest_baseline || u0.psd.rest_post || {}).overlap,
+        nfft: par0 ? par0.nfft : null,
+        resolutionHz: par0 ? +par0.df.toFixed(4) : null,
+        bands: C.MRDS_BANDS.map(b => `${b.key} ${b.lo}–${b.hi} Hz`).join(', '),
+        hasBothMoments: mres.hasBothMoments,
+        relativeFloor: (o35.piso || 5) / 100,
+        nBroadbandOnly: larga,
+        varianceRatio: par0 && isFinite(par0.varianceRatio) ? +par0.varianceRatio.toFixed(5) : null,
+        pairedTest: isFinite(t0.p) ? 'permutação pareada exata por troca de sinal (enumerada)' : null,
+        pairedP: isFinite(t0.p) ? t0.p : NaN,
+        pairedPtTest: t0.tTest && isFinite(t0.tTest.p) ? +t0.tTest.p.toFixed(5) : NaN,
+        minAchievableP: isFinite(t0.minAchievableP) ? t0.minAchievableP : NaN,
+        testsDisagree: !!t0.testsDisagree,
+        deviceCaveat: C.HARDWARE_FILTERS.gammaCaveat,
+        limitations: C.MRDS_LIMITACOES
+      }, { figure: 'F35', nIn: regsP.length, nOut: mres.nUnits });
     }
   }
   return prov;

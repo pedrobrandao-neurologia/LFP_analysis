@@ -8,7 +8,7 @@
 
 ## O que é
 
-Um aplicativo web de **arquivo único** (`index.html`, 1323 KB) que lê os *Session Reports* em JSON exportados do programador do neuroestimulador Medtronic Percept™ e produz **33 figuras interativas** organizadas em sete abas, métricas quantitativas, relatório clínico em PDF e exportações prontas para estatística.
+Um aplicativo web de **arquivo único** (`index.html`, 1372 KB) que lê os *Session Reports* em JSON exportados do programador do neuroestimulador Medtronic Percept™ e produz **34 figuras interativas** organizadas em sete abas, métricas quantitativas, relatório clínico em PDF e exportações prontas para estatística.
 
 Abre com **duplo clique**. Não instala nada, não precisa de servidor, não faz uma única requisição de rede.
 
@@ -74,7 +74,7 @@ Cada aba abre com um cabeçalho de orientação que declara **a camada de infer�
 | Modo | Para quê | O que mostra |
 |---|---|---|
 | **Clínico** | Consulta, decisão de programação | O subconjunto de figuras que responde às perguntas de consultório, escolhido pelo perfil de doença, mais leituras em linguagem simples |
-| **Pesquisa** | Análise, publicação | Todas as 33 figuras, todos os controles de parâmetro, todas as exportações |
+| **Pesquisa** | Análise, publicação | Todas as 34 figuras, todos os controles de parâmetro, todas as exportações |
 
 Os mesmos números, as mesmas ressalvas e os mesmos parâmetros declarados nos dois modos — o modo clínico esconde figuras, nunca esconde incerteza. A preferência fica no `localStorage` (apenas a preferência de interface; nenhum dado de paciente é gravado).
 
@@ -94,7 +94,7 @@ O perfil é sugerido pelo conteúdo do JSON (alvo do eletrodo, banda de sensing)
 
 ---
 
-## As 33 figuras
+## As 34 figuras
 
 ### Sinal agudo — espectro e domínio do tempo
 
@@ -111,6 +111,7 @@ O perfil é sugerido pelo conteúdo do JSON (alvo do eletrodo, banda de sensing)
 | **F22** | Gama fina vs. gama *entrained* em f_stim/2 | espectro até 95 Hz | Se um pico de gama é endógeno ou eco da própria estimulação |
 | **F30** | **Espectrograma no padrão do BRAVO** | sinal bruto | Como o espectro muda ao longo do registro, por cinco métodos, com a escala de densidade do `scipy` |
 | **F34** | **ODR e features por janela** | sinal bruto | Como teta, gama de pico e beta baixo se movem juntos ao longo do registro, com a coerência entre os dois STN e a variação espectral do envelope |
+| **F35** | MRDS — movimento vs repouso, ΔMRDS entre momentos | `BrainSenseTimeDomain`, `IndefiniteStreaming` | Se o movimento dessincroniza o beta, e se uma intervenção muda isso |
 
 ### Sinal crônico — dias e semanas
 
@@ -297,7 +298,7 @@ A escala de densidade é conferida contra identidades exatas, não contra outra 
 
 ### Suíte de regressão
 
-`node tests/run.mjs` — **317 testes**, incluindo os 33 renderizadores de figura exercitados sobre um DOM mínimo simulado. Nenhum teste pode ser removido ou afrouxado para fazer código novo passar.
+`node tests/run.mjs` — **327 testes**, incluindo os 34 renderizadores de figura exercitados sobre um DOM mínimo simulado. Nenhum teste pode ser removido ou afrouxado para fazer código novo passar.
 
 ---
 
@@ -306,7 +307,7 @@ A escala de densidade é conferida contra identidades exatas, não contra outra 
 ```bash
 node tools/gerar_exemplo.mjs examples   # dataset sintético (nenhum dado real)
 cd src && node build.mjs                # gera index.html a partir de src/
-node tests/run.mjs                      # 317 testes
+node tests/run.mjs                      # 327 testes
 node tests/benchmark.mjs --check        # 87 critérios, falha se houver regressão
 ```
 

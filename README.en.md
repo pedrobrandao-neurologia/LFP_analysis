@@ -10,7 +10,7 @@
 
 ## What it is
 
-A **single-file** web application (`index.html`, 1323 KB) that reads the JSON *Session Reports* exported from the Medtronic Percept™ clinician programmer and produces **33 interactive figures** organised into seven tabs, quantitative metrics, a clinical PDF report and statistics-ready exports.
+A **single-file** web application (`index.html`, 1372 KB) that reads the JSON *Session Reports* exported from the Medtronic Percept™ clinician programmer and produces **34 interactive figures** organised into seven tabs, quantitative metrics, a clinical PDF report and statistics-ready exports.
 
 Opens by **double-click**. Nothing to install, no server required, and it never issues a single network request.
 
@@ -113,6 +113,7 @@ The profile is suggested from the JSON content (lead target, sensing band) and c
 | **F22** | Finely-tuned gamma vs. entrained gamma at f_stim/2 | spectrum reaching 95 Hz | Whether a gamma peak is endogenous or an echo of stimulation itself |
 | **F30** | **Spectrogram following BRAVO** | raw signal | How the spectrum changes across the recording, by five methods, using the `scipy` density scaling |
 | **F34** | **ODR and windowed features** | raw signal | How theta, peak gamma and low beta move together across the recording, with inter-STN coherence and the spectral variation of the envelope |
+| **F35** | MRDS — movement vs rest, ΔMRDS across moments | `BrainSenseTimeDomain`, `IndefiniteStreaming` | Whether movement desynchronizes beta, and whether an intervention changes it |
 
 ### Chronic signal — days and weeks
 
@@ -299,7 +300,7 @@ The density scaling is checked against exact identities rather than against anot
 
 ### Regression suite
 
-`node tests/run.mjs` — **317 tests**, including all 33 figure renderers exercised against a minimal simulated DOM. No existing test may be removed or weakened to make new code pass.
+`node tests/run.mjs` — **327 tests**, including all 34 figure renderers exercised against a minimal simulated DOM. No existing test may be removed or weakened to make new code pass.
 
 ---
 
@@ -308,7 +309,7 @@ The density scaling is checked against exact identities rather than against anot
 ```bash
 node tools/gerar_exemplo.mjs examples   # synthetic dataset (no real data)
 cd src && node build.mjs                # generates index.html from src/
-node tests/run.mjs                      # 317 tests
+node tests/run.mjs                      # 327 tests
 node tests/benchmark.mjs --check        # 87 criteria, fails on regression
 ```
 
