@@ -8,7 +8,7 @@
 
 ## O que é
 
-Um aplicativo web de **arquivo único** (`index.html`, 1270 KB) que lê os *Session Reports* em JSON exportados do programador do neuroestimulador Medtronic Percept™ e produz **33 figuras interativas** organizadas em sete abas, métricas quantitativas, relatório clínico em PDF e exportações prontas para estatística.
+Um aplicativo web de **arquivo único** (`index.html`, 1297 KB) que lê os *Session Reports* em JSON exportados do programador do neuroestimulador Medtronic Percept™ e produz **33 figuras interativas** organizadas em sete abas, métricas quantitativas, relatório clínico em PDF e exportações prontas para estatística.
 
 Abre com **duplo clique**. Não instala nada, não precisa de servidor, não faz uma única requisição de rede.
 
@@ -297,7 +297,7 @@ A escala de densidade é conferida contra identidades exatas, não contra outra 
 
 ### Suíte de regressão
 
-`node tests/run.mjs` — **300 testes**, incluindo os 33 renderizadores de figura exercitados sobre um DOM mínimo simulado. Nenhum teste pode ser removido ou afrouxado para fazer código novo passar.
+`node tests/run.mjs` — **309 testes**, incluindo os 33 renderizadores de figura exercitados sobre um DOM mínimo simulado. Nenhum teste pode ser removido ou afrouxado para fazer código novo passar.
 
 ---
 
@@ -306,7 +306,7 @@ A escala de densidade é conferida contra identidades exatas, não contra outra 
 ```bash
 node tools/gerar_exemplo.mjs examples   # dataset sintético (nenhum dado real)
 cd src && node build.mjs                # gera index.html a partir de src/
-node tests/run.mjs                      # 300 testes
+node tests/run.mjs                      # 309 testes
 node tests/benchmark.mjs --check        # 87 critérios, falha se houver regressão
 ```
 
@@ -319,6 +319,48 @@ Instale o *hook* que bloqueia commits com dados identificadores:
 ```bash
 cp tools/pre-commit .git/hooks/ && chmod +x .git/hooks/pre-commit
 ```
+
+---
+
+## Esquema do eletrodo, em escala e com os contatos em uso marcados
+
+O modelo do eletrodo é **detectado automaticamente** no `LeadConfiguration` do JSON, e as figuras
+que citam contatos passam a mostrar o eletrodo desenhado em escala real, com os contatos daquela
+figura destacados:
+
+| Figura | O que marca |
+|---|---|
+| **F1** — Survey | o par bipolar cujo espectro está sendo mostrado |
+| **F3** — impedâncias | os contatos fora dos limites de curto ou circuito aberto do fabricante |
+| **F6** — domínio do tempo | o par que gerou o traçado |
+| **F7** — rampa de estimulação | catodo, anodo **e** o par de sensing, juntos |
+| **F30** — espectrograma | o par que gerou o espectrograma |
+| **F31** — passaporte | onde o biomarcador foi definido, nos dois hemisférios |
+
+Modelos com geometria: **3387**, **3389**, **3391**, **SenSight B33005** e **B33015** — altura de
+contato, espaçamento, extensão do arranjo, ponta distal e diâmetro do corpo, em milímetros, dos
+manuais de implante (3387/3389, 2020; SenSight, 2021).
+
+**Por que isso não é enfeite.** Um par "0-3" abrange **7,5 mm** num 3389, **10,5 mm** num 3387 e
+**24 mm** num 3391 — mesmo rótulo, situações anatômicas diferentes. Sem o desenho, quem lê o
+gráfico não tem como saber qual está vendo.
+
+Três decisões de honestidade que valem registrar:
+
+- **Modelo não reconhecido não vira eletrodo genérico.** O painel diz que não desenhou e por quê —
+  um desenho errado seria pior do que nenhum.
+- **Num eletrodo direcional não existe contato "1".** O nível 1 é 1a/1b/1c, e quando o aparelho
+  registra em "1-3" ele usa os três segmentos em curto. O desenho marca os três e explica que é
+  assim que o aparelho funciona.
+- **A orientação anatômica dos segmentos não é afirmada.** Os ângulos a/b/c são de *nomenclatura*
+  (convenção do fabricante); a rotação real no crânio vem do marcador radiopaco na radiografia
+  intraoperatória e **não está no JSON**. O desenho diz isso.
+- **As medidas do 3391 saem marcadas como não conferidas** — vêm de catálogo e da literatura, não
+  do manual de implante.
+
+As figuras vetoriais de referência de onde as proporções vieram estão em
+[`docs/referencias/eletrodos/`](docs/referencias/eletrodos/), com a explicação de por que o
+aplicativo redesenha em vez de embutir os SVG.
 
 ---
 

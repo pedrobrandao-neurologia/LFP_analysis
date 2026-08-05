@@ -80,6 +80,10 @@ import { assessEligibility, PREVALENCIA_BETA } from './adbs/eligibility.js';
 import { simulateAdbs, thresholdSweep, suggestThresholds } from './adbs/simulate.js';
 import { fitDoseResponse, MODELOS } from './adbs/doseresponse.js';
 import { levenbergMarquardt, solveGaussJordan } from './stats/optimize.js';
+import {
+  LEAD_MODELS, leadSpec, leadsOf, contactsOfChannel, parseContactId,
+  leadGeometry, leadSummary, leadSpan, expandContacts
+} from './leads/index.js';
 
 const API = {
   parsePercept, parsePerceptText, MODALITIES, BANDS, HARDWARE_FILTERS, hardwareFilterDescription, IMPEDANCE_LIMITS, shortThresholdOhms, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId,
@@ -156,7 +160,10 @@ const API = {
   dailyComposition, compareConditions, circadianStateProfile, timelineGrid,
   doseMarkers, diaryVsLfpAgreement, levodopaResponse,
   /* confiabilidade longitudinal, impedância e uso (Onda 4.3) */
-  icc, impedanceDrift, usageAndBattery, longitudinalReliability
+  icc, impedanceDrift, usageAndBattery, longitudinalReliability,
+  /* geometria dos eletrodos, em escala real (Onda 13) */
+  LEAD_MODELS, leadSpec, leadsOf, contactsOfChannel, parseContactId,
+  leadGeometry, leadSummary, leadSpan, expandContacts
 };
 
 export default API;

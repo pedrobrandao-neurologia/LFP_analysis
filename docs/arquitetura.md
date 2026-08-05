@@ -172,3 +172,31 @@ Um passo de proveniência, `whitepaper.compliance`, registra a versão do docume
 lista dos itens que o software declara seguir; um grupo do PERCEPT-REPORT
 (*Features por janela*) e os itens `hardware_filters`, `blanking` e `device_state` passaram a ser
 preenchidos a partir dele.
+
+---
+
+## Geometria dos eletrodos
+
+`src/core/leads/index.js` é a camada mais baixa do núcleo: dados de geometria em **milímetros** e
+leitura de nome de canal, sem nenhuma dependência e sem desenhar nada. Quem desenha é
+`src/percept-plot.js` (`drawLead`, `drawLeadAxial`), que recebe as medidas e decide a escala em
+pixels; quem monta o painel é `painelEletrodo` / `painelEletrodosBilateral` em `src/app.js`.
+
+Modelos cobertos: 3387, 3389, 3391, SenSight B33005 e B33015. Fontes nos manuais de implante da
+Medtronic (3387/3389, 2020; SenSight, 2021); o **3391 sai com `dimensionsVerified: false`** porque
+suas medidas vêm de catálogo e da literatura.
+
+Três invariantes desta camada:
+
+1. **Modelo não identificado não produz geometria.** `leadGeometry` devolve `ok: false` com o
+   motivo, e o painel diz que não desenhou — nunca substitui por um eletrodo genérico.
+2. **Nível pedido num eletrodo direcional expande para os segmentos** (`expandContacts`), porque
+   num 1-3-3-1 não existe contato anelar nos níveis 1 e 2: o aparelho usa os três segmentos em
+   curto. A expansão sai declarada na legenda.
+3. **A orientação anatômica não é afirmada.** Os ângulos a/b/c são de nomenclatura; a rotação real
+   no crânio vem do marcador radiopaco e não está no JSON (o campo de orientação do SenSight
+   existe em `LeadConfiguration` e não é usado nesta versão — item C3 da auditoria).
+
+As figuras vetoriais de referência ficam em `docs/referencias/eletrodos/`, com um README que
+explica por que o aplicativo redesenha em canvas em vez de embutir os SVG: eles são estáticos e não
+sabem quais contatos estão em uso agora, que é justamente o ponto.

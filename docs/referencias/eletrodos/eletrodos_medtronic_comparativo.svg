@@ -1,0 +1,144 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1030" height="744" viewBox="0 0 1030 744" role="img" aria-label="Comparação em escala dos eletrodos de DBS da Medtronic">
+<defs>
+  <linearGradient id="metcmp" x1="0" y1="0" x2="1" y2="0">
+    <stop offset="0%" stop-color="#2B3441"/>
+    <stop offset="32%" stop-color="#6B7787"/>
+    <stop offset="58%" stop-color="#39424F"/>
+    <stop offset="100%" stop-color="#2B3441"/>
+  </linearGradient>
+  <linearGradient id="shfcmp" x1="0" y1="0" x2="1" y2="0">
+    <stop offset="0%" stop-color="#D7DBE1"/>
+    <stop offset="35%" stop-color="#FBFCFD"/>
+    <stop offset="100%" stop-color="#D2D7DE"/>
+  </linearGradient>
+  <marker id="arcmp" viewBox="0 0 10 10" refX="9" refY="5"
+          markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+    <path d="M 0 0 L 10 5 L 0 10 z" fill="#667085"/>
+  </marker>
+</defs>
+<rect width="1030" height="744" fill="#FFFFFF"/>
+<text x="40.0" y="48.0" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#101828" text-anchor="start" >Eletrodos de DBS da Medtronic — comparação em escala</text>
+<text x="40.0" y="74.0" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="400" fill="#475467" text-anchor="start" >Vista lateral, pontas distais alinhadas · 1 mm = 13 px</text>
+<line x1="40" y1="98" x2="990" y2="98" stroke="#D0D5DD" stroke-width="1"/>
+<line x1="186.0" y1="494.5" x2="186.0" y2="150.0" stroke="#D0D5DD" stroke-width="1.2"/>
+<line x1="186.0" y1="494.5" x2="196.0" y2="494.5" stroke="#667085" stroke-width="1"/>
+<text x="180.0" y="498.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#667085" text-anchor="end" >0</text>
+<line x1="186.0" y1="481.5" x2="191.0" y2="481.5" stroke="#D0D5DD" stroke-width="1"/>
+<line x1="186.0" y1="468.5" x2="191.0" y2="468.5" stroke="#D0D5DD" stroke-width="1"/>
+<line x1="186.0" y1="455.5" x2="191.0" y2="455.5" stroke="#D0D5DD" stroke-width="1"/>
+<line x1="186.0" y1="442.5" x2="191.0" y2="442.5" stroke="#D0D5DD" stroke-width="1"/>
+<line x1="186.0" y1="429.5" x2="196.0" y2="429.5" stroke="#667085" stroke-width="1"/>
+<text x="180.0" y="433.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#667085" text-anchor="end" >5</text>
+<line x1="186.0" y1="416.5" x2="191.0" y2="416.5" stroke="#D0D5DD" stroke-width="1"/>
+<line x1="186.0" y1="403.5" x2="191.0" y2="403.5" stroke="#D0D5DD" stroke-width="1"/>
+<line x1="186.0" y1="390.5" x2="191.0" y2="390.5" stroke="#D0D5DD" stroke-width="1"/>
+<line x1="186.0" y1="377.5" x2="191.0" y2="377.5" stroke="#D0D5DD" stroke-width="1"/>
+<line x1="186.0" y1="364.5" x2="196.0" y2="364.5" stroke="#667085" stroke-width="1"/>
+<text x="180.0" y="368.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#667085" text-anchor="end" >10</text>
+<line x1="186.0" y1="351.5" x2="191.0" y2="351.5" stroke="#D0D5DD" stroke-width="1"/>
+<line x1="186.0" y1="338.5" x2="191.0" y2="338.5" stroke="#D0D5DD" stroke-width="1"/>
+<line x1="186.0" y1="325.5" x2="191.0" y2="325.5" stroke="#D0D5DD" stroke-width="1"/>
+<line x1="186.0" y1="312.5" x2="191.0" y2="312.5" stroke="#D0D5DD" stroke-width="1"/>
+<line x1="186.0" y1="299.5" x2="196.0" y2="299.5" stroke="#667085" stroke-width="1"/>
+<text x="180.0" y="303.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#667085" text-anchor="end" >15</text>
+<line x1="186.0" y1="286.5" x2="191.0" y2="286.5" stroke="#D0D5DD" stroke-width="1"/>
+<line x1="186.0" y1="273.5" x2="191.0" y2="273.5" stroke="#D0D5DD" stroke-width="1"/>
+<line x1="186.0" y1="260.5" x2="191.0" y2="260.5" stroke="#D0D5DD" stroke-width="1"/>
+<line x1="186.0" y1="247.5" x2="191.0" y2="247.5" stroke="#D0D5DD" stroke-width="1"/>
+<line x1="186.0" y1="234.5" x2="196.0" y2="234.5" stroke="#667085" stroke-width="1"/>
+<text x="180.0" y="238.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#667085" text-anchor="end" >20</text>
+<line x1="186.0" y1="221.5" x2="191.0" y2="221.5" stroke="#D0D5DD" stroke-width="1"/>
+<line x1="186.0" y1="208.5" x2="191.0" y2="208.5" stroke="#D0D5DD" stroke-width="1"/>
+<line x1="186.0" y1="195.5" x2="191.0" y2="195.5" stroke="#D0D5DD" stroke-width="1"/>
+<line x1="186.0" y1="182.5" x2="191.0" y2="182.5" stroke="#D0D5DD" stroke-width="1"/>
+<line x1="186.0" y1="169.5" x2="196.0" y2="169.5" stroke="#667085" stroke-width="1"/>
+<text x="180.0" y="173.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#667085" text-anchor="end" >25</text>
+<text x="180.0" y="516.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#667085" text-anchor="end" >mm</text>
+<path d="M 235.7 126.0 L 235.7 486.2 A 8.3 8.3 0 0 0 252.3 486.2 L 252.3 126.0 Z" fill="url(#shfcmp)" stroke="#98A2B3" stroke-width="1.2"/>
+<rect x="235.7" y="377.5" width="16.5" height="19.5" fill="url(#metcmp)" stroke="#161C24" stroke-width="0.9"/>
+<rect x="235.7" y="403.5" width="16.5" height="19.5" fill="url(#metcmp)" stroke="#161C24" stroke-width="0.9"/>
+<rect x="235.7" y="429.5" width="16.5" height="19.5" fill="url(#metcmp)" stroke="#161C24" stroke-width="0.9"/>
+<rect x="235.7" y="455.5" width="16.5" height="19.5" fill="url(#metcmp)" stroke="#161C24" stroke-width="0.9"/>
+<text x="244.0" y="128.0" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#101828" text-anchor="middle" >3389</text>
+<text x="244.0" y="146.0" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#475467" text-anchor="middle" >anelar</text>
+<text x="166.0" y="538.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#667085" text-anchor="end" >contatos</text>
+<text x="244.0" y="538.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#101828" text-anchor="middle" >4</text>
+<text x="166.0" y="559.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#667085" text-anchor="end" >altura</text>
+<text x="244.0" y="559.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#101828" text-anchor="middle" >1,5 mm</text>
+<text x="166.0" y="580.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#667085" text-anchor="end" >espaçamento</text>
+<text x="244.0" y="580.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#101828" text-anchor="middle" >0,5 mm</text>
+<text x="166.0" y="601.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#667085" text-anchor="end" >extensão</text>
+<text x="244.0" y="601.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#101828" text-anchor="middle" >7,5 mm</text>
+<text x="166.0" y="622.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#667085" text-anchor="end" >diâmetro</text>
+<text x="244.0" y="622.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#101828" text-anchor="middle" >1,27 mm</text>
+<text x="166.0" y="643.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#667085" text-anchor="end" >ponta distal</text>
+<text x="244.0" y="643.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#101828" text-anchor="middle" >1,5 mm</text>
+<path d="M 409.7 126.0 L 409.7 486.2 A 8.3 8.3 0 0 0 426.3 486.2 L 426.3 126.0 Z" fill="url(#shfcmp)" stroke="#98A2B3" stroke-width="1.2"/>
+<rect x="409.7" y="338.5" width="16.5" height="19.5" fill="url(#metcmp)" stroke="#161C24" stroke-width="0.9"/>
+<rect x="409.7" y="377.5" width="16.5" height="19.5" fill="url(#metcmp)" stroke="#161C24" stroke-width="0.9"/>
+<rect x="409.7" y="416.5" width="16.5" height="19.5" fill="url(#metcmp)" stroke="#161C24" stroke-width="0.9"/>
+<rect x="409.7" y="455.5" width="16.5" height="19.5" fill="url(#metcmp)" stroke="#161C24" stroke-width="0.9"/>
+<text x="418.0" y="128.0" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#101828" text-anchor="middle" >3387</text>
+<text x="418.0" y="146.0" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#475467" text-anchor="middle" >anelar</text>
+<text x="418.0" y="538.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#101828" text-anchor="middle" >4</text>
+<text x="418.0" y="559.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#101828" text-anchor="middle" >1,5 mm</text>
+<text x="418.0" y="580.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#101828" text-anchor="middle" >1,5 mm</text>
+<text x="418.0" y="601.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#101828" text-anchor="middle" >10,5 mm</text>
+<text x="418.0" y="622.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#101828" text-anchor="middle" >1,27 mm</text>
+<text x="418.0" y="643.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#101828" text-anchor="middle" >1,5 mm</text>
+<path d="M 583.7 126.0 L 583.7 486.2 A 8.3 8.3 0 0 0 600.3 486.2 L 600.3 126.0 Z" fill="url(#shfcmp)" stroke="#98A2B3" stroke-width="1.2"/>
+<rect x="583.7" y="163.0" width="16.5" height="39.0" fill="url(#metcmp)" stroke="#161C24" stroke-width="0.9"/>
+<rect x="583.7" y="254.0" width="16.5" height="39.0" fill="url(#metcmp)" stroke="#161C24" stroke-width="0.9"/>
+<rect x="583.7" y="345.0" width="16.5" height="39.0" fill="url(#metcmp)" stroke="#161C24" stroke-width="0.9"/>
+<rect x="583.7" y="436.0" width="16.5" height="39.0" fill="url(#metcmp)" stroke="#161C24" stroke-width="0.9"/>
+<text x="592.0" y="128.0" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#101828" text-anchor="middle" >3391</text>
+<text x="592.0" y="146.0" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#475467" text-anchor="middle" >anelar</text>
+<text x="592.0" y="538.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#101828" text-anchor="middle" >4</text>
+<text x="592.0" y="559.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#101828" text-anchor="middle" >3,0 mm</text>
+<text x="592.0" y="580.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#101828" text-anchor="middle" >4,0 mm</text>
+<text x="592.0" y="601.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#101828" text-anchor="middle" >24,0 mm</text>
+<text x="592.0" y="622.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#101828" text-anchor="middle" >1,27 mm</text>
+<text x="592.0" y="643.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#101828" text-anchor="middle" >1,5 mm</text>
+<path d="M 757.2 126.0 L 757.2 485.7 A 8.8 8.8 0 0 0 774.8 485.7 L 774.8 126.0 Z" fill="url(#shfcmp)" stroke="#98A2B3" stroke-width="1.2"/>
+<rect x="757.2" y="384.0" width="17.7" height="19.5" fill="url(#metcmp)" stroke="#161C24" stroke-width="0.9"/>
+<rect x="757.2" y="410.0" width="3.5" height="19.5" fill="#2B3441" stroke="#161C24" stroke-width="0.8"/>
+<rect x="762.3" y="410.0" width="7.4" height="19.5" fill="url(#metcmp)" stroke="#161C24" stroke-width="0.9"/>
+<rect x="771.3" y="410.0" width="3.5" height="19.5" fill="#2B3441" stroke="#161C24" stroke-width="0.8"/>
+<rect x="757.2" y="436.0" width="3.5" height="19.5" fill="#2B3441" stroke="#161C24" stroke-width="0.8"/>
+<rect x="762.3" y="436.0" width="7.4" height="19.5" fill="url(#metcmp)" stroke="#161C24" stroke-width="0.9"/>
+<rect x="771.3" y="436.0" width="3.5" height="19.5" fill="#2B3441" stroke="#161C24" stroke-width="0.8"/>
+<rect x="757.2" y="462.0" width="17.7" height="19.5" fill="url(#metcmp)" stroke="#161C24" stroke-width="0.9"/>
+<path d="M 760.0 360.6 L 766.0 350.2 L 772.0 360.6 Z" fill="#B4471F" opacity="0.92"/>
+<path d="M 760.0 319.0 L 772.0 319.0 L 766.0 329.4 Z" fill="#B4471F" opacity="0.92"/>
+<text x="766.0" y="128.0" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#101828" text-anchor="middle" >B33005</text>
+<text x="766.0" y="146.0" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#475467" text-anchor="middle" >direcional</text>
+<text x="766.0" y="538.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#101828" text-anchor="middle" >8 (1-3-3-1)</text>
+<text x="766.0" y="559.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#101828" text-anchor="middle" >1,5 mm</text>
+<text x="766.0" y="580.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#101828" text-anchor="middle" >0,5 mm</text>
+<text x="766.0" y="601.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#101828" text-anchor="middle" >7,5 mm</text>
+<text x="766.0" y="622.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#101828" text-anchor="middle" >1,36 mm</text>
+<text x="766.0" y="643.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#101828" text-anchor="middle" >1,0 mm</text>
+<path d="M 931.2 126.0 L 931.2 485.7 A 8.8 8.8 0 0 0 948.8 485.7 L 948.8 126.0 Z" fill="url(#shfcmp)" stroke="#98A2B3" stroke-width="1.2"/>
+<rect x="931.2" y="345.0" width="17.7" height="19.5" fill="url(#metcmp)" stroke="#161C24" stroke-width="0.9"/>
+<rect x="931.2" y="384.0" width="3.5" height="19.5" fill="#2B3441" stroke="#161C24" stroke-width="0.8"/>
+<rect x="936.3" y="384.0" width="7.4" height="19.5" fill="url(#metcmp)" stroke="#161C24" stroke-width="0.9"/>
+<rect x="945.3" y="384.0" width="3.5" height="19.5" fill="#2B3441" stroke="#161C24" stroke-width="0.8"/>
+<rect x="931.2" y="423.0" width="3.5" height="19.5" fill="#2B3441" stroke="#161C24" stroke-width="0.8"/>
+<rect x="936.3" y="423.0" width="7.4" height="19.5" fill="url(#metcmp)" stroke="#161C24" stroke-width="0.9"/>
+<rect x="945.3" y="423.0" width="3.5" height="19.5" fill="#2B3441" stroke="#161C24" stroke-width="0.8"/>
+<rect x="931.2" y="462.0" width="17.7" height="19.5" fill="url(#metcmp)" stroke="#161C24" stroke-width="0.9"/>
+<path d="M 934.0 321.6 L 940.0 311.2 L 946.0 321.6 Z" fill="#B4471F" opacity="0.92"/>
+<path d="M 934.0 280.0 L 946.0 280.0 L 940.0 290.4 Z" fill="#B4471F" opacity="0.92"/>
+<text x="940.0" y="128.0" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="15" font-weight="700" fill="#101828" text-anchor="middle" >B33015</text>
+<text x="940.0" y="146.0" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#475467" text-anchor="middle" >direcional</text>
+<text x="940.0" y="538.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#101828" text-anchor="middle" >8 (1-3-3-1)</text>
+<text x="940.0" y="559.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#101828" text-anchor="middle" >1,5 mm</text>
+<text x="940.0" y="580.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#101828" text-anchor="middle" >1,5 mm</text>
+<text x="940.0" y="601.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#101828" text-anchor="middle" >10,5 mm</text>
+<text x="940.0" y="622.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#101828" text-anchor="middle" >1,36 mm</text>
+<text x="940.0" y="643.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="400" fill="#101828" text-anchor="middle" >1,0 mm</text>
+<line x1="40" y1="512" x2="990" y2="512" stroke="#D0D5DD" stroke-width="1"/>
+<line x1="40" y1="674" x2="990" y2="674" stroke="#D0D5DD" stroke-width="1"/>
+<text x="40.0" y="700.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#475467" text-anchor="start" >Triângulos em laranja = marcadores de orientação radiopacos dos eletrodos SenSight (proximal → segmentos a; distal → segmentos b).</text>
+<text x="40.0" y="720.5" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="12" font-weight="400" fill="#667085" text-anchor="start" >Fontes: manuais de implante Medtronic 3387/3389 (2020) e SenSight B33005/B33015 (2021); dados do 3391 conforme catálogo e literatura.</text>
+</svg>
