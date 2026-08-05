@@ -19,6 +19,52 @@ export function thresholdSummary(vals, lower, upper) {
   };
 }
 
+/* censoringSummary(parsedList) — contabilidade da CENSURA do aparelho, somada
+   entre arquivos e separada por hemisfério.
+
+   Censura NÃO é perda de pacote. Perda de pacote é falha de telemetria; censura
+   é o aparelho decidindo que aquela amostra tinha artefato e marcando-a com
+   sinal negativo (UC202012929cEN FY24, p. 24). Somar as duas esconderia a única
+   coisa que as distingue — e a censura tem interpretação clínica própria, já que
+   ela se concentra onde há movimento e onde há ECG.                          */
+export function censoringSummary(parsedList) {
+  const porHemi = {};
+  let n = 0, cens = 0;
+  (parsedList || []).forEach(p => {
+    const c = (p && p.trendCensoring) || {};
+    Object.keys(c).forEach(h => {
+      const a = porHemi[h] || (porHemi[h] = { n: 0, nCensoredLfp: 0, nCensoredMa: 0, nCensored: 0 });
+      a.n += c[h].n || 0;
+      a.nCensoredLfp += c[h].nCensoredLfp || 0;
+      a.nCensoredMa += c[h].nCensoredMa || 0;
+      a.nCensored += c[h].nCensored || 0;
+    });
+  });
+  Object.keys(porHemi).forEach(h => {
+    const a = porHemi[h];
+    a.pctCensoredLfp = a.n ? +(100 * a.nCensoredLfp / a.n).toFixed(3) : 0;
+    a.pctCensoredMa = a.n ? +(100 * a.nCensoredMa / a.n).toFixed(3) : 0;
+    a.pctCensored = a.n ? +(100 * a.nCensored / a.n).toFixed(3) : 0;
+    n += a.n; cens += a.nCensored;
+  });
+  const hemis = Object.keys(porHemi);
+  return {
+    ok: hemis.length > 0,
+    byHemisphere: porHemi,
+    n, nCensored: cens,
+    pctCensored: n ? +(100 * cens / n).toFixed(3) : 0,
+    rule: 'valor negativo no LfpTrendLogs = amostra censurada pelo aparelho para evitar artefato ' +
+      '(Medtronic UC202012929cEN FY24, p. 24). Vira NaN e é contada aqui.',
+    separateFromPacketLoss: 'esta contagem é INDEPENDENTE da perda de pacotes: uma é decisão do aparelho sobre a ' +
+      'qualidade do sinal, a outra é falha de telemetria',
+    reading: !hemis.length ? 'nenhum Timeline neste conjunto de arquivos'
+      : cens === 0 ? `nenhuma das ${n} amostras do Timeline foi censurada pelo aparelho`
+        : `${cens} de ${n} amostras (${(100 * cens / n).toFixed(2)}%) foram censuradas pelo aparelho e não entram em ` +
+          'nenhuma estatística. A censura não é aleatória: ela se concentra onde o aparelho suspeitou de artefato, ' +
+          'o que costuma coincidir com movimento — e movimento correlaciona com estado motor'
+  };
+}
+
 export function mergeTrend(parsedList) {
   const out = {};
   parsedList.forEach(p => Object.keys(p.trend || {}).forEach(h => { out[h] = (out[h] || []).concat(p.trend[h]); }));

@@ -88,7 +88,9 @@ const CFG_DAY_MS = 86400000;
 /* Meia-largura assumida da banda de potência do Timeline, em Hz.
    O JSON não declara a largura; ver cabeçalho. */
 const CFG_BAND_HALFWIDTH_HZ = 2.5;
-const CFG_BAND_SOURCE = 'assumida — o JSON do Percept declara a frequência central e não a largura da banda integrada';
+const CFG_BAND_SOURCE = 'documentada pelo fabricante como aproximadamente 5 Hz (Medtronic UC202012929cEN FY24, ' +
+  'p. 6 e 7); o JSON declara a frequência central e NÃO a largura, então a largura exata deste registro continua ' +
+  'não verificável';
 
 /* Tolerâncias de comparação, TODAS explícitas e todas exportadas no resultado.
    Comparar ponto flutuante com === produziria "mudança" a cada arredondamento
@@ -809,6 +811,26 @@ export function segmentTrendByConfig(rows, blocks, opts) {
    Aceita o array `blocks` ou o resultado inteiro de configBlocks.
    `level`: 'ok' | 'atencao' | 'proibido' — governa a cor e se a interface libera
    a comparação; 'proibido' é metodológico, não clínico.                      */
+/* B3 — a unidade do "LFP" do Timeline, DOCUMENTADA.
+
+   "This number represents the LFP power of the selected frequency band. It is
+    calculated as the SUM OF THE SQUARED LFP MAGNITUDE at each frequency within
+    the selected band, similar to the Area Under the Curve (AUC)."
+   — Medtronic UC202012929cEN FY24, p. 21 (Thresholds) e p. 24 (BrainSenseLfp e
+     LfpTrendLogs).
+
+   Chamar isso de "u.a." escondia o mecanismo. A soma PERCORRE OS BINS da banda:
+   uma banda mais larga soma mais bins e devolve um número maior sem que nada
+   mude no cérebro. É o mesmo argumento que a F32 já fazia por raciocínio —
+   agora com o mecanismo documentado por trás.                                */
+export const LFP_POWER_UNIT = {
+  short: 'µVp²',
+  label: 'soma do quadrado da magnitude na banda (≈ área sob a curva)',
+  source: 'Medtronic UC202012929cEN FY24, p. 21 e 24',
+  scaleWarning: 'a soma percorre os bins da banda: MUDAR A LARGURA DA BANDA MUDA A ESCALA DO NÚMERO, sem que nada ' +
+    'mude no sinal. Dois períodos com larguras diferentes não são comparáveis em valor absoluto'
+};
+
 export function crossBlockWarning(blocks) {
   const lista = Array.isArray(blocks) ? blocks : (blocks && Array.isArray(blocks.blocks) ? blocks.blocks : []);
 
@@ -873,6 +895,9 @@ export function crossBlockWarning(blocks) {
       '. Séries de blocos diferentes têm o mesmo nome e a mesma unidade aparente, mas não são a mesma variável: a potência ' +
       'passa a ser integrada em outra banda ou medida entre outros contatos. Cada bloco deve ser traçado e analisado ' +
       'separadamente; não há fator de conversão entre eles, e normalizar um pelo outro produziria um número sem ' +
-      'significado físico. Comparação dentro de cada bloco continua válida.'
+      'significado físico. Comparação dentro de cada bloco continua válida. ' +
+      /* o mecanismo, documentado pelo fabricante, por trás do argumento acima */
+      `E o mecanismo é explícito: o número do Timeline é a ${LFP_POWER_UNIT.label} (${LFP_POWER_UNIT.source}) — ` +
+      LFP_POWER_UNIT.scaleWarning + '.'
   };
 }

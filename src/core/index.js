@@ -3,8 +3,8 @@
    do refactor modular (Prompt 0.1), para que app.js e a suíte de testes não mudem.
    Ver docs/arquitetura.md para o mapa de módulos e a regra de dependência. */
 
-import { parsePercept, parsePerceptText, MODALITIES, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId } from './io/parse.js';
-import { parseIntList, unwrapCounter, unwrapTicks, analyzePackets, insertNaNGaps, effectiveFs, stitchStreams } from './io/packets.js';
+import { parsePercept, parsePerceptText, MODALITIES, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId, HARDWARE_FILTERS, hardwareFilterDescription, IMPEDANCE_LIMITS, shortThresholdOhms } from './io/parse.js';
+import { parseIntList, unwrapCounter, unwrapTicks, analyzePackets, insertNaNGaps, effectiveFs, stitchStreams, sequenceCapForModel, TICKS_ROLLOVER_MS, INTERLEAVED_STREAMS } from './io/packets.js';
 import { nanStats, segmentsWithoutNan, interpolateForFilter, detrendLinearNaN } from './dsp/nan.js';
 import { fft, nextPow2 } from './dsp/fft.js';
 import { welchPSD, spectrogram, bandPower, bandTable, bandOf, BANDS } from './dsp/spectral.js';
@@ -21,7 +21,7 @@ import { cosinor, cosinorBootstrap, rayleigh, varianceByHour, diurnalProfile } f
 import { eventAligned, permutationTest, permutationTwoSample } from './stats/events.js';
 import { detectStates, betaEnvelopeSeries, streamOnOff } from './stats/states.js';
 import { peakInBand, pickSpectrum, spectralMetrics, burstMetrics, doseResponse, ecgMetrics, deviceStateMetrics } from './metrics/acute.js';
-import { mergeTrend, collectThresholds, chronicMetrics, thresholdSummary } from './metrics/chronic.js';
+import { mergeTrend, collectThresholds, chronicMetrics, thresholdSummary, censoringSummary } from './metrics/chronic.js';
 import { extractMetrics, daysSince } from './metrics/extract.js';
 import { rankSurveyChannels } from './metrics/survey.js';
 import { cohortSummary, wilsonCI } from './metrics/cohort.js';
@@ -34,7 +34,7 @@ import { writeEdf } from './export/edf.js';
 import { buildPdf, textWidth, unmappedChars } from './export/pdf.js';
 import { t, setLanguage, getLanguage, IDIOMAS, translationCoverage } from './i18n/index.js';
 import { buildBidsLike } from './export/bids.js';
-import { inferDeviceState, statesComparable } from './io/devicestate.js';
+import { inferDeviceState, statesComparable, documentedStimState, DOCUMENTED_STIM_STATE } from './io/devicestate.js';
 import { dstTransitions, detectOffsetBreaks, resolveOffsets, segmentByOffset } from './io/timezone.js';
 import { detectRampArtifacts, removeRampArtifact, detectPolyphasic } from './artifact/ramp.js';
 import { checkHarmonics } from './qc/harmonics.js';
@@ -48,7 +48,7 @@ import { pacTort, tortMI, comodulogram, waveformAsymmetry, analytic } from './ds
 import { detectGamma, confirmEntrainment } from './dsp/gamma.js';
 import { parseExternalCsv, resampleUniform } from './io/external.js';
 import { coherence, coherenceBand } from './dsp/coherence.js';
-import { alignByCrossCorrelation, alignByStimArtifact, alignByTimestamp, detectStimSteps } from './io/sync.js';
+import { alignByCrossCorrelation, alignByStimArtifact, alignByTimestamp, detectStimSteps, SYNC_PROTOCOL } from './io/sync.js';
 import { clusterPermutation } from './stats/cluster.js';
 import { fftBluestein, fftAny, dftDireta } from './dsp/bluestein.js';
 import {
@@ -56,7 +56,7 @@ import {
   spectrogramWelch, spectrogramSTFT, spectrogramPercept, spectrogramWavelet, spectrogramAR,
   levinsonDurbin, normalizeSpectrogram, removeAperiodicTrend, timeFrequency, tfMatrix
 } from './dsp/timefreq.js';
-import { sensingConfigOf, configBlocks, segmentTrendByConfig, crossBlockWarning } from './metrics/config.js';
+import { sensingConfigOf, configBlocks, segmentTrendByConfig, crossBlockWarning, LFP_POWER_UNIT } from './metrics/config.js';
 import { PASSPORT_VERSION, biomarkerPassport, passportSensingSuggestion, passportMatchesConfig, passportCompare } from './metrics/passport.js';
 import { AGENDA_VERSION, sessionAgenda } from './metrics/agenda.js';
 import { windowGrid, spectralVariation, windowedBandPower, windowedCoherence } from './dsp/features.js';
@@ -82,19 +82,20 @@ import { fitDoseResponse, MODELOS } from './adbs/doseresponse.js';
 import { levenbergMarquardt, solveGaussJordan } from './stats/optimize.js';
 
 const API = {
-  parsePercept, parsePerceptText, MODALITIES, BANDS, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId,
+  parsePercept, parsePerceptText, MODALITIES, BANDS, HARDWARE_FILTERS, hardwareFilterDescription, IMPEDANCE_LIMITS, shortThresholdOhms, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId,
   fft, nextPow2, welchPSD, spectrogram, bandpassFFT, hilbertEnvelope, detectBursts, fitAperiodic,
   ecgTemplateSubtract, bandPower, bandTable, bandOf,
   mean, median, sd, variance, quantile, mad, removeOutliersMAD, linreg, pearson,
   cosinor, cosinorBootstrap, rayleigh, varianceByHour, diurnalProfile, eventAligned,
   permutationTest, permutationTwoSample, thresholdSummary, histogram, ecdf, fPValue, tPValue, normCDF,
   peakInBand, daysSince, pickSpectrum, spectralMetrics, burstMetrics, doseResponse, ecgMetrics, deviceStateMetrics,
-  mergeTrend, collectThresholds, chronicMetrics, extractMetrics,
+  mergeTrend, collectThresholds, chronicMetrics, censoringSummary, extractMetrics,
   /* ranking dos pares bipolares do Survey (F1) */
   rankSurveyChannels, cohortSummary, wilsonCI,
   detectStates, betaEnvelopeSeries, streamOnOff, bimodalityCoefficient,
   /* integridade do sinal bruto (Onda 1 — L01, L02, L05, L07) */
   parseIntList, unwrapCounter, unwrapTicks, analyzePackets, insertNaNGaps, effectiveFs, stitchStreams,
+  sequenceCapForModel, TICKS_ROLLOVER_MS, INTERLEAVED_STREAMS,
   nanStats, segmentsWithoutNan, interpolateForFilter, detrendLinearNaN,
   /* artefato cardíaco: três métodos + validação quantificada (Onda 2 — L08, L10, L11, L12) */
   detectRPeaks, removeEcg, cleanEcg, svdJacobi, lowRankApprox,
@@ -111,7 +112,7 @@ const API = {
   /* idiomas (Onda 8.2) */
   t, setLanguage, getLanguage, IDIOMAS, translationCoverage,
   /* fidelidade e QC (Ondas 1.3 e 2.2 — L03, L04, L06, L13–L17, L19) */
-  inferDeviceState, statesComparable,
+  inferDeviceState, statesComparable, documentedStimState, DOCUMENTED_STIM_STATE,
   dstTransitions, detectOffsetBreaks, resolveOffsets, segmentByOffset,
   detectRampArtifacts, removeRampArtifact, detectPolyphasic,
   checkHarmonics, peakReproducibility, screenChronicByEcg, qcPanel,
@@ -128,11 +129,11 @@ const API = {
   detectGamma, confirmEntrainment,
   /* sinais externos, sincronização e coerência (Onda 2.3) */
   parseExternalCsv, resampleUniform, coherence, coherenceBand,
-  alignByCrossCorrelation, alignByStimArtifact, alignByTimestamp, detectStimSteps,
+  alignByCrossCorrelation, alignByStimArtifact, alignByTimestamp, detectStimSteps, SYNC_PROTOCOL,
   /* actograma, banda-controle e cluster (Onda 4.1) */
   clusterPermutation, controlBandDiurnal, actogram,
   /* hierarquia agudo/crônico: configuração de sensing e passaporte (Onda 11) */
-  sensingConfigOf, configBlocks, segmentTrendByConfig, crossBlockWarning,
+  sensingConfigOf, configBlocks, segmentTrendByConfig, crossBlockWarning, LFP_POWER_UNIT,
   PASSPORT_VERSION, biomarkerPassport, passportSensingSuggestion, passportMatchesConfig, passportCompare,
   AGENDA_VERSION, sessionAgenda,
   /* features por janela: ODR, variação espectral e coerência inter-STN (Onda 12) */

@@ -10,7 +10,7 @@
 
 ## What it is
 
-A **single-file** web application (`index.html`, 1223 KB) that reads the JSON *Session Reports* exported from the Medtronic Percept™ clinician programmer and produces **33 interactive figures** organised into seven tabs, quantitative metrics, a clinical PDF report and statistics-ready exports.
+A **single-file** web application (`index.html`, 1270 KB) that reads the JSON *Session Reports* exported from the Medtronic Percept™ clinician programmer and produces **33 interactive figures** organised into seven tabs, quantitative metrics, a clinical PDF report and statistics-ready exports.
 
 Opens by **double-click**. Nothing to install, no server required, and it never issues a single network request.
 
@@ -299,7 +299,7 @@ The density scaling is checked against exact identities rather than against anot
 
 ### Regression suite
 
-`node tests/run.mjs` — **285 tests**, including all 33 figure renderers exercised against a minimal simulated DOM. No existing test may be removed or weakened to make new code pass.
+`node tests/run.mjs` — **300 tests**, including all 33 figure renderers exercised against a minimal simulated DOM. No existing test may be removed or weakened to make new code pass.
 
 ---
 
@@ -308,7 +308,7 @@ The density scaling is checked against exact identities rather than against anot
 ```bash
 node tools/gerar_exemplo.mjs examples   # synthetic dataset (no real data)
 cd src && node build.mjs                # generates index.html from src/
-node tests/run.mjs                      # 285 tests
+node tests/run.mjs                      # 300 tests
 node tests/benchmark.mjs --check        # 87 criteria, fails on regression
 ```
 
@@ -321,6 +321,35 @@ Install the hook that blocks commits containing identifying data:
 ```bash
 cp tools/pre-commit .git/hooks/ && chmod +x .git/hooks/pre-commit
 ```
+
+---
+
+## Conformance with the manufacturer's white paper
+
+The software was audited item by item against Medtronic's *DBS Sensing White Paper*
+(**UC202012929cEN, FY24**, copy in [`docs/referencias/`](docs/referencias/)). The full report is in
+[`docs/auditoria-whitepaper.md`](docs/auditoria-whitepaper.md).
+
+The three corrections that changed numbers:
+
+- **Censored data is negative.** The device flags with a negative sign the samples it discarded
+  itself on suspicion of artefact (p. 24, 25). They were entering as power across the whole chronic
+  layer — median, cosinor, aDBS thresholds, ON/OFF states, levodopa response. They now become `NaN`
+  with accounting kept **separate** from packet loss, plus an alarm of their own.
+- **BrainSense Streaming sequences are interleaved** between the raw-signal and power streams
+  (p. 23, 24). A jump of 1 is normal behaviour — read as a continuous counter they reported
+  **nearly 50% false loss** on every streaming recording, degrading Welch, spectrogram, ODR, bursts
+  and the quality seal.
+- **`CalibrationTests` runs with stimulation ON** (p. 15) and was classified as OFF. It is the
+  OFF/ON pair from the same patient in the same session: the warning about comparing spectra from
+  different states failed to fire exactly where it should.
+
+The document also resolved a list of "assumed" items: the filter chain (2× low-pass at 100 Hz, a
+fixed 1 Hz high-pass and a second one configurable at 1 or **10 Hz** — which at 10 Hz **removes
+theta and delta** and now raises an alarm), the ~5 Hz band width, the Timeline unit (sum of squared
+magnitude within the band), the blanking window, `FullyReadForSession`, the manufacturer's impedance
+limits, and two modalities that were not being read at all: **`IndefiniteStreaming`** (Record
+Streaming — long recordings, three channels per lead, **stimulation off**) and **`Thresholds`**.
 
 ---
 

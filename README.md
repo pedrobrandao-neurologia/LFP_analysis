@@ -8,7 +8,7 @@
 
 ## O que é
 
-Um aplicativo web de **arquivo único** (`index.html`, 1223 KB) que lê os *Session Reports* em JSON exportados do programador do neuroestimulador Medtronic Percept™ e produz **33 figuras interativas** organizadas em sete abas, métricas quantitativas, relatório clínico em PDF e exportações prontas para estatística.
+Um aplicativo web de **arquivo único** (`index.html`, 1270 KB) que lê os *Session Reports* em JSON exportados do programador do neuroestimulador Medtronic Percept™ e produz **33 figuras interativas** organizadas em sete abas, métricas quantitativas, relatório clínico em PDF e exportações prontas para estatística.
 
 Abre com **duplo clique**. Não instala nada, não precisa de servidor, não faz uma única requisição de rede.
 
@@ -297,7 +297,7 @@ A escala de densidade é conferida contra identidades exatas, não contra outra 
 
 ### Suíte de regressão
 
-`node tests/run.mjs` — **285 testes**, incluindo os 33 renderizadores de figura exercitados sobre um DOM mínimo simulado. Nenhum teste pode ser removido ou afrouxado para fazer código novo passar.
+`node tests/run.mjs` — **300 testes**, incluindo os 33 renderizadores de figura exercitados sobre um DOM mínimo simulado. Nenhum teste pode ser removido ou afrouxado para fazer código novo passar.
 
 ---
 
@@ -306,7 +306,7 @@ A escala de densidade é conferida contra identidades exatas, não contra outra 
 ```bash
 node tools/gerar_exemplo.mjs examples   # dataset sintético (nenhum dado real)
 cd src && node build.mjs                # gera index.html a partir de src/
-node tests/run.mjs                      # 285 testes
+node tests/run.mjs                      # 300 testes
 node tests/benchmark.mjs --check        # 87 critérios, falha se houver regressão
 ```
 
@@ -319,6 +319,37 @@ Instale o *hook* que bloqueia commits com dados identificadores:
 ```bash
 cp tools/pre-commit .git/hooks/ && chmod +x .git/hooks/pre-commit
 ```
+
+---
+
+## Conformidade com o white paper do fabricante
+
+O software foi auditado item a item contra o *DBS Sensing White Paper* da Medtronic
+(**UC202012929cEN, FY24**, cópia em [`docs/referencias/`](docs/referencias/)). O relatório completo,
+com categoria e ação por item, está em [`docs/auditoria-whitepaper.md`](docs/auditoria-whitepaper.md);
+o resumo do que passou a ser tratado como documentado está em
+[`docs/arquitetura.md`](docs/arquitetura.md#o-que-o-fabricante-documenta).
+
+As três correções que mudavam número:
+
+- **Dado censurado é negativo.** O aparelho marca com sinal negativo as amostras que ele próprio
+  descartou por suspeita de artefato (p. 24, 25). Elas entravam como potência em toda a camada
+  crônica — mediana, cosinor, limiares de aDBS, estados ON/OFF, resposta à levodopa. Agora viram
+  `NaN` com contabilidade **separada** da perda de pacote, e um alarme próprio.
+- **As sequências do BrainSense Streaming são intercaladas** entre o fluxo de sinal bruto e o de
+  potência (p. 23, 24). Um salto de 1 é o comportamento normal — lidas como contador contínuo,
+  reportavam **perda falsa de quase 50%** em todo registro de streaming, degradando Welch,
+  espectrograma, ODR, bursts e o selo de qualidade.
+- **`CalibrationTests` é com estimulação LIGADA** (p. 15), e estava classificado como desligada.
+  É o par OFF/ON do mesmo paciente na mesma sessão: o alerta de comparar espectros de estados
+  diferentes não disparava exatamente onde deveria.
+
+E o que o documento resolveu de "assumido": a cadeia de filtros (2× passa-baixa 100 Hz, passa-alta
+1 Hz fixo e um segundo configurável em 1 ou **10 Hz** — que, em 10 Hz, **elimina teta e delta** e
+agora dispara alarme), a largura de banda de ~5 Hz, a unidade do Timeline (soma do quadrado da
+magnitude na banda), o blanking, o `FullyReadForSession`, os limiares de impedância do fabricante,
+e duas modalidades que não eram nem lidas: **`IndefiniteStreaming`** (Record Streaming — registro
+longo, três canais por lead, **sem estimulação**) e **`Thresholds`**.
 
 ---
 

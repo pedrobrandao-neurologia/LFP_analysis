@@ -1081,6 +1081,17 @@ const FIGURES = [
         bt.map(b => [{ html: `<span style="color:${b.color};font-weight:600">${b.label} ${b.key}</span>` },
         `${b.lo}–${b.hi}`, b.absolute, b.relative, b.peakF, b.peakV])));
 
+      node.appendChild(el('div', {
+        class: 'note', html: '<b>O que o Survey grava, e o que ele exclui.</b> Para um eletrodo 1x4, <b>todos</b> os ' +
+          'pares daquele lead são gravados <b>simultaneamente</b> — o que torna legítima a coerência <i>dentro</i> do ' +
+          'hemisfério. Mas o segundo hemisfério exige <b>outro survey</b>: os dois lados do Survey <b>não</b> são ' +
+          'simultâneos, e coerência entre eles a partir daqui é ficção. Em eletrodo SenSight, o survey de segmentos ' +
+          'roda em <b>duas passagens</b> (Pass 1 e Pass 2), e canais de passagens diferentes também não são ' +
+          'simultâneos. Cada canal traz cerca de <b>20 s</b> de sinal, com bins de <b>0,98 Hz</b> e centros de 0 a ' +
+          '<b>96,68 Hz</b>. E um par <b>ausente</b> deste arquivo pode ter sido excluído pelo próprio aparelho — por ' +
+          'suspeita de curto, de circuito aberto ou de artefato cardíaco/de movimento —, não por falta de sinal. ' +
+          '[Medtronic UC202012929cEN FY24, p. 4]'
+      }));
       node.appendChild(exportRow([
         { label: '⤓ PNG (b)', fn: () => P.downloadCanvas(b1.canvas, 'F1b_psd_linear') },
         { label: '⤓ PNG (c)', fn: () => P.downloadCanvas(b2.canvas, 'F1c_psd_loglog') },
@@ -1212,10 +1223,31 @@ const FIGURES = [
       ch2.colorbar({ label: 'Ω' });
 
       const st = (S.files[0] || {}).parsed;
-      const flag = allv.some(v => v > 4000 || v < 500);
-      if (flag) node.appendChild(el('div', {
-        class: 'warnbox', html: `Há contatos fora da faixa habitual (500–2000 Ω). Status reportado pelo dispositivo: <b>${(st && st.impedanceStatus) || '—'}</b>. ` +
-          `Valores altos em contatos segmentados são esperados (área de superfície menor); o que importa é a <b>estabilidade seriada</b> e a ausência de valores extremos (curto &lt;50 Ω, circuito aberto &gt;10 kΩ).`
+      /* D2 — os limiares que o DISPOSITIVO usa para excluir um canal do sensing
+         são outros: curto abaixo de 250 Ω (1x4) ou 350 Ω (SenSight), aberto
+         acima de 10 kΩ (UC202012929cEN FY24, p. 4). A faixa 500–2000 Ω é
+         referência de leitura, e passa a ser declarada como tal. */
+      const modelo = ((st && st.leads) || []).map(l => l.model).join(' ');
+      const curto = C.shortThresholdOhms(modelo);
+      const aberto = C.IMPEDANCE_LIMITS.openOhms;
+      const foraDoDispositivo = allv.filter(v => v < curto || v > aberto);
+      const foraDoHabitual = allv.filter(v => v >= curto && v <= aberto && (v < 500 || v > 2000));
+      if (foraDoDispositivo.length) node.appendChild(el('div', {
+        class: 'warnbox', html: `<b>${foraDoDispositivo.length} contato(s) fora dos limites do fabricante.</b> ` +
+          `Curto abaixo de <b>${curto} Ω</b> (${/B330|sensight/i.test(modelo) ? 'SenSight' : 'eletrodo 1x4'}) ou aberto acima de ` +
+          `<b>${aberto / 1000} kΩ</b> — nesses casos o próprio dispositivo <b>exclui o canal do sensing</b>. ` +
+          `Status reportado pelo dispositivo: <b>${(st && st.impedanceStatus) || '—'}</b>. ` +
+          `[${C.IMPEDANCE_LIMITS.source}]`
+      }));
+      if (foraDoHabitual.length) node.appendChild(el('div', {
+        class: 'note', html: `${foraDoHabitual.length} contato(s) fora da faixa habitual de leitura (500–2000 Ω), mas ` +
+          `dentro dos limites do dispositivo. ${C.IMPEDANCE_LIMITS.usualRangeNote}. ` +
+          `Valores altos em contatos segmentados são esperados (área de superfície menor); o que importa é a ` +
+          `<b>estabilidade seriada</b>.`
+      }));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Um par ausente do Survey não é um par sem sinal.</b> ${C.IMPEDANCE_LIMITS.exclusionNote}. ` +
+          `[${C.IMPEDANCE_LIMITS.source}]`
       }));
       node.appendChild(exportRow([
         { label: '⤓ PNG (a)', fn: () => P.downloadCanvas(b1.canvas, 'F3a_impedancia_mono') },
@@ -1459,7 +1491,14 @@ const FIGURES = [
     render(node, d) {
       const opts = [];
       d.bsLfp.forEach((b, i) => Object.keys(b.series).forEach(h => opts.push({ value: i + '|' + h, label: `${C.prettyChannel(b.channel)} · ${hname(h)}`, b, h })));
-      if (!opts.length) return node.appendChild(el('div', { class: 'empty', text: 'Sem streaming de potência.' }));
+      if (!opts.length) return node.appendChild(el('div', {
+        class: 'note', html: '<b>Resolução efetiva da série de potência.</b> A amostragem subjacente é de <b>2 Hz</b>, ' +
+          'mas uma solução única só é calculada a cada <i>power averaging duration</i>, e essa média <b>não é móvel</b>: ' +
+          'cada valor contém um conjunto de dados próprio, sem sobreposição com o anterior. A resolução real é a ' +
+          'duração de média configurada, não os 2 Hz nominais — e os pontos são independentes por construção dentro ' +
+          'de cada média. [Medtronic UC202012929cEN FY24, p. 9]'
+      }));
+      node.appendChild(el('div', { class: 'empty', text: 'Sem streaming de potência.' }));
       const cur = opts.find(o => o.value === opt('F7', 'src', opts[0].value)) || opts[0];
       node.appendChild(el('div', { class: 'ctrls' }, [ctrlSelect('canal', opts, cur.value, v => setOpt('F7', 'src', v))]));
       const s = cur.b.series[cur.h], th = cur.b.therapy.perHemi[cur.h] || {};
@@ -1635,6 +1674,34 @@ const FIGURES = [
           })))), 'F8_timeline.csv', 'text/csv')
         }
       ]));
+      /* D5 — capacidade do Timeline por MODELO, e sobrescrita silenciosa.
+         PC: 60 dias · RC: 35 dias. "If new timeline data is collected after an
+         INS has already collected the maximal amount of data, then the OLDEST
+         DAY WILL BE OVERWRITTEN" — UC202012929cEN FY24, p. 7. */
+      {
+        const st0 = (S.files[0] || {}).parsed || {};
+        const mod = [(st0.device || {}).model, (st0.device || {}).modelNumber].join(' ');
+        const ehRC = /B35300|percept\s*rc/i.test(mod);
+        const capDias = ehRC ? 35 : 60;
+        const spanDias = (tmax - tmin) / dayMs;
+        if (spanDias > capDias * 0.85) node.appendChild(el('div', {
+          class: 'warnbox', html: `<b>O Timeline está perto do limite do aparelho.</b> Um ` +
+            `${ehRC ? 'Percept RC' : 'Percept PC'} guarda <b>${capDias} dias</b>, e este registro cobre ` +
+            `${f(spanDias, 0)}. Quando o limite é atingido, <b>o dia mais antigo é sobrescrito</b> — então a ausência ` +
+            `de dado antes de ${new Date(tmin + offMin() * 60000).toISOString().slice(0, 10)} <b>não é ausência de ` +
+            `registro</b>, e sim possível sobrescrita. [Medtronic UC202012929cEN FY24, p. 7]`
+        }));
+        /* A1 — a censura do aparelho, junto do gráfico que ela distorce */
+        const cens = C.censoringSummary(d.all);
+        if (cens.ok && cens.nCensored > 0) node.appendChild(el('div', {
+          class: cens.pctCensored >= 20 ? 'warnbox' : 'note',
+          html: `<b>Censura do aparelho.</b> ${cens.reading}. ${cens.separateFromPacketLoss}. [${cens.rule}]`
+        }));
+        node.appendChild(el('div', {
+          class: 'note', html: `<b>Unidade.</b> O número do Timeline é a ${C.LFP_POWER_UNIT.label} ` +
+            `(${C.LFP_POWER_UNIT.short}). ${C.LFP_POWER_UNIT.scaleWarning}. [${C.LFP_POWER_UNIT.source}]`
+        }));
+      }
       node.appendChild(el('div', {
         class: 'note', html: `<b>Método.</b> Exclusão de outliers por mediana ± ${k}×MAD (robusto, preferível a média ± DP em distribuição assimétrica). ` +
           `Faixas sombreadas = 22h–06h locais. A linha grossa é mediana móvel de ${smooth} pontos (${smooth * 10} min). ` +
@@ -1828,7 +1895,7 @@ const FIGURES = [
   /* ----------------------------------------------------------------- F10 */
   {
     id: 'F10', title: 'Resposta alinhada a evento',
-    sub: 'janela −60 / +180 min em torno de eventos marcados pelo paciente',
+    sub: 'janela −60 / +180 min em torno do RECEBIMENTO do evento pelo neuroestimulador',
     has: d => d.snapshots.length && Object.keys(d.trend).length,
     render(node, d) {
       const names = Array.from(new Set(d.snapshots.map(s => s.name)));
@@ -1970,7 +2037,7 @@ const FIGURES = [
   /* ----------------------------------------------------------------- F12 */
   {
     id: 'F12', title: 'Espectros por tipo de evento',
-    sub: 'LfpFrequencySnapshotEvents — PSD disparada pelo paciente',
+    sub: 'LfpFrequencySnapshotEvents — PSD dos 30 s POSTERIORES à marcação do paciente',
     has: d => d.snapshots.length,
     render(node, d) {
       const names = Array.from(new Set(d.snapshots.map(s => s.name)));
@@ -2028,6 +2095,15 @@ const FIGURES = [
             `Δ = ${f(pt.observed, 3)}, p = ${pTag(pt.p)} (permutação, 3.000). ` +
             `Trate como exploratório: os bins espectrais dentro de um mesmo snapshot não são independentes.`
         }));
+      /* D3 — o que o snapshot É, com fonte. UC202012929cEN FY24, p. 8. */
+      node.appendChild(el('div', {
+        class: 'note', html: '<b>O que este espectro cobre.</b> O aparelho mede aproximadamente <b>30 s de sinal ' +
+          'DEPOIS</b> de receber a marcação do paciente, converte para o domínio da frequência e guarda <b>só o ' +
+          'espectro médio</b>. Em janela alinhada a evento, o snapshot representa <b>[0, +30 s]</b> — não uma janela ' +
+          'centrada no botão. E o domínio do tempo do snapshot <b>não existe</b>: ele não é gravado na memória do ' +
+          'neuroestimulador, e é por isso que esta figura só pode trabalhar com espectro. ' +
+          '[Medtronic UC202012929cEN FY24, p. 8]'
+      }));
       }
       node.appendChild(exportRow([
         { label: '⤓ PNG', fn: () => P.downloadCanvas(box.canvas, 'F12_espectros_evento') },
@@ -3246,6 +3322,23 @@ const FIGURES = [
         }));
       }
 
+      {
+        const sp = C.SYNC_PROTOCOL;
+        node.appendChild(el('div', {
+          class: 'note', html: '<b>Protocolo de sincronização recomendado pelo fabricante.</b><br>' +
+            '<b>Grosseira (segundos):</b> ' + sp.coarse.map((x, n) => `${n + 1}. ${x}`).join('; ') +
+            `. <i>${sp.coarseNote}.</i><br>` +
+            '<b>Fina (sub-segundo):</b> ' + sp.fine.map((x, n) => `${n + 1}. ${x}`).join('; ') +
+            `. <i>${sp.fineNote}.</i><br>` + sp.cycling + `. [${sp.source}]`
+        }));
+        node.appendChild(el('div', {
+          class: 'warnbox', html: '<b>O piso de incerteza do alinhamento por carimbo é ±1000 ms.</b> ' +
+            'O <code>FirstPacketDateTime</code> do Percept tem resolução de <b>1 segundo</b> — o piso é por ' +
+            'construção, antes de qualquer deriva de relógio. Para resolução sub-segundo, o alinhamento por ' +
+            'artefato de estimulação não é preferível: é <b>necessário</b>. ' +
+            '[Medtronic UC202012929cEN FY24, p. 21–24]'
+        }));
+      }
       node.appendChild(exportRow([
         { label: '⤓ PNG alinhamento', fn: () => P.downloadCanvas(box.canvas, 'F24a_alinhamento') },
         { label: '⤓ PNG coerência', fn: () => P.downloadCanvas(b2.canvas, 'F24b_coerencia') },
@@ -4050,6 +4143,14 @@ const FIGURES = [
           `meses de Timeline é comparar duas variáveis diferentes com o mesmo nome. A impressão digital <code>${pass.fingerprint}</code> ` +
           `identifica esta calibração: se ela mudar entre duas análises, os números não são comparáveis. ` +
           `${pass.fingerprintNote || ''}`
+      }));
+      node.appendChild(el('div', {
+        class: 'note', html: '<b>Qual critério o APARELHO usa.</b> No BrainSense Setup o dispositivo escolhe ' +
+          'automaticamente o <b>maior pico do canal</b>, desde que esse pico esteja na faixa de <b>beta ou gama</b> e ' +
+          'ultrapasse <b>1,1 µVp</b>. Esse limiar é do fabricante, não deste software — e o critério do aparelho não é ' +
+          'o mesmo usado aqui, que corrige pelo fundo aperiódico antes de escolher. Divergência entre a sugestão desta ' +
+          'figura e a configuração vigente pode ser exatamente isso, e não erro de nenhum dos dois. ' +
+          '[Medtronic UC202012929cEN FY24, p. 6]'
       }));
       if (pass.controversy) node.appendChild(el('div', { class: 'note', html: `<b>Controvérsia declarada.</b> ${pass.controversy}` }));
       if (pass.caveat) node.appendChild(el('div', { class: 'warnbox', html: `<b>Limite.</b> ${pass.caveat}` }));
@@ -6460,17 +6561,30 @@ async function buildProvenance() {
     });
     (p.bsTimeDomain || []).concat(p.montageTD || []).forEach(td => {
       const est = C.nanStats(td.data);
+      /* itens do PERCEPT-REPORT que o white paper resolve — ver
+         docs/auditoria-whitepaper.md (B1, B4) */
+      const flt = p.filters || null;
       prov.record('parse.timeDomain', {
         channel: td.label, fsNominal: td.fs,
         fsEffective: isFinite(td.fsEff) ? +td.fsEff.toFixed(4) : null,
         driftMsTotal: td.timing && isFinite(td.timing.driftMsTotal) ? +td.timing.driftMsTotal.toFixed(2) : null,
-        hardwareFilters: 'passa-alta do dispositivo (não exposta no JSON)'
+        /* B1/B4 — o valor está no JSON, em Groups → GroupSettings */
+        hardwareFilters: flt ? flt.description : C.hardwareFilterDescription(NaN),
+        highPassConfigurableHz: flt && isFinite(flt.highPassConfigurableHz) ? flt.highPassConfigurableHz : null,
+        blankingUs: flt && isFinite(flt.senseBlankingUs) ? flt.senseBlankingUs : null,
+        blankingSource: flt ? flt.senseBlankingSource : null,
+        lowBandUsable: flt ? flt.lowBandUsable : null
       }, { nIn: est.n, nOut: est.nValid, nDropped: est.nNan, dropReason: 'perda de pacotes (NaN)' });
       const pk = td.packets || {};
       prov.record('io.analyzePackets', {
         method: pk.method, reliable: pk.reliable,
         pctMissing: isFinite(pk.pctMissing) ? +pk.pctMissing.toFixed(3) : null,
-        nGaps: (pk.gaps || []).length, policy: 'NaN, sem interpolação nem concatenação'
+        nGaps: (pk.gaps || []).length, policy: 'NaN, sem interpolação nem concatenação',
+        /* A2/A3/E2 — por que este método, e com que critério */
+        stream: pk.stream, interleavedSequences: pk.interleavedSequences,
+        sequenceCap: pk.sequenceCap, deviceModel: pk.deviceModel,
+        gapCriterion: pk.gapCriterion, ticksNote: pk.ticksNote,
+        whySequencesUnused: pk.whySequencesUnused
       }, { nIn: pk.nExpected, nOut: pk.nReceived, nDropped: pk.nMissing, dropReason: pk.reason || 'pacotes perdidos' });
       if (pk.nMissing) prov.exclusion({
         what: `amostras perdidas em ${td.label}`, criterion: 'perda de pacote detectada por ' + pk.method,
@@ -6503,6 +6617,52 @@ async function buildProvenance() {
       outlierRule: 'mediana ± 4×MAD', bootstrap: 'blocos por dia inteiro', nBoot: o9.boot || 200
     }, { figure: 'F9' });
     prov.record('stats.permutationTest', { nPerm: 3000, scope: 'comparações das figuras F7/F10/F12' });
+  }
+
+  /* --- conformidade declarada com o white paper do fabricante ----------- */
+  {
+    const p0f = d.all[0] || {};
+    const flt0 = p0f.filters || null;
+    const cens = C.censoringSummary(d.all);
+    prov.record('whitepaper.compliance', {
+      document: 'Medtronic UC202012929cEN, Percept (PC and RC) Neurostimulators with BrainSense Technology — ' +
+        'DBS Sensing White Paper, FY24',
+      itemsFollowed: [
+        'A1 valor negativo do Timeline e do FFTBinData tratado como CENSURA (p. 24, 25), com contabilidade separada da perda de pacote',
+        'A2 cap de volta de GlobalSequences por modelo: 255 no Percept PC, 65 535 no RC (p. 21–24)',
+        'A3 sequências de BrainSenseTimeDomain e BrainSenseLfp são intercaladas; nesses fluxos o método é por ticks (p. 23, 24)',
+        'A4 volta de TicksInMses em 65 536 × 50 ms, e ausência de volta durante streaming (p. 24)',
+        'A5 estado da estimulação por modalidade, com CalibrationTests em ON e SenseChannelTests em OFF (p. 15)',
+        'A6 FirstPacketDateTime com resolução de 1 s: piso de incerteza de ±1000 ms no alinhamento por carimbo (p. 21–24)',
+        'B1 cadeia de filtros: 2× passa-baixa 100 Hz, passa-alta 1 Hz fixo, segundo passa-alta 1 ou 10 Hz (p. 11)',
+        'B2 largura da banda de potência de aproximadamente 5 Hz (p. 6, 7)',
+        'B3 potência do Timeline = soma do quadrado da magnitude na banda, ≈ AUC (p. 21, 24)',
+        'B4 blanking e passa-alta lidos de Groups → GroupSettings (p. 26)',
+        'B5 FullyReadForSession distingue ausência de registro de ausência de leitura (p. 18)',
+        'C1 IndefiniteStreaming (Record Streaming) parseado: 3 canais por lead, estimulação desligada (p. 16, 23)',
+        'C2 Thresholds (domínio de potência) parseado (p. 16, 21)',
+        'D2 limiares de impedância do fabricante: curto < 250 Ω (1x4) ou < 350 Ω (SenSight), aberto > 10 kΩ (p. 4)',
+        'D3 o snapshot de evento cobre os 30 s DEPOIS do botão, e não tem domínio do tempo (p. 8)',
+        'D4 protocolo de sincronização com marcador de baixa frequência no início E no fim (p. 12)',
+        'D5 capacidades por modelo e sobrescrita do dia mais antigo (p. 7, 8)',
+        'D6 a potência de 2 Hz é média única, não sobreposta (p. 9)',
+        'D7 Survey: ~20 s por canal, bins de 0,98 Hz com centros de 0 a 96,68 Hz (p. 4)',
+        'D8 critério do aparelho para escolher a banda: maior pico em beta ou gama acima de 1,1 µVp (p. 6)',
+        'E2 critério de descontinuidade do pseudocódigo do fabricante (p. 28), com a unidade corrigida'
+      ],
+      notInDocument: [
+        'a constante de ganho 1/54 da emulação do PSD de bordo não aparece neste white paper — busca feita e registrada',
+        'a largura EXATA da banda integrada por registro não é declarada no JSON'
+      ],
+      deviceModel: (p0f.device && p0f.device.model) || null,
+      deviceModelNumber: (p0f.device && p0f.device.modelNumber) || null,
+      deviceStateSource: 'tabela documentada modalidade → estado (UC202012929cEN, p. 4, 10, 15, 17)',
+      hardwareFilters: flt0 ? flt0.description : null,
+      highPassConfigurableHz: flt0 && isFinite(flt0.highPassConfigurableHz) ? flt0.highPassConfigurableHz : null,
+      fullyReadForSession: p0f.meta ? p0f.meta.fullyRead : null,
+      timelineCensoredPct: cens.ok ? cens.pctCensored : null,
+      auditDoc: 'docs/auditoria-whitepaper.md'
+    });
   }
 
   /* --- Onda 12: features por janela, com os parâmetros EFETIVOS --------- */

@@ -55,7 +55,9 @@ const ALARME_PADRAO = {
   ecgMaxSeconds: 60,
   /* autocorrelação mínima da potência instantânea, no atraso compatível com
      frequência cardíaca, para levantar suspeita de transiente repetitivo */
-  ecgPeriodicidade: 0.35
+  ecgPeriodicidade: 0.35,
+  /* censura do próprio aparelho no Timeline, em porcento das amostras */
+  censuraCritica: 20, censuraAtencao: 3
 };
 
 /* Periodicidade da POTÊNCIA INSTANTÂNEA, sem localizar evento nenhum.
@@ -341,6 +343,74 @@ export function artifactAlarm(parsed, opts) {
       'alta'
     ));
   });
+
+  /* ------------- 8. passa-alta configurável em 10 Hz --------------------- */
+  /* "a second high pass filter at a user configurable 1Hz or 10Hz"
+     — Medtronic UC202012929cEN FY24, p. 11.
+
+     Com 10 Hz, delta e teta são eliminados PELO HARDWARE. Qualquer métrica
+     dessas bandas — o termo teta do ODR, a leitura de banda lenta da distonia,
+     o acoplamento fase-amplitude com fase em teta — passa a medir o joelho do
+     filtro. É alarme, não nota: quem lê o gráfico não tem como saber. */
+  const filt = parsed.filters || null;
+  if (!filt || !isFinite(filt.highPassConfigurableHz)) {
+    notChecked.push({
+      check: 'passa-alta configurável',
+      whyNot: 'o arquivo não declara o passa-alta em Groups → GroupSettings; não é possível saber se as bandas ' +
+        'lentas sobrevivem ao filtro do aparelho'
+    });
+  } else {
+    checked.push({ check: 'passa-alta configurável', channel: 'todos' });
+    if (filt.highPassConfigurableHz >= 10) alarms.push(alarmeItem(
+      'passaalta', 'critico', 'todos os canais', null,
+      'Delta e teta foram removidos pelo próprio aparelho',
+      `O segundo passa-alta do neuroestimulador está configurado em ${filt.highPassConfigurableHz} Hz. Tudo abaixo ` +
+      'disso foi eliminado pelo hardware antes de o dado ser gravado: delta e teta não estão neste registro, e ' +
+      'qualquer número dessas bandas é o joelho do filtro, não atividade cerebral.',
+      `passa-alta configurável em ${filt.highPassConfigurableHz} Hz · fonte: ${filt.highPassSource} · ` +
+      'cadeia: ' + filt.description,
+      'não interprete este canal',
+      'não leia teta nem delta neste registro — isso inclui o termo teta do ODR (F34), a leitura de banda lenta da ' +
+      'distonia e o acoplamento fase-amplitude com fase em teta. Para recuperá-las, o passa-alta precisa ser mudado ' +
+      'para 1 Hz nas Advanced Settings do BrainSense Setup, e um NOVO registro precisa ser feito',
+      'alta'
+    ));
+  }
+
+  /* ------------- 9. dado censurado pelo aparelho ------------------------- */
+  /* "Data may be censored to avoid artifacts, censored data is negative."
+     — Medtronic UC202012929cEN FY24, p. 24. */
+  const cens = parsed.trendCensoring || null;
+  const hemisCens = cens ? Object.keys(cens) : [];
+  if (!hemisCens.length) {
+    notChecked.push({
+      check: 'censura do aparelho no Timeline',
+      whyNot: 'este arquivo não traz BrainSense Timeline'
+    });
+  } else {
+    checked.push({ check: 'censura do aparelho no Timeline', channel: hemisCens.join(', ') });
+    hemisCens.forEach(h => {
+      const c = cens[h];
+      const pct = Math.max(c.pctCensoredLfp || 0, c.pctCensoredMa || 0);
+      if (pct < P.censuraAtencao) return;
+      const critico = pct >= P.censuraCritica;
+      alarms.push(alarmeItem(
+        'censura', critico ? 'critico' : 'atencao', `Timeline ${alarmeHemi(h)}`, h,
+        'O aparelho descartou parte do Timeline',
+        `${pct.toFixed(1)}% das amostras do Timeline do STN ${alarmeHemi(h)} foram marcadas pelo próprio ` +
+        'neuroestimulador como suspeitas de artefato e não trazem valor. Elas não entram em nenhuma conta — mas a ' +
+        'falta NÃO é aleatória: o aparelho censura onde suspeita de artefato, e artefato costuma coincidir com ' +
+        'movimento, que por sua vez coincide com estado motor.',
+        `${c.nCensoredLfp} de ${c.n} amostras com potência censurada (${c.pctCensoredLfp}%) · ` +
+        `${c.nCensoredMa} com amplitude censurada (${c.pctCensoredMa}%) · regra: valor negativo = censura ` +
+        '(UC202012929cEN FY24, p. 24)',
+        critico ? 'não interprete este canal' : 'interprete com ressalva',
+        'reporte o percentual censurado junto de qualquer média, mediana ou percentual de tempo acima do limiar ' +
+        'deste hemisfério. Censura não é perda de pacote e não deve ser somada a ela',
+        'alta'
+      ));
+    });
+  }
 
   const nCrit = alarms.filter(a => a.severity === 'critico').length;
   const nAt = alarms.filter(a => a.severity === 'atencao').length;

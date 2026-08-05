@@ -31,6 +31,14 @@ output/
 # Exceção: documento de revisão que faz parte do repositório (não é dado de paciente)
 !docs/Revisao_LFP_Parkinson.pdf
 
+# Exceção: documentação PÚBLICA do fabricante, citada pela auditoria em
+# docs/auditoria-whitepaper.md. A exceção é estreita de propósito — vale só para
+# docs/referencias/, e não afrouxa a regra de que nenhum PDF de sessão entra no
+# repositório, porque é ali que o Session Report exportado carrega nome, data de
+# nascimento e número de série.
+!docs/referencias/
+!docs/referencias/*.pdf
+
 # Exceção: resultados do benchmark (sinal sintético, sem qualquer dado de paciente)
 !benchmark/resultados.csv
 !benchmark/baseline.json

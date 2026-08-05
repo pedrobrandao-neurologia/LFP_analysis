@@ -115,3 +115,60 @@ Consequência prática: **nunca edite `index.html` à mão**. Edite `src/**` e r
 
 Cada função de método científico documenta em comentário o que calcula, a referência bibliográfica
 e as unidades de entrada e saída (ver `CLAUDE.md`).
+
+---
+
+## O que o fabricante documenta
+
+Esta seção existe para que ninguém volte a marcar como suposição algo que está escrito no white
+paper de sensing da Medtronic — *Percept™ (PC and RC) Neurostimulators with BrainSense™
+Technology — DBS Sensing White Paper*, **UC202012929cEN, FY24**, cópia em
+[`docs/referencias/`](referencias/). A auditoria completa, com categoria e ação por item, está em
+[`docs/auditoria-whitepaper.md`](auditoria-whitepaper.md).
+
+### Fatos do dispositivo que o código passou a tratar como documentados
+
+| Fato | Onde vive no código | p. |
+|---|---|---|
+| Valor negativo no `LfpTrendLogs` e no `FFTBinData` é **dado censurado**, não potência | `io/parse.js`; contabilidade em `metrics/chronic.js` → `censoringSummary` | 24, 25 |
+| `GlobalSequences` rola em **255 no PC (B35200)** e **65 535 no RC (B35300)** | `io/packets.js` → `sequenceCapForModel` | 21–24 |
+| As sequências de `BrainSenseTimeDomain` e `BrainSenseLfp` são **intercaladas entre si** | `io/packets.js` → `INTERLEAVED_STREAMS` | 23, 24 |
+| `TicksInMses` rola a cada **65 536 × 50 ms**, e **não rola durante o streaming** | `io/packets.js` → `TICKS_ROLLOVER_MS`, `unwrapTicks` | 24 |
+| `CalibrationTests` é com **estimulação LIGADA**; `SenseChannelTests`, desligada | `io/devicestate.js` → `DOCUMENTED_STIM_STATE` | 15 |
+| `FirstPacketDateTime` tem resolução de **1 s** | `io/sync.js` → `alignByTimestamp.quantizationMs` | 21–24 |
+| Cadeia de filtros: **2× passa-baixa 100 Hz**, passa-alta 1 Hz fixo, segundo passa-alta **1 ou 10 Hz** | `io/parse.js` → `HARDWARE_FILTERS`; alarme em `qc/alarm.js` | 11 |
+| A banda de potência tem **aproximadamente 5 Hz** de largura | `metrics/config.js` → `CFG_BAND_SOURCE` | 6, 7 |
+| O "LFP" é a **soma do quadrado da magnitude na banda** (≈ AUC) | `metrics/config.js` → `LFP_POWER_UNIT` | 21, 24 |
+| `highpassfilter` e `sense blanking duration` vivem em `Groups → GroupSettings` | `io/parse.js` → `out.filters` | 26 |
+| `FullyReadForSession: false` significa **estruturas faltando no arquivo** | `io/parse.js` → `meta.fullyRead` | 18 |
+| `IndefiniteStreaming` é Record Streaming: **3 canais por lead, estimulação desligada** | `io/parse.js` → `out.indefiniteStreaming` | 16, 23 |
+| `Thresholds` é a **série de potência** que originou os limiares | `io/parse.js` → `out.thresholdRuns` | 16, 21 |
+| Curto **< 250 Ω** (1x4) ou **< 350 Ω** (SenSight); aberto **> 10 kΩ**; canais com artefato são **excluídos** | `io/parse.js` → `IMPEDANCE_LIMITS` | 4 |
+| O snapshot cobre os **30 s DEPOIS** do botão, e **não tem domínio do tempo** | textos da F10 e F12 | 8 |
+| Protocolo de sincronização com marcador de baixa frequência **no início e no fim** | `io/sync.js` → `SYNC_PROTOCOL` | 12 |
+| Capacidade do Timeline: **60 dias no PC, 35 no RC**, com o **dia mais antigo sobrescrito** | aviso na F8 | 7 |
+| A potência de 2 Hz é **média única, não sobreposta** | texto da F7 | 9 |
+| Survey: ~**20 s** por canal, bins de **0,98 Hz**, centros de **0 a 96,68 Hz** | `dsp/timefreq.js`, texto da F1 | 4 |
+| O aparelho escolhe a banda pelo **maior pico em beta ou gama acima de 1,1 µVp** | texto da F31 | 6 |
+| Critério de descontinuidade do pseudocódigo do fabricante | `io/packets.js` → `gapCriterion` | 28 |
+
+### O que continua sem fonte no documento
+
+- **A constante de ganho 1/54** da emulação do PSD de bordo. A busca foi feita no documento
+  inteiro e ela não aparece — está registrado no cabeçalho de `dsp/timefreq.js` para que ninguém
+  repita o trabalho. Permanece marcada como empírica.
+- **A largura exata da banda integrada por registro.** O documento diz *aproximadamente* 5 Hz; o
+  JSON declara a frequência central e não a largura.
+- **A orientação do eletrodo SenSight** está documentada e disponível no JSON (`LeadConfiguration`,
+  p. 26), mas nenhuma análise desta versão a usa.
+
+### Regra para quem for mexer aqui
+
+Antes de escrever "assumido", "não exposto no JSON" ou "não documentado" em qualquer saída, procure
+no white paper. Se estiver lá, cite a página. Se não estiver, escreva que a busca foi feita e onde
+— é o que impede que a próxima pessoa gaste o mesmo tempo para chegar à mesma conclusão.
+
+Um passo de proveniência, `whitepaper.compliance`, registra a versão do documento consultado e a
+lista dos itens que o software declara seguir; um grupo do PERCEPT-REPORT
+(*Features por janela*) e os itens `hardware_filters`, `blanking` e `device_state` passaram a ser
+preenchidos a partir dele.

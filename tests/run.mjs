@@ -32,7 +32,8 @@ const t = (nome, fn) => {
 };
 const ta = async (nome, fn) => {
   try { const r = await fn(); ok++; console.log('  \u2713 ' + nome + (r ? '  \u2014 ' + r : '')); }
-  catch (e) { falhas++; console.log('  \u2717 ' + nome + '  ->  ' + e.message); }
+  catch (e) { falhas++; console.log('  \u2717 ' + nome + '  ->  ' + e.message);
+    if (process.env.PLS_STACK) console.log(String(e.stack).split('\n').slice(0, 6).join('\n')); }
 };
 const assert = (cond, msg) => { if (!cond) throw new Error(msg); };
 const sec = s => console.log('\n\u2500\u2500 ' + s);
@@ -329,8 +330,14 @@ sec('perda de pacotes, fs efetiva e NaN');
   const recebidas = new Float64Array((NPK - perdidos.size) * SZ).fill(1);
 
   t('GlobalSequences detecta exatamente os pacotes perdidos', () => {
-    const r = C.analyzePackets({ data: recebidas, fs: FS, packetSizes: sizes, ticksMs: ticks, sequences: seqs });
+    /* o cap de volta depende do MODELO (255 no PC, 65 535 no RC —
+       UC202012929cEN p. 21–24), e por isso ele passou a ser obrigatório */
+    const r = C.analyzePackets({
+      data: recebidas, fs: FS, packetSizes: sizes, ticksMs: ticks, sequences: seqs,
+      stream: 'LfpMontageTimeDomain', deviceModel: 'Percept PC B35200'
+    });
     assert(r.method === 'sequences', 'método: ' + r.method);
+    assert(r.sequenceCap === 256, 'cap do Percept PC deveria ser 256, veio ' + r.sequenceCap);
     assert(r.reliable, 'deveria ser verificável');
     const nPk = r.gaps.reduce((a, g) => a + g.nPackets, 0);
     assert(nPk === perdidos.size, `pacotes perdidos: ${nPk} ≠ ${perdidos.size}`);
@@ -371,7 +378,10 @@ sec('perda de pacotes, fs efetiva e NaN');
     return '250 → 4 vira salto de 10 (9 pacotes perdidos)';
   });
   t('insertNaNGaps preserva o número total de amostras esperadas', () => {
-    const r = C.analyzePackets({ data: recebidas, fs: FS, packetSizes: sizes, ticksMs: ticks, sequences: seqs });
+    const r = C.analyzePackets({
+      data: recebidas, fs: FS, packetSizes: sizes, ticksMs: ticks, sequences: seqs,
+      stream: 'LfpMontageTimeDomain', deviceModel: 'B35200'
+    });
     const out = C.insertNaNGaps(recebidas, r.gaps);
     assert(out.data.length === r.nExpected, `${out.data.length} ≠ ${r.nExpected}`);
     assert(out.missingMask.length === r.nExpected, 'máscara com comprimento divergente');
@@ -925,7 +935,11 @@ sec('estado do dispositivo, fuso robusto e controle de qualidade');
     assert(onT.state === 'ON_THERAPEUTIC', 'ON terapêutico não reconhecido: ' + onT.state);
     assert(onT.amplitudeMa === 2.7, 'amplitude: ' + onT.amplitudeMa);
     const off = C.inferDeviceState({ hemisphere: 'Left' }, base, { modality: 'survey' });
-    assert(off.state === 'OFF' && off.confidence === 'fraca', 'Survey deveria inferir OFF com confiança fraca');
+    /* deixou de ser inferência fraca: o estado do Survey está DOCUMENTADO
+       (UC202012929cEN p. 4, "Stimulation is off during the measurement") */
+    assert(off.state === 'OFF', 'Survey deveria inferir OFF, veio ' + off.state);
+    assert(off.confidence === 'documentada', 'a confiança do Survey deveria ser documentada, veio ' + off.confidence);
+    assert(off.evidence.some(e => /UC202012929cEN/.test(e)), 'o estado documentado não cita a fonte');
     [on0, onT, off].forEach(r => assert(r.evidence.length > 0, 'inferência sem evidência registrada'));
     return `ON_0mA · ON_THERAPEUTIC (${onT.amplitudeMa} mA) · OFF (${off.confidence})`;
   });
@@ -3587,6 +3601,293 @@ sec('ODR, coerência inter-STN e variação espectral por janela (Onda 12)');
     assert(/0,61|0\.61/.test(a.txt), 'F34 não mostra a acurácia balanceada do estudo original');
     assert(/não afirma|não é detecção|sem rótulo/i.test(a.txt), 'F34 não escreve a fronteira: sem rótulo clínico não há detecção de discinesia');
     return `${a.tags.filter(x => x === 'CANVAS').length} painéis · limitações e fronteira no texto da interface`;
+  });
+}
+
+
+/* --------- conformidade com o white paper de sensing da Medtronic --------- */
+sec('conformidade com o white paper do fabricante (UC202012929cEN FY24)');
+{
+  const baseJson = () => JSON.parse(fs.readFileSync(path.join(PASTA, arquivos[0]), 'utf8'));
+
+  /* A1 — dado censurado é negativo ---------------------------------------- */
+  t('A1: valor negativo do Timeline é CENSURA, não potência, e não entra em conta nenhuma', () => {
+    const j = baseJson();
+    const tl = j.DiagnosticData && j.DiagnosticData.LFPTrendLogs;
+    assert(tl, 'o exemplo precisa ter LFPTrendLogs para este teste');
+    let plantados = 0;
+    Object.keys(tl).forEach(hk => Object.keys(tl[hk]).forEach(day => {
+      tl[hk][day].forEach((r, i) => { if (i % 17 === 0) { r.LFP = -Math.abs(r.LFP || 1); plantados++; } });
+    }));
+    const p = C.parsePercept(j, 'censurado.json');
+    const todas = Object.keys(p.trend).flatMap(h => p.trend[h]);
+    assert(!todas.some(r => isFinite(r.lfp) && r.lfp < 0), 'valor negativo sobreviveu como potência');
+    const cont = Object.keys(p.trendCensoring).reduce((a, h) => a + p.trendCensoring[h].nCensoredLfp, 0);
+    assert(cont === plantados, `contabilidade da censura: ${cont} ≠ ${plantados} plantados`);
+    /* a contagem é SEPARADA da perda de pacote — são coisas diferentes */
+    const cs = C.censoringSummary([p]);
+    assert(cs.ok && cs.nCensored === plantados, 'censoringSummary não bate: ' + cs.nCensored);
+    assert(/independente|INDEPENDENTE/.test(cs.separateFromPacketLoss), 'não declara a separação da perda de pacote');
+    /* e as estatísticas a jusante ignoram os NaN em vez de somá-los */
+    const rows = p.trend[Object.keys(p.trend)[0]];
+    const vals = rows.map(r => r.lfp);
+    const st = C.thresholdSummary(vals, 30, 45);
+    assert(st.n === vals.filter(isFinite).length, 'thresholdSummary contou amostra censurada');
+    assert(C.actigraphyPanel(rows, -180, {}).ok, 'a actigrafia quebrou com censura na série');
+    return `${plantados} censuradas · ${cs.pctCensored}% do total · contabilidade separada da perda de pacote`;
+  });
+
+  t('A1: FFTBinData negativo também é censura, e é contado', () => {
+    const j = baseJson();
+    const ev = j.DiagnosticData && j.DiagnosticData.LfpFrequencySnapshotEvents;
+    if (!ev || !ev.length) return 'o exemplo não tem snapshots de evento — nada a verificar';
+    let plantados = 0;
+    ev.forEach(e => Object.keys(e.LfpFrequencySnapshotEvents || {}).forEach(hk => {
+      const h = e.LfpFrequencySnapshotEvents[hk];
+      if (h && Array.isArray(h.FFTBinData)) h.FFTBinData.forEach((v, i) => {
+        if (i % 23 === 0) { h.FFTBinData[i] = -Math.abs(v || 1); plantados++; }
+      });
+    }));
+    const p = C.parsePercept(j, 'snapcens.json');
+    const blocos = p.snapshots.flatMap(s => Object.keys(s.hemi).map(h => s.hemi[h]));
+    assert(!blocos.some(b => b.p.some(v => isFinite(v) && v < 0)), 'magnitude negativa sobreviveu no snapshot');
+    const cont = blocos.reduce((a, b) => a + (b.nCensored || 0), 0);
+    assert(cont === plantados, `censura do snapshot: ${cont} ≠ ${plantados}`);
+    return `${plantados} bins censurados em ${blocos.length} espectro(s)`;
+  });
+
+  /* A2 — cap de sequência por modelo -------------------------------------- */
+  t('A2: o cap de volta das sequências depende do modelo, e sem modelo o software NÃO escolhe', () => {
+    const pc = C.sequenceCapForModel('Percept PC B35200');
+    const rc = C.sequenceCapForModel('B35300 Percept RC');
+    const nd = C.sequenceCapForModel('');
+    assert(pc.cap === 256, 'Percept PC deveria ter cap 256, veio ' + pc.cap);
+    assert(rc.cap === 65536, 'Percept RC deveria ter cap 65 536, veio ' + rc.cap);
+    assert(nd.cap === null, 'sem modelo o cap deveria ser null, veio ' + nd.cap);
+    /* série de um RC que passa de 65 535 para 0: com o cap certo, perda zero */
+    const SZ = 63, FS = 250, MS = SZ / FS * 1000;
+    const seq = [], ticks = [], sizes = [];
+    for (let i = 0; i < 20; i++) { seq.push((65530 + i) % 65536); ticks.push(Math.round(i * MS)); sizes.push(SZ); }
+    const dados = new Float64Array(20 * SZ);
+    const certo = C.analyzePackets({ data: dados, fs: FS, packetSizes: sizes, ticksMs: ticks, sequences: seq, stream: 'IndefiniteStreaming', deviceModel: 'B35300' });
+    assert(certo.method === 'sequences' && certo.sequenceCap === 65536, 'não usou o cap do RC: ' + certo.sequenceCap);
+    assert(certo.nMissing === 0, 'cap correto do RC ainda reportou perda: ' + certo.nMissing);
+    const errado = C.unwrapCounter(seq, 256);
+    assert(errado[6] - errado[5] !== 1, 'o cap errado deveria produzir salto — o teste não está exercitando o risco');
+    /* sem modelo declarado, cai para os ticks e diz por quê */
+    const semModelo = C.analyzePackets({ data: dados, fs: FS, packetSizes: sizes, ticksMs: ticks, sequences: seq, stream: 'IndefiniteStreaming' });
+    assert(semModelo.method === 'ticks', 'sem modelo deveria cair para ticks, usou ' + semModelo.method);
+    assert(/modelo/.test(semModelo.whySequencesUnused || ''), 'não explicou por que não usou as sequências');
+    return `PC 256 · RC 65 536 · sem modelo: método ${semModelo.method} com motivo declarado`;
+  });
+
+  /* A3 — sequências intercaladas ------------------------------------------ */
+  t('A3: em BrainSenseTimeDomain e BrainSenseLfp as sequências são intercaladas — e não viram perda falsa', () => {
+    const SZ = 63, FS = 250, MS = SZ / FS * 1000, N = 40;
+    const seq = [], ticks = [], sizes = [];
+    /* o fluxo do domínio do tempo leva os pares; os ímpares são do fluxo de
+       potência. Um salto de 2 é o comportamento NORMAL. */
+    for (let i = 0; i < N; i++) { seq.push((2 * i) % 256); ticks.push(Math.round(i * MS)); sizes.push(SZ); }
+    const dados = new Float64Array(N * SZ);
+    const comum = { data: dados, fs: FS, packetSizes: sizes, ticksMs: ticks, sequences: seq, deviceModel: 'B35200' };
+    const simples = C.analyzePackets(Object.assign({ stream: 'LfpMontageTimeDomain' }, comum));
+    const stream = C.analyzePackets(Object.assign({ stream: 'BrainSenseTimeDomain' }, comum));
+    assert(simples.method === 'sequences', 'num fluxo não intercalado as sequências deveriam ser usadas');
+    assert(simples.pctMissing > 40, 'a construção não reproduz a perda falsa: ' + simples.pctMissing);
+    assert(stream.method === 'ticks', 'em BrainSenseTimeDomain o método deveria ser ticks, veio ' + stream.method);
+    assert(stream.nMissing === 0, `perda falsa em fluxo intercalado: ${stream.pctMissing.toFixed(1)}%`);
+    assert(stream.interleavedSequences === true, 'não marcou o fluxo como intercalado');
+    assert(/intercalad/.test(stream.whySequencesUnused || ''), 'não explicou a intercalação');
+    const lfp = C.analyzePackets(Object.assign({ stream: 'BrainSenseLfp' }, comum));
+    assert(lfp.method === 'ticks', 'BrainSenseLfp também é intercalado');
+    return `lido como fluxo simples: ${simples.pctMissing.toFixed(1)}% de perda falsa · lido como streaming: ${stream.pctMissing.toFixed(1)}%`;
+  });
+
+  /* A4 — volta dos ticks --------------------------------------------------- */
+  t('A4: a volta dos ticks usa o período documentado, e ausência de volta é o caso esperado', () => {
+    assert(C.TICKS_ROLLOVER_MS === 65536 * 50, 'período documentado errado: ' + C.TICKS_ROLLOVER_MS);
+    const SZ = 63, FS = 250, MS = SZ / FS * 1000;
+    /* série que dá a volta no período DOCUMENTADO */
+    const base = [];
+    for (let i = 0; i < 40; i++) base.push(Math.round(i * MS));
+    const doc = base.map(v => (v + C.TICKS_ROLLOVER_MS - 3000) % C.TICKS_ROLLOVER_MS);
+    assert(doc.some((v, i) => i > 0 && v < doc[i - 1]), 'a construção precisa conter uma volta');
+    const u = C.unwrapTicks(doc);
+    for (let i = 1; i < u.length; i++) assert(u[i] > u[i - 1], 'desenrolar falhou em ' + i);
+    assert(u.capUsed === C.TICKS_ROLLOVER_MS && u.fallback === false, 'não usou o período documentado');
+    assert(/UC202012929cEN/.test(u.note || ''), 'não cita a fonte do período');
+    /* sem volta: o caso esperado durante o streaming, sem heurística nenhuma */
+    const semVolta = C.unwrapTicks(base);
+    assert(semVolta.fallback === false && semVolta.capUsed === null, 'sem volta não deveria haver cap');
+    assert(/streaming/i.test(semVolta.note || ''), 'não declara que ausência de volta é o esperado em streaming');
+    return `período ${C.TICKS_ROLLOVER_MS} ms (65 536 × 50) · sem volta: sem heurística, com o motivo declarado`;
+  });
+
+  /* A5 — estado da estimulação por modalidade ------------------------------ */
+  t('A5: CalibrationTests é ON e SenseChannelTests é OFF — o par que faltava disparar', () => {
+    const cal = C.documentedStimState('CalibrationTests');
+    const sen = C.documentedStimState('SenseChannelTests');
+    assert(cal.state === 'ON', 'CalibrationTests deveria ser ON, veio ' + cal.state);
+    assert(sen.state === 'OFF', 'SenseChannelTests deveria ser OFF, veio ' + sen.state);
+    assert(cal.page === 15 && sen.page === 15, 'a página da fonte não está declarada');
+    assert(C.documentedStimState('IndefiniteStreaming').state === 'OFF', 'Record Streaming é com estimulação desligada');
+    assert(C.documentedStimState('BrainSenseTimeDomain').state === 'USER', 'streaming é estado definido pelo usuário');
+    const base = { groups: [], eventLogs: [] };
+    const a = C.inferDeviceState({ hemisphere: 'Left' }, base, { modality: 'CalibrationTests' });
+    const b = C.inferDeviceState({ hemisphere: 'Left' }, base, { modality: 'SenseChannelTests' });
+    assert(a.state !== b.state, 'o par OFF/ON da mesma sessão continua indistinguível');
+    assert(a.confidence === 'documentada' && b.confidence === 'documentada', 'a confiança deveria ser documentada');
+    const cmp = C.statesComparable(a, b);
+    assert(!cmp.comparable, 'espectros de estados diferentes não deveriam ser comparáveis');
+    assert(!/\[object Object\]/.test(cmp.reason), 'a razão saiu com [object Object] em vez do nome do estado');
+    return `Calibration ${a.state} vs SenseChannel ${b.state} · comparação recusada com o motivo legível`;
+  });
+
+  /* A6 — piso de quantização do carimbo ------------------------------------ */
+  t('A6: o alinhamento por carimbo declara o piso de ±1 s, que é por construção', () => {
+    const r = C.alignByTimestamp(1000000, 1002500);
+    assert(r.ok, 'alinhamento não calculado');
+    assert(r.quantizationMs === 1000, 'piso de quantização ausente: ' + r.quantizationMs);
+    assert(r.uncertaintyFloorMs === 1000, 'piso de incerteza ausente');
+    assert(/1 s|1000 ms/.test(r.caveat), 'a ressalva não menciona o piso');
+    assert(/necessário/.test(r.caveat), 'a ressalva não diz que o artefato de estimulação passa a ser necessário');
+    return `lag ${r.lagMs} ms com piso declarado de ±${r.uncertaintyFloorMs} ms`;
+  });
+
+  /* B1/B4 — filtros e blanking de GroupSettings ---------------------------- */
+  t('B1/B4: o passa-alta e o blanking saem de GroupSettings, e 10 Hz vira ALARME', () => {
+    const j = baseJson();
+    const g = ((j.Groups || {}).Final || (j.Groups || {}).Initial || [])[0];
+    assert(g && g.GroupSettings, 'o exemplo precisa ter GroupSettings');
+    g.GroupSettings.HighPassFilterInHertz = 1;
+    const p1 = C.parsePercept(j, 'hp1.json');
+    assert(p1.filters.highPassConfigurableHz === 1, 'não extraiu o passa-alta: ' + p1.filters.highPassConfigurableHz);
+    assert(/GroupSettings/.test(p1.filters.highPassSource || ''), 'não declara de onde veio o passa-alta');
+    assert(isFinite(p1.filters.senseBlankingUs), 'não extraiu o blanking de GroupSettings');
+    assert(/GroupSettings/.test(p1.filters.senseBlankingSource || ''), 'não declara a precedência do blanking');
+    assert(/100 Hz/.test(p1.filters.description) && /1 Hz fixo/.test(p1.filters.description), 'a cadeia de filtros não é descrita');
+    assert(p1.filters.lowBandUsable === true, 'com 1 Hz as bandas lentas são utilizáveis');
+    assert(!(C.artifactAlarm(p1, {}).alarms || []).some(a => a.id === 'passaalta'), 'alarme de passa-alta com 1 Hz');
+    g.GroupSettings.HighPassFilterInHertz = 10;
+    const p10 = C.parsePercept(j, 'hp10.json');
+    assert(p10.filters.lowBandUsable === false, 'com 10 Hz as bandas lentas NÃO são utilizáveis');
+    const al = (C.artifactAlarm(p10, {}).alarms || []).find(a => a.id === 'passaalta');
+    assert(al, 'passa-alta em 10 Hz não gerou alarme');
+    assert(al.severity === 'critico' && al.verdict === 'não interprete este canal', 'gravidade errada: ' + al.severity);
+    assert(/teta|delta/i.test(al.plain), 'o alarme não diz quais bandas foram removidas');
+    assert(/ODR|F34/.test(al.whatToDo), 'o alarme não avisa que o termo teta do ODR fica comprometido');
+    return `1 Hz: sem alarme · 10 Hz: ${al.severity} · blanking ${p1.filters.senseBlankingUs} µs de ${p1.filters.senseBlankingSource}`;
+  });
+
+  /* B2/B3 — largura e unidade documentadas --------------------------------- */
+  t('B2/B3: a largura de 5 Hz e a unidade do Timeline deixam de ser suposição', () => {
+    const b = C.configBlocks(parsed, -180, {});
+    assert(/documentada/.test(b.bandwidthSource), 'a largura ainda sai como assumida: ' + b.bandwidthSource);
+    assert(/UC202012929cEN/.test(b.bandwidthSource), 'a largura não cita a fonte');
+    assert(/aproximadamente|não verificável/.test(b.bandwidthSource), 'a ressalva sobre a largura exata sumiu');
+    assert(/soma do quadrado/.test(C.LFP_POWER_UNIT.label), 'a unidade não descreve a soma de quadrados');
+    assert(/µVp²/.test(C.LFP_POWER_UNIT.short), 'unidade curta errada: ' + C.LFP_POWER_UNIT.short);
+    assert(/MUDA A ESCALA|muda a escala/.test(C.LFP_POWER_UNIT.scaleWarning), 'não avisa que a largura muda a escala');
+    return `${b.bandwidthHz} Hz · ${C.LFP_POWER_UNIT.short} — ${C.LFP_POWER_UNIT.label}`;
+  });
+
+  /* B5 — FullyReadForSession ----------------------------------------------- */
+  t('B5: com a leitura incompleta, ausência de modalidade deixa de ser ausência de registro', () => {
+    const j = baseJson();
+    j.FullyReadForSession = false;
+    const p = C.parsePercept(j, 'parcial.json');
+    assert(p.meta.fullyRead === false, 'não leu FullyReadForSession');
+    assert(/pode existir no aparelho|não conclua/.test(p.meta.fullyReadNote), 'a nota não faz a distinção que importa');
+    assert(/UC202012929cEN/.test(p.meta.fullyReadNote), 'a nota não cita a fonte');
+    j.FullyReadForSession = true;
+    assert(C.parsePercept(j, 'ok.json').meta.fullyRead === true, 'não leu o caso verdadeiro');
+    delete j.FullyReadForSession;
+    const semCampo = C.parsePercept(j, 'sem.json');
+    assert(semCampo.meta.fullyRead === null, 'campo ausente deveria dar null, não false');
+    assert(/não declara/.test(semCampo.meta.fullyReadNote), 'não distingue campo ausente de leitura incompleta');
+    return 'false, true e ausente produzem três leituras diferentes — como devem';
+  });
+
+  /* C1 — IndefiniteStreaming ----------------------------------------------- */
+  t('C1: Record Streaming (IndefiniteStreaming) é parseado e aparece no inventário', () => {
+    assert(C.MODALITIES.some(([k]) => k === 'indefiniteStreaming'), 'a modalidade não está no inventário');
+    const j = baseJson();
+    /* constrói um Record Streaming com a mesma forma das demais séries */
+    const n = 250 * 8, dados = [];
+    for (let i = 0; i < n; i++) dados.push(Math.sin(2 * Math.PI * 20 * i / 250));
+    j.IndefiniteStreaming = [{
+      Channel: 'ZERO_TWO_LEFT', SampleRateInHz: 250, TimeDomainData: dados,
+      GlobalPacketSizes: new Array(Math.floor(n / 63)).fill(63).join(','),
+      TicksInMses: Array.from({ length: Math.floor(n / 63) }, (_, i) => Math.round(i * 63 / 250 * 1000)).join(','),
+      FirstPacketDateTime: '2025-01-06T11:00:00Z'
+    }];
+    const p = C.parsePercept(j, 'indef.json');
+    assert(p.indefiniteStreaming.length === 1, 'não parseou o IndefiniteStreaming');
+    const td = p.indefiniteStreaming[0];
+    assert(td.data.length >= n - 63, 'série truncada: ' + td.data.length);
+    assert(td.hemisphere === 'Left', 'hemisfério não reconhecido: ' + td.hemisphere);
+    assert(td.packets && td.packets.method !== 'none', 'a integridade não foi verificada');
+    assert(p.availability.indefiniteStreaming === 1, 'não entrou na matriz de disponibilidade');
+    /* e o estado documentado é OFF — que é o que torna esta modalidade valiosa */
+    assert(C.documentedStimState('IndefiniteStreaming').state === 'OFF', 'Record Streaming é sem estimulação');
+    return `${td.label} · ${td.data.length} amostras · integridade por ${td.packets.method} · estimulação OFF documentada`;
+  });
+
+  /* C2 — Thresholds -------------------------------------------------------- */
+  t('C2: a série de potência que originou os limiares é parseada, com o procedimento declarado', () => {
+    const j = baseJson();
+    j.Thresholds = [{
+      Hemisphere: 'HemisphereLocationDef.Left', SampleRateInHz: 2,
+      FirstPacketDateTime: '2025-01-06T11:30:00Z',
+      LFPDataLeft: [10, 12, 11, 9, -1, 8, 7]
+    }];
+    const p = C.parsePercept(j, 'thr.json');
+    assert(p.thresholdRuns.length === 1, 'não parseou Thresholds');
+    const r = p.thresholdRuns[0];
+    assert(r.byHemisphere.Left, 'hemisfério não extraído');
+    assert(r.byHemisphere.Left.nCensored === 1, 'o negativo do domínio de potência não foi contado como censura');
+    assert(!r.byHemisphere.Left.lfp.some(v => isFinite(v) && v < 0), 'valor negativo sobreviveu');
+    assert(/amplitude .*BAIXA|amplitude/i.test(r.procedure), 'o procedimento de captura não está declarado');
+    assert(/UC202012929cEN/.test(r.source), 'a fonte não está declarada');
+    return `${r.byHemisphere.Left.n} pontos a ${r.fs} Hz · ${r.byHemisphere.Left.nCensored} censurado(s) · procedimento declarado`;
+  });
+
+  /* D2 — limiares do fabricante -------------------------------------------- */
+  t('D2: os limiares de impedância são os do fabricante, e a faixa habitual é declarada como referência', () => {
+    assert(C.IMPEDANCE_LIMITS.shortOhms['1x4'] === 250, 'curto do 1x4 errado');
+    assert(C.IMPEDANCE_LIMITS.shortOhms.sensight === 350, 'curto do SenSight errado');
+    assert(C.IMPEDANCE_LIMITS.openOhms === 10000, 'aberto errado');
+    assert(C.shortThresholdOhms('B33005') === 350, 'SenSight deveria usar 350 Ω');
+    assert(C.shortThresholdOhms('3389') === 250, 'eletrodo 1x4 deveria usar 250 Ω');
+    assert(/NÃO é critério do dispositivo/.test(C.IMPEDANCE_LIMITS.usualRangeNote), 'a faixa habitual não é declarada como referência');
+    assert(/excl/i.test(C.IMPEDANCE_LIMITS.exclusionNote), 'não diz que o dispositivo exclui canais');
+    return `curto <250 Ω (1x4) / <350 Ω (SenSight) · aberto >10 kΩ · faixa 500–2000 Ω só como referência`;
+  });
+
+  /* D4 — protocolo de sincronização ---------------------------------------- */
+  t('D4: o protocolo de sincronização do fabricante está no software, com o marcador no fim', () => {
+    const sp = C.SYNC_PROTOCOL;
+    assert(sp.coarse.length >= 3 && sp.fine.length >= 4, 'protocolo incompleto');
+    assert(sp.fine.some(x => /50\s*Hz/.test(x)), 'não traz a frequência recomendada de 50 Hz');
+    assert(sp.fine.some(x => /NOVAMENTE|fim/i.test(x)), 'não pede o marcador no FIM da sessão');
+    assert(/deriva/.test(sp.fineNote), 'não explica que o marcador no fim é o que revela a deriva');
+    assert(sp.coarse.some(x => /Update Device Time/i.test(x)), 'não traz a sincronização grosseira do relógio');
+    assert(/UC202012929cEN/.test(sp.source), 'a fonte não está declarada');
+    return `${sp.coarse.length} passos grosseiros · ${sp.fine.length} finos · marcador no início E no fim`;
+  });
+
+  /* E1 — o eixo confirmado, e a constante que não está no documento -------- */
+  t('E1: o eixo de frequência do PSD de bordo bate com os 0,98 Hz e 96,68 Hz documentados', () => {
+    const fs = 250, n = fs * 4;
+    const x = new Float64Array(n);
+    for (let i = 0; i < n; i++) x[i] = Math.sin(2 * Math.PI * 20 * i / fs);
+    const sp = C.spectrogramPercept(x, fs, {});
+    assert(sp && sp.freqs && sp.freqs.length, 'emulação não produziu eixo de frequência');
+    const df = sp.freqs[1] - sp.freqs[0];
+    assert(Math.abs(df - 250 / 256) < 1e-6, `largura do bin deveria ser 250/256 = 0,977 Hz, veio ${df}`);
+    const fMax = sp.freqs[sp.freqs.length - 1];
+    assert(fMax > 90 && fMax <= 96.7, `o eixo deveria terminar perto de 96,68 Hz, terminou em ${fMax}`);
+    return `${sp.freqs.length} bins de ${df.toFixed(4)} Hz até ${fMax.toFixed(2)} Hz — bate com o documentado`;
   });
 }
 
