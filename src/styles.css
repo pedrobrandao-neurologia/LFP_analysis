@@ -434,3 +434,13 @@ nav.tabs .sep{flex:0 0 1px;background:var(--rule);margin:9px 6px}
 .lead-legenda{font:10.5px/1.5 var(--mono);color:var(--ink-3);margin:0 0 10px}
 .lead-bilateral{display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start}
 .lead-na{margin:6px 0}
+
+/* Timeline crônico dia a dia: um painel por dia civil, mesma escala de horas.
+   A grade se adapta à largura; em tela estreita vira coluna única, e nenhum
+   painel fica menor que 300 px — abaixo disso o eixo de 24 h ilegível. */
+.dias-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));
+  gap:10px;margin:6px 0 12px}
+.dia-cel{border:1px solid var(--rule);border-radius:4px;padding:6px 6px 8px;background:var(--panel)}
+.dia-cel .plotbox{margin:0}
+.dia-legenda{font:10px/1.5 var(--mono);color:var(--ink-3);margin:4px 2px 6px}
+.btn.mini{padding:2px 8px;font-size:10px}

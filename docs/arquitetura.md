@@ -200,3 +200,37 @@ Três invariantes desta camada:
 As figuras vetoriais de referência ficam em `docs/referencias/eletrodos/`, com um README que
 explica por que o aplicativo redesenha em canvas em vez de embutir os SVG: eles são estáticos e não
 sabem quais contatos estão em uso agora, que é justamente o ponto.
+
+## Segmentação do Timeline em dias civis
+
+`metrics/chronic.js` exporta `splitByLocalDay(rows, offMin, opts)` e
+`dayRangeOf(seriesList, offMin)`. São as funções por trás da apresentação
+"um gráfico por dia" da F8, e existem no núcleo — não na camada de desenho —
+porque decidem o que é lacuna e o que é dia ausente, e essas duas decisões
+mudam número, não só pixel.
+
+Três invariantes da camada:
+
+1. **Dia sem amostra não some.** Um dia civil dentro do intervalo do registro
+   que não tem nenhuma amostra entra na saída com `empty: true` e mantém sua
+   posição no eixo. Encurtar o eixo para pular o buraco apagaria a única coisa
+   que ele diz — que houve um dia sem sensing, ou que o dia mais antigo foi
+   sobrescrito pelo limite de capacidade do aparelho (UC202012929cEN FY24,
+   p. 7).
+2. **O traçado não cruza a lacuna.** Dentro do dia, uma distância maior que
+   `gapFactor` × o intervalo de amostragem parte a série em `segments`, e a
+   figura desenha um segmento por vez. Ligar dois pontos separados por horas
+   de silêncio é imputação silenciosa feita com tinta em vez de número, e o
+   contrato do projeto proíbe imputar em silêncio. A suavização também roda
+   dentro do segmento, para não vazar mediana de um lado da lacuna para o
+   outro.
+3. **O intervalo de amostragem é medido, não assumido.** O white paper
+   documenta a média não sobreposta a cada 10 min (p. 9), mas o passo efetivo
+   de um registro com sensing interrompido é outro. `samplingMs` é a mediana
+   das diferenças positivas — mediana, e não média, porque uma única lacuna de
+   dois dias arrastaria a média e faria o limiar engolir todas as lacunas
+   reais.
+
+A cobertura de cada dia (`coverage`) é exportada junto com o painel e escrita
+na legenda, para que um dia com 4 h de registro e um dia completo não tenham
+a mesma aparência de "dia".

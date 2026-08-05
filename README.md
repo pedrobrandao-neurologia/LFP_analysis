@@ -8,7 +8,7 @@
 
 ## O que é
 
-Um aplicativo web de **arquivo único** (`index.html`, 1297 KB) que lê os *Session Reports* em JSON exportados do programador do neuroestimulador Medtronic Percept™ e produz **33 figuras interativas** organizadas em sete abas, métricas quantitativas, relatório clínico em PDF e exportações prontas para estatística.
+Um aplicativo web de **arquivo único** (`index.html`, 1323 KB) que lê os *Session Reports* em JSON exportados do programador do neuroestimulador Medtronic Percept™ e produz **33 figuras interativas** organizadas em sete abas, métricas quantitativas, relatório clínico em PDF e exportações prontas para estatística.
 
 Abre com **duplo clique**. Não instala nada, não precisa de servidor, não faz uma única requisição de rede.
 
@@ -116,7 +116,7 @@ O perfil é sugerido pelo conteúdo do JSON (alvo do eletrodo, banda de sensing)
 
 | # | Figura | Precisa de | Responde |
 |---|---|---|---|
-| **F8** | Timeline crônico — série multi-dia | `LFPTrendLogs` | Como o marcador se comporta ao longo de semanas |
+| **F8** | Timeline crônico — série multi-dia **ou um painel por dia civil** | `LFPTrendLogs` | Como o marcador se comporta ao longo de semanas, e como é cada dia por dentro |
 | **F9** | **Ritmo circadiano** — heatmap dia × hora, polar, cosinor | `LFPTrendLogs` (≥ 2 dias) | Se há ritmo de 24 h, qual a amplitude, a que horas é o pico — com IC por bootstrap de dias inteiros |
 | **F10** | Resposta alinhada a evento | Timeline + eventos marcados | O que acontece com o marcador em torno do que o paciente registrou |
 | **F12** | Espectros por tipo de evento | `LfpFrequencySnapshotEvents` | Se OFF, discinesia e "tomou medicação" têm espectros distintos |
@@ -297,7 +297,7 @@ A escala de densidade é conferida contra identidades exatas, não contra outra 
 
 ### Suíte de regressão
 
-`node tests/run.mjs` — **309 testes**, incluindo os 33 renderizadores de figura exercitados sobre um DOM mínimo simulado. Nenhum teste pode ser removido ou afrouxado para fazer código novo passar.
+`node tests/run.mjs` — **317 testes**, incluindo os 33 renderizadores de figura exercitados sobre um DOM mínimo simulado. Nenhum teste pode ser removido ou afrouxado para fazer código novo passar.
 
 ---
 
@@ -306,7 +306,7 @@ A escala de densidade é conferida contra identidades exatas, não contra outra 
 ```bash
 node tools/gerar_exemplo.mjs examples   # dataset sintético (nenhum dado real)
 cd src && node build.mjs                # gera index.html a partir de src/
-node tests/run.mjs                      # 309 testes
+node tests/run.mjs                      # 317 testes
 node tests/benchmark.mjs --check        # 87 critérios, falha se houver regressão
 ```
 
