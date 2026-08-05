@@ -149,3 +149,132 @@ export function chronicMetrics(rows, offMin, thr) {
    com dois modos (ou achatada); BC baixo indica um único pico — nesse caso a
    divisão ON/OFF é arbitrária. É um indicador honesto de "há dois estados?",
    ao contrário da distância entre clusters, que o k-médias sempre infla. */
+
+/* ------------------------------------------------------------------------ */
+/*  Segmentação do Timeline em dias civis locais                            */
+/* ------------------------------------------------------------------------ */
+
+/* splitByLocalDay(rows, offMin, opts)
+   O QUE CALCULA. Reparte uma série crônica (LFPTrendLogs, amostrada a cada
+   ~10 min) em dias civis locais — 00:00:00 a 23:59:59,999 — de modo que cada
+   dia possa ser plotado num painel próprio, todos sobre o mesmo eixo de horas.
+   Dentro de cada dia, corta a série em segmentos contíguos sempre que a
+   distância entre amostras vizinhas passa de `gapFactor` × o intervalo de
+   amostragem observado.
+
+   ENTRADA. rows: [{t: epoch ms, lfp, ma}]; offMin: offset local em minutos.
+   Opções: {gapFactor = 3, fromDay, toDay} (fromDay/toDay em 'YYYY-MM-DD' local,
+   para forçar a mesma lista de dias entre hemisférios).
+   SAÍDA. {ok, days: [{dayKey, index, dayStart, rows, n, hours, values,
+   segments, gaps, largestGapMin, coverage, empty}], samplingMs,
+   gapThresholdMs, nDays, nEmptyDays, params}. Horas em h decimal local (0–24),
+   lacunas em minutos, cobertura em fração de 0 a 1.
+
+   DUAS REGRAS DE HONESTIDADE, e são o motivo de a função existir:
+   1. Um dia sem nenhuma amostra dentro do intervalo do registro entra na saída
+      com empty:true, em vez de sumir. A ausência de um dia é informação — pode
+      ser desligamento do sensing, pode ser sobrescrita pelo limite de
+      capacidade do aparelho (UC202012929cEN FY24, p. 7) — e encurtar o eixo
+      para "pular" o buraco apagaria o que ele diz.
+   2. O traçado nunca cruza uma lacuna. Ligar dois pontos separados por horas
+      de silêncio desenha um dado que não foi medido; é imputação silenciosa
+      feita com tinta em vez de número. Os segmentos existem para que a figura
+      levante a caneta.
+
+   Referência de intervalo: o Timeline grava uma média não sobreposta a cada
+   10 min (UC202012929cEN FY24, p. 9), mas o intervalo é MEDIDO aqui, não
+   assumido — registro com sensing interrompido tem outro passo efetivo.     */
+export function splitByLocalDay(rows, offMin, opts) {
+  const o = opts || {};
+  const gapFactor = isFinite(o.gapFactor) && o.gapFactor > 0 ? o.gapFactor : 3;
+  const src = (rows || []).filter(r => r && isFinite(r.t)).slice().sort((a, b) => a.t - b.t);
+  const vazio = {
+    ok: false, days: [], nDays: 0, nEmptyDays: 0, samplingMs: NaN,
+    gapThresholdMs: NaN, params: { gapFactor, offMin }
+  };
+  if (!src.length) return vazio;
+
+  /* intervalo de amostragem = mediana das diferenças positivas. Mediana, e não
+     média, porque uma única lacuna de dois dias arrastaria a média e faria o
+     limiar de lacuna engolir todas as lacunas reais. */
+  const diffs = [];
+  for (let i = 1; i < src.length; i++) { const dt = src[i].t - src[i - 1].t; if (dt > 0) diffs.push(dt); }
+  const samplingMs = diffs.length ? median(diffs) : NaN;
+  const gapThresholdMs = isFinite(samplingMs) && samplingMs > 0 ? samplingMs * gapFactor : Infinity;
+
+  const DIA = 864e5;
+  const inicioDoDia = chave => Date.parse(chave + 'T00:00:00Z') - offMin * 60000;
+
+  const porDia = {};
+  src.forEach(r => { const k = localDayKey(r.t, offMin); (porDia[k] = porDia[k] || []).push(r); });
+  const observados = Object.keys(porDia).sort();
+
+  /* lista de dias: do primeiro ao último, SEM pular os vazios */
+  const primeiro = o.fromDay && o.fromDay < observados[0] ? o.fromDay : observados[0];
+  const ultimo = o.toDay && o.toDay > observados[observados.length - 1] ? o.toDay : observados[observados.length - 1];
+  const chaves = [];
+  for (let t = inicioDoDia(primeiro); t <= inicioDoDia(ultimo) + DIA / 2; t += DIA) {
+    chaves.push(localDayKey(t + DIA / 2, offMin));
+    if (chaves.length > 400) break;   /* trava contra offset absurdo */
+  }
+
+  const days = chaves.map((chave, index) => {
+    const rs = porDia[chave] || [];
+    const dayStart = inicioDoDia(chave);
+    const hours = rs.map(r => (r.t - dayStart) / 36e5);
+    const values = rs.map(r => r.lfp);
+
+    /* segmentos contíguos e lacunas internas */
+    const segments = [];
+    const gaps = [];
+    let ini = 0;
+    for (let i = 1; i < rs.length; i++) {
+      const dt = rs[i].t - rs[i - 1].t;
+      if (dt > gapThresholdMs) {
+        segments.push({ from: ini, to: i - 1, n: i - ini });
+        gaps.push({ fromHour: hours[i - 1], toHour: hours[i], minutes: dt / 60000 });
+        ini = i;
+      }
+    }
+    if (rs.length) segments.push({ from: ini, to: rs.length - 1, n: rs.length - ini });
+
+    /* lacunas de borda: o silêncio antes da primeira e depois da última
+       amostra do dia também é ausência, e conta na cobertura */
+    if (rs.length) {
+      const meio = isFinite(samplingMs) ? samplingMs / 2 / 36e5 : 0;
+      if (hours[0] - meio > gapThresholdMs / 36e5) gaps.push({ fromHour: 0, toHour: hours[0], minutes: hours[0] * 60, edge: 'inicio' });
+      const fim = hours[hours.length - 1];
+      if (24 - fim - meio > gapThresholdMs / 36e5) gaps.push({ fromHour: fim, toHour: 24, minutes: (24 - fim) * 60, edge: 'fim' });
+    }
+
+    const coverage = isFinite(samplingMs) && samplingMs > 0
+      ? Math.min(1, rs.length * samplingMs / DIA) : NaN;
+    const maior = gaps.length ? Math.max.apply(null, gaps.map(g => g.minutes)) : 0;
+
+    return {
+      dayKey: chave, index, dayStart, rows: rs, n: rs.length, hours, values,
+      segments, gaps, largestGapMin: maior, coverage, empty: rs.length === 0
+    };
+  });
+
+  return {
+    ok: true, days, nDays: days.length,
+    nEmptyDays: days.filter(d => d.empty).length,
+    samplingMs, gapThresholdMs,
+    params: { gapFactor, offMin, expectedSamplesPerDay: isFinite(samplingMs) && samplingMs > 0 ? Math.round(DIA / samplingMs) : NaN }
+  };
+}
+
+/* dayRangeOf(seriesList, offMin) — primeiro e último dia local vistos num
+   conjunto de séries, para que os painéis de hemisférios diferentes cubram
+   exatamente a mesma faixa de dias e fiquem comparáveis lado a lado.        */
+export function dayRangeOf(seriesList, offMin) {
+  let lo = null, hi = null;
+  (seriesList || []).forEach(rows => (rows || []).forEach(r => {
+    if (!r || !isFinite(r.t)) return;
+    const k = localDayKey(r.t, offMin);
+    if (lo === null || k < lo) lo = k;
+    if (hi === null || k > hi) hi = k;
+  }));
+  return { fromDay: lo, toDay: hi };
+}

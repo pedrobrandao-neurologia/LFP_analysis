@@ -4098,6 +4098,155 @@ sec('eletrodos: geometria em escala, detecção automática e marcação de cont
   });
 }
 
+/* ========================================================================= */
+sec('Timeline dia a dia: painel por dia civil, lacuna que corta o traçado');
+{
+  /* série sintética com três defeitos deliberados, um por regra:
+     dia 1 completo · dia 2 AUSENTE · dia 3 com um buraco de 4 h no meio */
+  const off = -180;                       /* UTC-03:00, para não testar só UTC */
+  const passo = 6e5;                      /* 10 min, o passo do Timeline */
+  const d0 = Date.parse('2025-03-10T00:00:00Z') - off * 60000;   /* meia-noite local */
+  const linhas = [];
+  for (let i = 0; i < 144; i++) linhas.push({ t: d0 + i * passo, lfp: 100 + i, ma: 2 });
+  /* dia 2 fica vazio de propósito */
+  const d2 = d0 + 2 * 864e5;
+  for (let i = 0; i < 144; i++) {
+    const h = i * passo / 36e5;
+    if (h >= 10 && h < 14) continue;      /* buraco de 4 h */
+    linhas.push({ t: d2 + i * passo, lfp: 200 + i, ma: 3 });
+  }
+
+  t('o dia sem nenhuma amostra aparece como painel vazio, não some do eixo', () => {
+    const r = C.splitByLocalDay(linhas, off);
+    assert(r.ok, 'não segmentou');
+    assert(r.nDays === 3, `esperava 3 dias, veio ${r.nDays}`);
+    assert(r.nEmptyDays === 1, `esperava 1 dia vazio, veio ${r.nEmptyDays}`);
+    assert(r.days[1].empty && r.days[1].n === 0, 'o dia do meio deveria estar vazio');
+    assert(r.days[0].dayKey === '2025-03-10' && r.days[2].dayKey === '2025-03-12',
+      `chaves fora de ordem: ${r.days.map(d => d.dayKey).join(', ')}`);
+    /* a ausência não pode encurtar o eixo: o dia vazio ainda ocupa uma posição */
+    assert(r.days[1].index === 1, 'o dia vazio perdeu a posição no eixo');
+    return `${r.nDays} dias, ${r.nEmptyDays} vazio(s), passo medido ${r.samplingMs / 60000} min`;
+  });
+
+  t('o intervalo de amostragem é MEDIDO, não assumido em 10 min', () => {
+    const r = C.splitByLocalDay(linhas, off);
+    assert(r.samplingMs === passo, `passo medido ${r.samplingMs}, esperado ${passo}`);
+    assert(r.gapThresholdMs === passo * 3, 'limiar de lacuna não é 3× o passo');
+    /* série de 2 min por amostra: o limiar tem de acompanhar, senão uma lacuna
+       real de 10 min passaria despercebida */
+    const finas = [];
+    for (let i = 0; i < 60; i++) finas.push({ t: d0 + i * 12e4, lfp: 1, ma: 0 });
+    const rf = C.splitByLocalDay(finas, off);
+    assert(rf.samplingMs === 12e4, `passo fino ${rf.samplingMs}`);
+    assert(rf.gapThresholdMs === 36e4, 'o limiar não seguiu o passo medido');
+    return `10 min → limiar ${r.gapThresholdMs / 60000} min · 2 min → limiar ${rf.gapThresholdMs / 60000} min`;
+  });
+
+  t('a lacuna interna corta a série em segmentos — o traçado não a atravessa', () => {
+    const r = C.splitByLocalDay(linhas, off);
+    const dia3 = r.days[2];
+    assert(dia3.segments.length === 2, `esperava 2 segmentos no dia com buraco, veio ${dia3.segments.length}`);
+    const g = dia3.gaps.filter(x => !x.edge);
+    assert(g.length === 1, `esperava 1 lacuna interna, veio ${g.length}`);
+    assert(Math.abs(g[0].minutes - 240) < 11, `lacuna de ${g[0].minutes} min, esperada ~240`);
+    assert(Math.abs(dia3.largestGapMin - 240) < 11, 'maior lacuna não bate');
+    /* o dia completo tem UM segmento e nenhuma lacuna interna */
+    assert(r.days[0].segments.length === 1, 'o dia completo foi partido sem motivo');
+    assert(r.days[0].gaps.filter(x => !x.edge).length === 0, 'lacuna inventada no dia completo');
+    /* e os segmentos cobrem todas as amostras, sem perder nem repetir ponto */
+    const soma = dia3.segments.reduce((a, s) => a + (s.to - s.from + 1), 0);
+    assert(soma === dia3.n, `segmentos cobrem ${soma} de ${dia3.n} amostras`);
+    return `${dia3.segments.length} segmentos, lacuna de ${Math.round(g[0].minutes)} min`;
+  });
+
+  t('a cobertura do dia é declarada, para que painel cheio e painel pela metade não se confundam', () => {
+    const r = C.splitByLocalDay(linhas, off);
+    assert(Math.abs(r.days[0].coverage - 1) < 0.01, `dia completo com cobertura ${r.days[0].coverage}`);
+    const c3 = r.days[2].coverage;
+    assert(c3 > 0.8 && c3 < 0.87, `dia com buraco de 4 h deveria ter ~83% de cobertura, veio ${c3}`);
+    assert(!isFinite(r.days[1].coverage) || r.days[1].coverage === 0, 'dia vazio com cobertura positiva');
+    return `dia cheio ${Math.round(100 * r.days[0].coverage)}% · dia com buraco ${Math.round(100 * c3)}%`;
+  });
+
+  t('os dois hemisférios recebem a MESMA lista de dias, senão os painéis não se comparam', () => {
+    const curto = linhas.filter(r => r.t < d0 + 864e5);        /* só o primeiro dia */
+    const faixa = C.dayRangeOf([linhas, curto], off);
+    assert(faixa.fromDay === '2025-03-10' && faixa.toDay === '2025-03-12',
+      `faixa ${faixa.fromDay} → ${faixa.toDay}`);
+    const a = C.splitByLocalDay(linhas, off, faixa);
+    const b = C.splitByLocalDay(curto, off, faixa);
+    assert(a.nDays === b.nDays, `${a.nDays} dias contra ${b.nDays}`);
+    assert(a.days.map(x => x.dayKey).join() === b.days.map(x => x.dayKey).join(), 'listas de dias divergentes');
+    assert(b.nEmptyDays === 2, `o hemisfério curto deveria ter 2 dias vazios, tem ${b.nEmptyDays}`);
+    return `${a.nDays} dias em ambos; o curto declara ${b.nEmptyDays} vazios em vez de encolher`;
+  });
+
+  t('o dia local respeita o fuso: a fronteira é a meia-noite do paciente, não a UTC', () => {
+    /* 23h30 local de UTC-03:00 é 02h30 UTC do dia seguinte */
+    const t23 = Date.parse('2025-03-11T02:30:00Z');
+    const r = C.splitByLocalDay([{ t: t23, lfp: 1, ma: 0 }], off);
+    assert(r.days[0].dayKey === '2025-03-10', `caiu em ${r.days[0].dayKey}, deveria ser 2025-03-10`);
+    assert(Math.abs(r.days[0].hours[0] - 23.5) < 0.01, `hora local ${r.days[0].hours[0]}, esperada 23,5`);
+    const rUTC = C.splitByLocalDay([{ t: t23, lfp: 1, ma: 0 }], 0);
+    assert(rUTC.days[0].dayKey === '2025-03-11', 'em UTC a mesma amostra deveria cair no dia seguinte');
+    return `UTC-03: 2025-03-10 23,5h · UTC: 2025-03-11 02,5h`;
+  });
+
+  t('F8 desenha um painel por dia no modo dia a dia, e um só gráfico no contínuo', () => {
+    const d = H.ds();
+    const fig = H.FIGURES.find(x => x.id === 'F8');
+    if (!fig || !fig.has(d)) { assert(false, 'F8 sem dados'); }
+    const conta = n => {
+      let c = 0;
+      const varre = x => { if (typeof x.getContext === 'function') c++; (x.children || []).forEach(varre); };
+      varre(n); return c;
+    };
+    H.S.opts.F8 = Object.assign({}, H.S.opts.F8, { modo: 'multi' });
+    const nm = document.createElement('div'); fig.render(nm, d);
+    const cMulti = conta(nm);
+
+    H.S.opts.F8 = Object.assign({}, H.S.opts.F8, { modo: 'dia' });
+    const nd = document.createElement('div'); fig.render(nd, d);
+    const cDia = conta(nd);
+
+    const hemis = Object.keys(d.trend);
+    const faixa = C.dayRangeOf(hemis.map(h => C.removeOutliersMAD(d.trend[h], 'lfp', 4).kept), 0);
+    const nDias = C.splitByLocalDay(C.removeOutliersMAD(d.trend[hemis[0]], 'lfp', 4).kept, 0, faixa).nDays;
+
+    assert(cMulti === 1, `modo contínuo deveria ter 1 gráfico, tem ${cMulti}`);
+    assert(cDia === nDias, `modo dia a dia deveria ter ${nDias} gráficos (um por dia), tem ${cDia}`);
+    assert(cDia > 1, 'o modo dia a dia não separou nada');
+    H.S.opts.F8 = Object.assign({}, H.S.opts.F8, { modo: 'multi' });
+    return `contínuo: 1 gráfico · dia a dia: ${cDia} painéis para ${nDias} dias`;
+  });
+
+  t('o modo dia a dia declara a escala usada e a regra da lacuna', () => {
+    const d = H.ds();
+    const fig = H.FIGURES.find(x => x.id === 'F8');
+    const txt = n => {
+      let s = (n.textContent || '') + ' ' + (n.innerHTML || '');
+      (n.children || []).forEach(c => { s += ' ' + txt(c); });
+      return s;
+    };
+    H.S.opts.F8 = { modo: 'dia', escala: true };
+    const a = document.createElement('div'); fig.render(a, d);
+    const ta = txt(a);
+    assert(/mesma escala vertical/.test(ta), 'não disse que a escala é compartilhada');
+    assert(/interrompe o traçado/.test(ta), 'não declarou a regra da lacuna');
+    assert(/Intervalo de amostragem medido/.test(ta), 'não declarou o passo medido');
+    assert(/cobertura/i.test(ta), 'não expôs a cobertura por dia');
+
+    H.S.opts.F8 = { modo: 'dia', escala: false };
+    const b = document.createElement('div'); fig.render(b, d);
+    const tb = txt(b);
+    assert(/escala vertical própria/.test(tb) && /não<\/b> é comparável|não. é comparável/.test(tb),
+      'com escala por painel, a figura não avisou que a altura deixa de ser comparável');
+    H.S.opts.F8 = {};
+    return 'as duas escalas declaram o que se ganha e o que se perde';
+  });
+}
+
 /* ------------------------------------------------------------- resultado -- */
 console.log(`\n${'='.repeat(58)}`);
 console.log(`  ${ok} passaram   ${falhas} falharam   ${pulados} sem dados`);

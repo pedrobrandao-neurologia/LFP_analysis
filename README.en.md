@@ -10,7 +10,7 @@
 
 ## What it is
 
-A **single-file** web application (`index.html`, 1297 KB) that reads the JSON *Session Reports* exported from the Medtronic Percept™ clinician programmer and produces **33 interactive figures** organised into seven tabs, quantitative metrics, a clinical PDF report and statistics-ready exports.
+A **single-file** web application (`index.html`, 1323 KB) that reads the JSON *Session Reports* exported from the Medtronic Percept™ clinician programmer and produces **33 interactive figures** organised into seven tabs, quantitative metrics, a clinical PDF report and statistics-ready exports.
 
 Opens by **double-click**. Nothing to install, no server required, and it never issues a single network request.
 
@@ -118,7 +118,7 @@ The profile is suggested from the JSON content (lead target, sensing band) and c
 
 | # | Figure | Requires | Answers |
 |---|---|---|---|
-| **F8** | Chronic Timeline — multi-day series | `LFPTrendLogs` | How the marker behaves over weeks |
+| **F8** | Chronic Timeline — multi-day series **or one panel per calendar day** | `LFPTrendLogs` | How the marker behaves over weeks, and what each day looks like inside |
 | **F9** | **Circadian rhythm** — day × hour heatmap, polar, cosinor | `LFPTrendLogs` (≥ 2 days) | Whether a 24 h rhythm exists, its amplitude and acrophase — with CI by whole-day block bootstrap |
 | **F10** | Event-aligned response | Timeline + marked events | What happens to the marker around what the patient recorded |
 | **F12** | Spectra by event type | `LfpFrequencySnapshotEvents` | Whether OFF, dyskinesia and "took medication" have distinct spectra |
@@ -299,7 +299,7 @@ The density scaling is checked against exact identities rather than against anot
 
 ### Regression suite
 
-`node tests/run.mjs` — **309 tests**, including all 33 figure renderers exercised against a minimal simulated DOM. No existing test may be removed or weakened to make new code pass.
+`node tests/run.mjs` — **317 tests**, including all 33 figure renderers exercised against a minimal simulated DOM. No existing test may be removed or weakened to make new code pass.
 
 ---
 
@@ -308,7 +308,7 @@ The density scaling is checked against exact identities rather than against anot
 ```bash
 node tools/gerar_exemplo.mjs examples   # synthetic dataset (no real data)
 cd src && node build.mjs                # generates index.html from src/
-node tests/run.mjs                      # 309 tests
+node tests/run.mjs                      # 317 tests
 node tests/benchmark.mjs --check        # 87 criteria, fails on regression
 ```
 

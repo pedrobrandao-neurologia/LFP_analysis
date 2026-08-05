@@ -1821,16 +1821,31 @@ const FIGURES = [
 
   /* ------------------------------------------------------------------ F8 */
   {
-    id: 'F8', title: 'Timeline crônico — série temporal multi-dia',
-    sub: 'LFPTrendLogs: potência a cada 10 min',
+    id: 'F8', title: 'Timeline crônico — série temporal multi-dia ou dia a dia',
+    sub: 'LFPTrendLogs: potência a cada 10 min · um gráfico contínuo ou um painel por dia civil',
     has: d => Object.keys(d.trend).length,
     render(node, d) {
       const hemis = Object.keys(d.trend);
       const k = opt('F8', 'mad', 4), showMa = opt('F8', 'ma', true), smooth = opt('F8', 'smooth', 6);
+      /* APRESENTAÇÃO é escolha, e as duas respondem a perguntas diferentes.
+         O gráfico contínuo mostra tendência entre dias — deriva, degrau após
+         reprogramação, efeito de titulação. O painel por dia empilha os dias
+         sobre o MESMO eixo de horas, que é o arranjo em que o padrão diurno
+         se lê (e em que um dia atípico salta). Nenhuma das duas é mais
+         "correta"; o que muda é o eixo em que o olho compara. */
+      const modo = opt('F8', 'modo', 'multi');
+      const mesmaEscala = opt('F8', 'escala', true);
       node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('apresentação', [
+          { value: 'multi', label: 'um gráfico multi-dia (contínuo)' },
+          { value: 'dia', label: 'um gráfico por dia (0h–23h59)' }
+        ], modo, v => setOpt('F8', 'modo', v)),
         ctrlNumber('outliers: k×MAD', k, 2, 10, .5, v => setOpt('F8', 'mad', v)),
         ctrlNumber('suavização (pontos)', smooth, 1, 72, 1, v => setOpt('F8', 'smooth', v)),
-        ctrlCheck('mostrar amplitude de estimulação', showMa, v => setOpt('F8', 'ma', v))
+        ctrlCheck('mostrar amplitude de estimulação', showMa, v => setOpt('F8', 'ma', v)),
+        modo === 'dia'
+          ? ctrlCheck('mesma escala vertical em todos os dias', mesmaEscala, v => setOpt('F8', 'escala', v))
+          : el('span')
       ]));
       const cleaned = {}; let tmin = Infinity, tmax = -Infinity, vmax = 0;
       hemis.forEach(h => {
@@ -1838,55 +1853,118 @@ const FIGURES = [
         cleaned[h] = c;
         c.kept.forEach(r => { if (r.t < tmin) tmin = r.t; if (r.t > tmax) tmax = r.t; if (r.lfp > vmax) vmax = r.lfp; });
       });
-      const box = plotBox(node, 290);
-      const ch = new P.Chart(box.canvas, {
-        width: box.width, height: box.height, xlim: [tmin, tmax], ylim: [0, vmax * 1.12],
-        xlabel: 'data local', ylabel: 'potência LFP (u.a.)', title: 'potência crônica por hemisfério', pad: { l: 62, r: 52, t: 24, b: 42 }
-      });
-      ch.axes({ nx: 7, xfmt: v => new Date(v + offMin() * 60000).toISOString().slice(5, 10).split('-').reverse().join('/') });
-      /* faixas noturnas */
       const dayMs = 864e5;
-      for (let t = tmin - dayMs; t < tmax + dayMs; t += dayMs) {
-        const base = Math.floor((t + offMin() * 60000) / dayMs) * dayMs - offMin() * 60000;
-        ch.span(base + 22 * 36e5, base + 30 * 36e5, { color: '#1B3A5C', alpha: .05 });
-      }
-      hemis.forEach(h => {
-        const rows = cleaned[h].kept;
-        const xs = rows.map(r => r.t), ys = rows.map(r => r.lfp);
-        ch.scatter(xs, ys, { color: hcol(h), size: 1.1, alpha: .28 });
-        if (smooth > 1) {
-          const sm = movingMedian(ys, smooth);
-          ch.line(xs, sm, { color: hcol(h), width: 1.6, label: `STN ${hname(h)}` });
-        } else ch.line(xs, ys, { color: hcol(h), width: .8, label: `STN ${hname(h)}` });
+      /* Segmentação em dias civis locais, com a MESMA faixa de dias nos dois
+         hemisférios — painéis com listas de dias diferentes não se comparam
+         linha a linha. O limiar de lacuna sai daqui e vale para os dois modos. */
+      const faixa = C.dayRangeOf(hemis.map(h => cleaned[h].kept), offMin());
+      const porDia = {};
+      hemis.forEach(h => { porDia[h] = C.splitByLocalDay(cleaned[h].kept, offMin(), faixa); });
+      const limiarLacuna = Math.min.apply(null,
+        hemis.map(h => porDia[h].gapThresholdMs).filter(v => isFinite(v)).concat([Infinity]));
+      const maMax = Math.max.apply(null, hemis.flatMap(h => cleaned[h].kept.map(r => r.ma)).filter(isFinite).concat([.1]));
+
+      let boxMulti = null, painelDia = null;
+      if (modo === 'dia') painelDia = desenhaDiaADia(node, hemis, porDia, {
+        vmax, smooth, showMa, maMax, mesmaEscala, limiarLacuna
       });
-      if (showMa) {
-        const maMax = Math.max(...hemis.flatMap(h => cleaned[h].kept.map(r => r.ma)), .1);
-        hemis.forEach(h => ch.line(cleaned[h].kept.map(r => r.t), cleaned[h].kept.map(r => r.ma / maMax * vmax * .28),
-          { color: COL.accent, width: 1, dash: [3, 2] }));
-        ch.text(ch.x1 + 6, ch.Y(vmax * .28) - 6, `${f(maMax, 1)} mA`, { color: COL.accent });
-        ch.text(ch.x1 + 6, ch.Y(0) - 6, '0 mA', { color: COL.accent });
+      else {
+        const box = boxMulti = plotBox(node, 290);
+        const ch = new P.Chart(box.canvas, {
+          width: box.width, height: box.height, xlim: [tmin, tmax], ylim: [0, vmax * 1.12],
+          xlabel: 'data local', ylabel: 'potência LFP (u.a.)', title: 'potência crônica por hemisfério', pad: { l: 62, r: 52, t: 24, b: 42 }
+        });
+        ch.axes({ nx: 7, xfmt: v => new Date(v + offMin() * 60000).toISOString().slice(5, 10).split('-').reverse().join('/') });
+        /* faixas noturnas */
+        for (let t = tmin - dayMs; t < tmax + dayMs; t += dayMs) {
+          const base = Math.floor((t + offMin() * 60000) / dayMs) * dayMs - offMin() * 60000;
+          ch.span(base + 22 * 36e5, base + 30 * 36e5, { color: '#1B3A5C', alpha: .05 });
+        }
+        hemis.forEach(h => {
+          const rows = cleaned[h].kept;
+          const xs = rows.map(r => r.t), ys = rows.map(r => r.lfp);
+          ch.scatter(xs, ys, { color: hcol(h), size: 1.1, alpha: .28 });
+          /* A linha é traçada por segmento, e a caneta levanta na lacuna: ligar
+             dois pontos separados por horas de silêncio desenharia um dado que
+             não foi medido. A suavização também roda dentro do segmento. */
+          segmentosPorLacuna(xs, limiarLacuna).forEach((seg, i) => {
+            const sx = xs.slice(seg[0], seg[1]), sy = ys.slice(seg[0], seg[1]);
+            const yy = smooth > 1 ? movingMedian(sy, smooth) : sy;
+            ch.line(sx, yy, { color: hcol(h), width: smooth > 1 ? 1.6 : .8, label: i === 0 ? `STN ${hname(h)}` : null });
+          });
+        });
+        if (showMa) {
+          hemis.forEach(h => ch.line(cleaned[h].kept.map(r => r.t), cleaned[h].kept.map(r => r.ma / maMax * vmax * .28),
+            { color: COL.accent, width: 1, dash: [3, 2] }));
+          ch.text(ch.x1 + 6, ch.Y(vmax * .28) - 6, `${f(maMax, 1)} mA`, { color: COL.accent });
+          ch.text(ch.x1 + 6, ch.Y(0) - 6, '0 mA', { color: COL.accent });
+        }
+        ch.legend({ x: ch.x0 + 8, y: ch.y1 + 6 });
       }
-      ch.legend({ x: ch.x0 + 8, y: ch.y1 + 6 });
 
       node.appendChild(table(['hemisfério', 'n pontos', 'removidos', 'período', 'mediana', 'IQR', 'MAD'],
         hemis.map(h => {
           const c = cleaned[h], v = c.kept.map(r => r.lfp);
           const t0 = new Date(c.kept[0].t + offMin() * 60000), t1 = new Date(c.kept[c.kept.length - 1].t + offMin() * 60000);
           const days = Math.round((t1 - t0) / dayMs);
-          return [{ html: `<span class="hemi-${h[0]}">${hname(h)}</span>` }, c.kept.length,
+          return [{ html: `<span class="hemi-${h[0]}">${hname(h)}</span>` }, { html: String(c.kept.length), cls: 'num' },
           `${c.removed} (${f(100 * c.removed / d.trend[h].length, 1)}%)`,
           `${t0.toISOString().slice(0, 10)} → ${t1.toISOString().slice(0, 10)} (${days} d)`,
           C.median(v), `${f(C.quantile(v, .25))}–${f(C.quantile(v, .75))}`, c.mad];
         })));
+      /* No modo dia a dia, a tabela é por dia: cobertura e maior lacuna dizem
+         quanto daquele painel é medida e quanto é espaço em branco. Um dia com
+         cobertura de 30% desenhado ao lado de um dia completo engana o olho se
+         o número não estiver escrito. */
+      if (modo === 'dia') {
+        const linhas = [];
+        hemis.forEach(h => porDia[h].days.forEach(dd => {
+          /* contagem entra como texto: n é inteiro, e "87,0 amostras" é errado */
+          if (dd.empty) { linhas.push([dd.dayKey, { html: `<span class="hemi-${h[0]}">${hname(h)}</span>` }, { html: '0', cls: 'num' }, '—', '24 h', '—', '—']); return; }
+          const v = dd.values.filter(isFinite);
+          linhas.push([dd.dayKey, { html: `<span class="hemi-${h[0]}">${hname(h)}</span>` }, { html: String(dd.n), cls: 'num' },
+            `${f(100 * dd.coverage, 0)}%`,
+            dd.largestGapMin >= 60 ? `${f(dd.largestGapMin / 60, 1)} h` : `${f(dd.largestGapMin, 0)} min`,
+            C.median(v), `${f(C.quantile(v, .25))}–${f(C.quantile(v, .75))}`]);
+        }));
+        linhas.sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0);
+        node.appendChild(table(['dia local', 'hemisfério', 'n', 'cobertura', 'maior lacuna', 'mediana', 'IQR'], linhas));
+      }
       node.appendChild(exportRow([
-        { label: '⤓ PNG', fn: () => P.downloadCanvas(box.canvas, 'F8_timeline_cronico') },
+        modo === 'dia'
+          ? { label: `⤓ PNG de todos os ${painelDia.canvases.length} dias`, fn: () => painelDia.canvases.forEach((cv, i) => P.downloadCanvas(cv, `F8_dia_${painelDia.dias[i]}`)) }
+          : { label: '⤓ PNG', fn: () => P.downloadCanvas(boxMulti.canvas, 'F8_timeline_cronico') },
         {
           label: '⤓ CSV completo', fn: () => P.downloadText(P.toCSV(hemis.flatMap(h => d.trend[h].map(r => ({
             hemisferio: h, utc: new Date(r.t).toISOString(),
             local: new Date(r.t + offMin() * 60000).toISOString().slice(0, 19),
+            dia_local: C.localDayKey(r.t, offMin()),
             hora_decimal: C.localHour(r.t, offMin()).toFixed(4), lfp: r.lfp, mA: r.ma,
             outlier: Math.abs(r.lfp - cleaned[h].median) > k * cleaned[h].mad ? 1 : 0
           })))), 'F8_timeline.csv', 'text/csv')
+        },
+        {
+          /* Cabeçalhos em inglês: esta tabela é feita para entrar em script de
+             R sem renomear coluna. Cada linha carrega os parâmetros que a
+             produziram (k do MAD, fator de lacuna, intervalo de amostragem). */
+          label: '⤓ CSV por dia', fn: () => P.downloadText(P.toCSV(hemis.flatMap(h => porDia[h].days.map(dd => {
+            const v = dd.values.filter(isFinite);
+            const ma = dd.rows.map(r => r.ma).filter(isFinite);
+            return {
+              hemisphere: h, day_local: dd.dayKey, day_index: dd.index + 1,
+              n_samples: dd.n, empty_day: dd.empty ? 1 : 0,
+              coverage_fraction: isFinite(dd.coverage) ? +dd.coverage.toFixed(4) : '',
+              n_gaps: dd.gaps.length, largest_gap_min: +dd.largestGapMin.toFixed(1),
+              n_segments: dd.segments.length,
+              lfp_median: v.length ? C.median(v) : '', lfp_q1: v.length ? C.quantile(v, .25) : '',
+              lfp_q3: v.length ? C.quantile(v, .75) : '',
+              ma_median: ma.length ? C.median(ma) : '',
+              sampling_ms: isFinite(porDia[h].samplingMs) ? porDia[h].samplingMs : '',
+              gap_threshold_ms: isFinite(porDia[h].gapThresholdMs) ? porDia[h].gapThresholdMs : '',
+              gap_factor: porDia[h].params.gapFactor, outlier_k_mad: k,
+              utc_offset_min: offMin()
+            };
+          }))), 'F8_por_dia.csv', 'text/csv')
         }
       ]));
       /* D5 — capacidade do Timeline por MODELO, e sobrescrita silenciosa.
@@ -1917,11 +1995,24 @@ const FIGURES = [
             `(${C.LFP_POWER_UNIT.short}). ${C.LFP_POWER_UNIT.scaleWarning}. [${C.LFP_POWER_UNIT.source}]`
         }));
       }
-      node.appendChild(el('div', {
-        class: 'note', html: `<b>Método.</b> Exclusão de outliers por mediana ± ${k}×MAD (robusto, preferível a média ± DP em distribuição assimétrica). ` +
-          `Faixas sombreadas = 22h–06h locais. A linha grossa é mediana móvel de ${smooth} pontos (${smooth * 10} min). ` +
-          `<b>Atenção:</b> artefatos de movimento podem gerar padrão pseudo-diurno — confirme em F9 comparando com uma banda-controle.`
-      }));
+      {
+        const amostraMin = Math.min.apply(null, hemis.map(h => porDia[h].samplingMs).filter(isFinite).concat([Infinity]));
+        const nVazios = Math.max.apply(null, hemis.map(h => porDia[h].nEmptyDays).concat([0]));
+        node.appendChild(el('div', {
+          class: 'note', html: `<b>Método.</b> Exclusão de outliers por mediana ± ${k}×MAD (robusto, preferível a média ± DP em distribuição assimétrica). ` +
+            `Faixas sombreadas = 22h–06h locais. A linha grossa é mediana móvel de ${smooth} pontos` +
+            (isFinite(amostraMin) ? ` (${f(smooth * amostraMin / 60000, 0)} min)` : '') + `, calculada dentro de cada segmento. ` +
+            `<b>Lacunas.</b> Intervalo de amostragem medido: ${isFinite(amostraMin) ? f(amostraMin / 60000, 1) + ' min' : '—'}; ` +
+            `distância maior que ${isFinite(limiarLacuna) ? f(limiarLacuna / 60000, 0) + ' min' : '—'} (3×) interrompe o traçado, ` +
+            `porque ligar dois pontos separados por horas de silêncio desenharia dado que não foi medido. ` +
+            (modo === 'dia'
+              ? `<b>Apresentação dia a dia.</b> Cada painel é um dia civil local completo (0h–23h59), ` +
+                `${mesmaEscala ? 'todos na <b>mesma escala vertical</b>, para que a altura seja comparável entre dias' : 'cada um com <b>escala vertical própria</b> — a forma do dia fica legível, mas a altura <b>não</b> é comparável entre painéis'}. ` +
+                (nVazios ? `${nVazios} dia(s) sem nenhuma amostra aparecem como painel vazio em vez de sumir: dia ausente é informação, e encurtar o eixo apagaria isso. ` : '')
+              : `<b>Apresentação contínua.</b> Bom para deriva e degrau entre dias; para o padrão diurno, troque para um gráfico por dia. `) +
+            `<b>Atenção:</b> artefatos de movimento podem gerar padrão pseudo-diurno — confirme em F9 comparando com uma banda-controle.`
+        }));
+      }
     }
   },
 
@@ -5347,6 +5438,102 @@ const FIGURES = [
     }
   }
 ];
+
+/* segmentosPorLacuna(ts, limiarMs) — índices [ini, fim) das corridas contíguas
+   de uma série temporal. Existe para que a linha do gráfico levante a caneta
+   na lacuna: uma reta atravessando horas sem amostra é imputação silenciosa
+   feita com tinta, e o contrato do projeto proíbe imputar em silêncio. */
+function segmentosPorLacuna(ts, limiarMs) {
+  const segs = []; let ini = 0;
+  for (let i = 1; i < ts.length; i++) {
+    if (ts[i] - ts[i - 1] > limiarMs) { segs.push([ini, i]); ini = i; }
+  }
+  if (ts.length) segs.push([ini, ts.length]);
+  return segs;
+}
+
+const DIAS_SEMANA = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'];
+
+/* ---------------------------------------------------- painéis dia a dia ---
+   POR QUE EXISTE. No gráfico contínuo, 30 dias em 900 px dão 30 px por dia:
+   o padrão diurno vira serrilha e o dia atípico não se distingue. Empilhando
+   um painel por dia civil sobre o MESMO eixo de horas, a comparação passa a
+   ser vertical — o olho alinha 3h da manhã de segunda com 3h de terça, que é
+   a comparação que a pergunta clínica pede.
+
+   Entrada: porDia[h] = saída de C.splitByLocalDay para aquele hemisfério.
+   Devolve {canvases, dias} para a exportação em PNG.                       */
+function desenhaDiaADia(node, hemis, porDia, o) {
+  const grade = el('div', { class: 'dias-grid' });
+  node.appendChild(grade);
+  const canvases = [], dias = [];
+  /* a lista de dias é a mesma nos dois hemisférios (splitByLocalDay recebeu a
+     faixa unificada), mas um hemisfério sem nenhuma amostra devolve lista
+     vazia — então a referência é a mais longa, não a do primeiro */
+  const refs = hemis.map(h => porDia[h].days).reduce((a, b) => b.length > a.length ? b : a, []);
+  refs.forEach((_, iDia) => {
+    const dayKey = refs[iDia].dayKey;
+    const doDia = {};
+    hemis.forEach(h => { doDia[h] = (porDia[h].days[iDia] || { rows: [], hours: [], values: [], segments: [], empty: true }); });
+    const vazioTotal = hemis.every(h => doDia[h].empty);
+
+    /* Escala vertical: compartilhada por padrão. Cada painel com escala
+       própria lê melhor a FORMA do dia, e mente sobre a ALTURA — dois dias com
+       potências muito diferentes ficam com picos do mesmo tamanho. */
+    let ymax = o.vmax;
+    if (!o.mesmaEscala) {
+      const vs = hemis.flatMap(h => doDia[h].values).filter(isFinite);
+      ymax = vs.length ? Math.max.apply(null, vs) : o.vmax;
+    }
+    const cel = el('div', { class: 'dia-cel' });
+    grade.appendChild(cel);
+    const dt = new Date(dayKey + 'T12:00:00Z');
+    const rotulo = `${dayKey.slice(8, 10)}/${dayKey.slice(5, 7)} · ${DIAS_SEMANA[dt.getUTCDay()]}`;
+    const box = plotBox(cel, 150);
+    const ch = new P.Chart(box.canvas, {
+      width: box.width, height: box.height, xlim: [0, 24], ylim: [0, (ymax || 1) * 1.12],
+      xlabel: 'hora local', ylabel: 'LFP (u.a.)', title: rotulo, pad: { l: 52, r: o.showMa ? 40 : 12, t: 22, b: 34 }
+    });
+    ch.axes({ nx: 5, xticks: [0, 6, 12, 18, 24], xfmt: v => `${v}h` });
+    ch.span(0, 6, { color: '#1B3A5C', alpha: .05 });
+    ch.span(22, 24, { color: '#1B3A5C', alpha: .05 });
+
+    if (vazioTotal) {
+      ch.text((ch.x0 + ch.x1) / 2 - 44, (ch.y0 + ch.y1) / 2, 'sem dado neste dia', { color: '#8A97A3' });
+    } else {
+      hemis.forEach(h => {
+        const dd = doDia[h];
+        if (dd.empty) return;
+        ch.scatter(dd.hours, dd.values, { color: hcol(h), size: 1.0, alpha: .30 });
+        dd.segments.forEach(seg => {
+          const sx = dd.hours.slice(seg.from, seg.to + 1), sy = dd.values.slice(seg.from, seg.to + 1);
+          const yy = o.smooth > 1 ? movingMedian(sy, o.smooth) : sy;
+          ch.line(sx, yy, { color: hcol(h), width: o.smooth > 1 ? 1.5 : .8 });
+        });
+      });
+      if (o.showMa) hemis.forEach(h => {
+        const dd = doDia[h];
+        if (dd.empty) return;
+        dd.segments.forEach(seg => ch.line(
+          dd.hours.slice(seg.from, seg.to + 1),
+          dd.rows.slice(seg.from, seg.to + 1).map(r => r.ma / o.maMax * ymax * .28),
+          { color: COL.accent, width: 1, dash: [3, 2] }));
+      });
+    }
+    canvases.push(box.canvas); dias.push(dayKey);
+
+    /* A legenda de cada painel diz quanto dele é medida — sem isso, um dia com
+       4 h de registro e um dia completo têm a mesma aparência de "dia". */
+    const cob = hemis.map(h => doDia[h].empty ? `${hname(h)}: sem dado`
+      : `${hname(h)}: ${f(100 * doDia[h].coverage, 0)}% do dia`
+      + (doDia[h].segments.length > 1 ? `, ${doDia[h].segments.length} trechos` : '')).join(' · ');
+    cel.appendChild(el('div', { class: 'dia-legenda', text: cob }));
+    cel.appendChild(el('button', {
+      class: 'btn mini', text: '⤓ PNG', onclick: () => P.downloadCanvas(box.canvas, `F8_dia_${dayKey}`)
+    }));
+  });
+  return { canvases, dias };
+}
 
 function movingMedian(arr, w) {
   const out = new Array(arr.length).fill(NaN);

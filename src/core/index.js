@@ -21,7 +21,7 @@ import { cosinor, cosinorBootstrap, rayleigh, varianceByHour, diurnalProfile } f
 import { eventAligned, permutationTest, permutationTwoSample } from './stats/events.js';
 import { detectStates, betaEnvelopeSeries, streamOnOff } from './stats/states.js';
 import { peakInBand, pickSpectrum, spectralMetrics, burstMetrics, doseResponse, ecgMetrics, deviceStateMetrics } from './metrics/acute.js';
-import { mergeTrend, collectThresholds, chronicMetrics, thresholdSummary, censoringSummary } from './metrics/chronic.js';
+import { mergeTrend, collectThresholds, chronicMetrics, thresholdSummary, censoringSummary, splitByLocalDay, dayRangeOf } from './metrics/chronic.js';
 import { extractMetrics, daysSince } from './metrics/extract.js';
 import { rankSurveyChannels } from './metrics/survey.js';
 import { cohortSummary, wilsonCI } from './metrics/cohort.js';
@@ -93,7 +93,7 @@ const API = {
   cosinor, cosinorBootstrap, rayleigh, varianceByHour, diurnalProfile, eventAligned,
   permutationTest, permutationTwoSample, thresholdSummary, histogram, ecdf, fPValue, tPValue, normCDF,
   peakInBand, daysSince, pickSpectrum, spectralMetrics, burstMetrics, doseResponse, ecgMetrics, deviceStateMetrics,
-  mergeTrend, collectThresholds, chronicMetrics, censoringSummary, extractMetrics,
+  mergeTrend, collectThresholds, chronicMetrics, censoringSummary, splitByLocalDay, dayRangeOf, extractMetrics,
   /* ranking dos pares bipolares do Survey (F1) */
   rankSurveyChannels, cohortSummary, wilsonCI,
   detectStates, betaEnvelopeSeries, streamOnOff, bimodalityCoefficient,
