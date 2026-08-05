@@ -436,6 +436,14 @@ nav.tabs .sep{flex:0 0 1px;background:var(--rule);margin:9px 6px}
 .agenda-item details.evid>summary{cursor:pointer;font:10.5px/1.5 var(--mono);color:var(--ink-3);
   letter-spacing:.04em;text-transform:uppercase}
 .agenda-item details.evid table{margin-top:7px}
+
+/* esquema do eletrodo: escala real, contatos em uso marcados */
+.lead-wrap{display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap;margin:6px 0 4px}
+.lead-col{flex:0 0 auto}
+.lead-col canvas{display:block;background:transparent}
+.lead-legenda{font:10.5px/1.5 var(--mono);color:var(--ink-3);margin:0 0 10px}
+.lead-bilateral{display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start}
+.lead-na{margin:6px 0}
 </style>
 </head>
 <body>
@@ -16859,11 +16867,344 @@ function fitDoseResponse(ma, power, opts) {
   };
 }
 
+/* ---------- core/leads/index.js ---------- */
+/* leads/index.js — geometria dos eletrodos de DBS, em escala real.
+
+   POR QUE ISTO EXISTE. Toda figura deste software fala de contatos — "par 1-3",
+   "catodo em 2b", "contato 0 com impedância alta" — e até aqui esses nomes eram
+   só texto. Um par bipolar "0-3" no eletrodo 3389 abrange 7,5 mm; no 3391, 24 mm.
+   São situações anatômicas diferentes com o mesmo rótulo, e quem lê o gráfico não
+   tem como saber qual está vendo. Um desenho em escala, com os contatos em uso
+   marcados, resolve isso sem que ninguém precise decorar tabela de modelo.
+
+   O QUE ESTE MÓDULO É. Dados de geometria e leitura de nome de canal. Nenhum
+   desenho: quem desenha é a camada de plotagem, que recebe estas medidas em
+   MILÍMETROS e decide a escala em pixels. Nenhuma dependência — é a camada mais
+   baixa possível.
+
+   O QUE ELE NÃO SABE, E DIZ QUE NÃO SABE. O ÂNGULO REAL dos segmentos no crânio
+   depende da rotação do eletrodo no implante, e essa informação não está no JSON
+   do Percept: ela vem do marcador radiopaco na radiografia intraoperatória. O
+   desenho usa a convenção do fabricante (marcador proximal alinhado a 1a/2a,
+   distal a 1b/2b, a→b→c anti-horário visto da extremidade proximal) como
+   REFERÊNCIA DE NOMENCLATURA, e a saída declara que a orientação anatômica não
+   é derivável deste arquivo. `LeadConfiguration` traz um valor de orientação em
+   graus para eletrodos SenSight (UC202012929cEN FY24, p. 26), que esta versão
+   não usa — está registrado em docs/auditoria-whitepaper.md (item C3).
+
+   Unidades: todas as dimensões em MILÍMETROS; ângulos em graus.
+
+   Fontes das medidas:
+     Medtronic. Manual de implante dos eletrodos 3387/3389 (2020).
+     Medtronic. Manual de implante SenSight B33005/B33015 (2021).
+     Medtronic. UC202012929cEN FY24 (nomenclatura dos contatos no JSON,
+       compatibilidade e orientação do SenSight).
+   O modelo 3391 é a exceção declarada: as medidas vêm de catálogo e da
+   literatura, não do manual conferido, e saem marcadas com
+   `dimensionsVerified: false`.                                              */
+
+/* ------------------------------------------------------------- modelos --- */
+
+const LEAD_COMUM_ANEL = {
+  family: 'ring',
+  nContacts: 4,
+  bodyDiameterMm: 1.27,
+  contactMaterial: 'platina-irídio',
+  bodyMaterial: 'poliuretano',
+  connector: 'quadripolar in-line: contatos de 2,3 mm espaçados 4,3 mm, extensão de 16,6 mm',
+  conductorOhms: '< 100 Ω',
+  dimensionsVerified: true,
+  source: 'Medtronic, manual de implante 3387/3389 (2020)'
+};
+
+const LEAD_COMUM_SEG = {
+  family: 'directional',
+  nLevels: 4,
+  architecture: '1-3-3-1',
+  bodyDiameterMm: 1.36,
+  tipMm: 1.0,
+  levelHeightMm: 1.5,
+  segmentSpanDeg: 120,
+  contactMaterial: 'platina-irídio',
+  connector: '8 contatos in-line, espaçados 2,2 mm (17,5 mm no total)',
+  lengthsCm: [33, 42],
+  extension: 'B34000 (compatibilidade fechada, só com Percept PC/RC)',
+  cannulaIdMinMm: [1.42, 1.57],
+  burrHoleMm: 14,
+  dimensionsVerified: true,
+  source: 'Medtronic, manual de implante SenSight B33005/B33015 (2021)'
+};
+
+const LEAD_MODELS = {
+  '3389': Object.assign({}, LEAD_COMUM_ANEL, {
+    id: '3389', label: 'Medtronic 3389',
+    tipMm: 1.5, contactHeightMm: 1.5, spacingMm: 0.5, arrayLengthMm: 7.5,
+    lengthsCm: [28, 40],
+    typicalTargets: 'STN, GPi (alvos compactos)'
+  }),
+  '3387': Object.assign({}, LEAD_COMUM_ANEL, {
+    id: '3387', label: 'Medtronic 3387',
+    tipMm: 1.5, contactHeightMm: 1.5, spacingMm: 1.5, arrayLengthMm: 10.5,
+    lengthsCm: [28, 40],
+    typicalTargets: 'VIM, ANT (epilepsia), GPi, alvos mais extensos'
+  }),
+  '3391': Object.assign({}, LEAD_COMUM_ANEL, {
+    id: '3391', label: 'Medtronic 3391',
+    tipMm: 1.5, contactHeightMm: 3.0, spacingMm: 4.0, arrayLengthMm: 24.0,
+    lengthsCm: [28, 40],
+    typicalTargets: 'VC/VS e alvos alongados; maior área por contato → impedâncias menores',
+    /* a honestidade que o resto do software exige também vale para uma medida */
+    dimensionsVerified: false,
+    source: 'catálogo e literatura — NÃO conferido no manual de implante; confirme antes de publicar'
+  }),
+  'B33005': Object.assign({}, LEAD_COMUM_SEG, {
+    id: 'B33005', label: 'Medtronic SenSight B33005',
+    spacingMm: 0.5, arrayLengthMm: 7.5,
+    surfaceAreaCm2: { 33: 13.55, 42: 17.26 },
+    typicalTargets: 'STN, GPi (equivalente direcional do 3389)'
+  }),
+  'B33015': Object.assign({}, LEAD_COMUM_SEG, {
+    id: 'B33015', label: 'Medtronic SenSight B33015',
+    spacingMm: 1.5, arrayLengthMm: 10.5,
+    surfaceAreaCm2: { 33: 13.55, 42: 17.26 },
+    typicalTargets: 'alvos mais extensos (equivalente direcional do 3387)'
+  })
+};
+
+/* ---------------------------------------------------- resolução do modelo - */
+
+/* leadSpec(model) — resolve a string de modelo do JSON para uma especificação.
+
+   O campo `LeadConfiguration.Model` do Percept traz coisas como
+   "LeadModelDef.B33005" ou "Model 3389". Nunca inventa: modelo não reconhecido
+   devolve `identified: false` com o texto original, e quem desenha mostra um
+   esquema genérico com o aviso de que a geometria não é a real.             */
+function leadSpec(model) {
+  const bruto = String(model == null ? '' : model);
+  const s = bruto.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  /* o sufixo M (ex.: B3300533M) indica marcadores bilaterais e não muda a
+     geometria dos contatos — é registrado e não altera a escolha do modelo */
+  const bilateral = /B330(05|15)\d*M$/.test(s);
+  const achado = ['B33005', 'B33015', '3389', '3387', '3391'].find(k => s.indexOf(k) >= 0);
+  if (!achado) return {
+    identified: false, id: null, label: bruto || '(modelo não declarado)',
+    raw: bruto,
+    reason: bruto
+      ? `o modelo "${bruto}" não está entre os que este software conhece (3387, 3389, 3391, B33005, B33015)`
+      : 'o arquivo não declara o modelo do eletrodo em LeadConfiguration'
+  };
+  return Object.assign({}, LEAD_MODELS[achado], {
+    identified: true, raw: bruto,
+    bilateralMarkers: bilateral,
+    bilateralNote: bilateral
+      ? 'sufixo M: dois marcadores bilaterais adicionais para distinguir hemisférios na radiografia'
+      : null,
+    reason: null
+  });
+}
+
+/* leadsOf(parsed) — modelo por hemisfério, direto do LeadConfiguration. */
+function leadsOf(parsed) {
+  const out = {};
+  ((parsed && parsed.leads) || []).forEach(l => {
+    if (!l || !l.hemisphere) return;
+    out[l.hemisphere] = {
+      hemisphere: l.hemisphere,
+      target: l.target || null,
+      port: l.port || null,
+      spec: leadSpec(l.model)
+    };
+  });
+  return out;
+}
+
+/* -------------------------------------------------- nomes dos contatos --- */
+
+const LEAD_NUM = { ZERO: 0, ONE: 1, TWO: 2, THREE: 3 };
+
+/* contactsOfChannel(channel) — quais contatos um nome de canal referencia.
+
+   Aceita as formas que aparecem no JSON do Percept:
+     ZERO_THREE_LEFT              → ['0', '3']
+     ONE_AND_THREE_RIGHT          → ['1', '3']
+     ONE_C_AND_TWO_C_LEFT         → ['1c', '2c']
+     ZERO_A_AND_TWO_LEFT_RING     → ['0a', '2']
+   Devolve [] quando não reconhece — nunca adivinha.                        */
+function contactsOfChannel(channel) {
+  if (!channel) return [];
+  let s = String(channel).toUpperCase();
+  s = s.replace(/^.*?DEF\./, '');                       /* SensingChannelDef. */
+  s = s.replace(/_(LEFT|RIGHT)(_RING|_SEGMENT)?$/g, '').replace(/_(LEFT|RIGHT)$/g, '');
+  /* o separador tem de sair ANTES da varredura: sem isso o "A" de "_AND_" é
+     lido como o segmento a, e ONE_AND_THREE vira 1a-3 em vez de 1-3 */
+  s = s.replace(/_AND_/g, '|');
+  const achados = [];
+  const re = /(ZERO|ONE|TWO|THREE)(?:_?([ABC])(?![A-Z]))?/g;
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    const n = LEAD_NUM[m[1]];
+    achados.push(String(n) + (m[2] ? m[2].toLowerCase() : ''));
+  }
+  /* A FORMA CURTA também precisa ser aceita. `prettyChannel` já converte
+     ZERO_AND_THREE em "0-3" no parser, e é essa string que circula pelos
+     rótulos das figuras — exigir só a forma verbosa faria o desenho sumir
+     exatamente onde o rótulo é mais usado. */
+  if (!achados.length) {
+    const re2 = /(?:^|[^0-9a-z])([0-3])([abc])?(?![0-9])/gi;
+    let m2;
+    while ((m2 = re2.exec(String(channel).toLowerCase())) !== null) {
+      achados.push(m2[1] + (m2[2] ? m2[2].toLowerCase() : ''));
+    }
+  }
+  /* remove repetição preservando a ordem: "0-0" não é par */
+  return achados.filter((v, i) => achados.indexOf(v) === i);
+}
+
+/* contactId → { level, segment } */
+function parseContactId(id) {
+  const m = /^([0-3])([abc])?$/.exec(String(id || '').toLowerCase());
+  if (!m) return null;
+  return { level: +m[1], segment: m[2] || null, id: m[0] };
+}
+
+/* ------------------------------------------------------ geometria em mm -- */
+
+/* leadGeometry(spec) — posição de cada contato ao longo do eletrodo.
+
+   Origem em z = 0 na PONTA DISTAL. O contato 0 é o mais distal, logo acima da
+   ponta romba. Para eletrodos direcionais, os níveis 1 e 2 devolvem três
+   segmentos cada, com o ângulo central pela convenção do fabricante.
+
+   Devolve também `totalMm` (ponta + arranjo), para que quem desenha possa
+   escalar sem recalcular.                                                    */
+function leadGeometry(spec) {
+  if (!spec || !spec.identified) return {
+    ok: false, contacts: [], totalMm: NaN,
+    reason: (spec && spec.reason) || 'modelo de eletrodo não identificado'
+  };
+  const h = spec.family === 'directional' ? spec.levelHeightMm : spec.contactHeightMm;
+  const passo = h + spacingOf(spec);
+  const contatos = [];
+  for (let k = 0; k < 4; k++) {
+    const z0 = spec.tipMm + k * passo;
+    const z1 = z0 + h;
+    const segmentado = spec.family === 'directional' && (k === 1 || k === 2);
+    if (!segmentado) {
+      contatos.push({
+        id: String(k), level: k, segment: null, z0: +z0.toFixed(3), z1: +z1.toFixed(3),
+        heightMm: h, ring: true, angleDeg: null, spanDeg: 360
+      });
+    } else {
+      ['a', 'b', 'c'].forEach((seg, i) => contatos.push({
+        id: String(k) + seg, level: k, segment: seg,
+        z0: +z0.toFixed(3), z1: +z1.toFixed(3), heightMm: h, ring: false,
+        /* a → b → c anti-horário visto da extremidade PROXIMAL; o ângulo é de
+           NOMENCLATURA, não anatômico — ver o cabeçalho deste módulo */
+        angleDeg: i * 120, spanDeg: spec.segmentSpanDeg
+      }));
+    }
+  }
+  return {
+    ok: true,
+    contacts: contatos,
+    tipMm: spec.tipMm,
+    arrayLengthMm: spec.arrayLengthMm,
+    totalMm: +(spec.tipMm + spec.arrayLengthMm).toFixed(3),
+    diameterMm: spec.bodyDiameterMm,
+    family: spec.family,
+    orientationNote: spec.family === 'directional'
+      ? 'os ângulos são de NOMENCLATURA (marcador proximal → 1a/2a, distal → 1b/2b, a→b→c anti-horário visto da ' +
+        'extremidade proximal). A orientação ANATÔMICA real depende da rotação no implante e NÃO está no JSON do ' +
+        'Percept — ela vem do marcador radiopaco na radiografia intraoperatória'
+      : 'todos os contatos são anéis de 360°: o campo é radialmente simétrico, e não há como afastar a corrente de ' +
+        'uma estrutura vizinha sem reduzir a amplitude',
+    reason: null
+  };
+}
+
+function spacingOf(spec) { return spec.spacingMm; }
+
+/* expandContacts(ids, geo) — resolve um nível para os segmentos que ele contém.
+
+   POR QUE ISTO É NECESSÁRIO E NÃO É COSMÉTICA. Num eletrodo direcional NÃO
+   EXISTE um contato "1": o nível 1 é dividido em 1a, 1b e 1c. Quando o
+   dispositivo registra ou estimula "1-3", ele está usando o NÍVEL 1 inteiro —
+   os três segmentos em curto, funcionando como anel. Marcar só "1" no desenho
+   não destacaria contato nenhum, e o gráfico diria, em silêncio, que o nível
+   não está em uso.
+
+   Devolve também `expanded`, para que a interface possa dizer que a marcação
+   de um nível inteiro é o comportamento do aparelho e não uma escolha do
+   software.                                                                  */
+function expandContacts(ids, geo) {
+  if (!geo || !geo.ok) return { ids: (ids || []).slice(), expanded: [], note: null };
+  const existentes = new Set(geo.contacts.map(c => c.id));
+  const out = [], expandidos = [];
+  (ids || []).forEach(raw => {
+    const id = String(raw).toLowerCase();
+    if (existentes.has(id)) { out.push(id); return; }
+    const p = parseContactId(id);
+    if (!p || p.segment) return;                    /* não existe e não é nível */
+    const segs = geo.contacts.filter(c => c.level === p.level).map(c => c.id);
+    if (!segs.length) return;
+    segs.forEach(x => out.push(x));
+    expandidos.push({ level: p.level, segments: segs });
+  });
+  const unicos = out.filter((v, i) => out.indexOf(v) === i);
+  return {
+    ids: unicos,
+    expanded: expandidos,
+    note: expandidos.length
+      ? `o${expandidos.length > 1 ? 's' : ''} nível${expandidos.length > 1 ? 'eis' : ''} ` +
+        expandidos.map(e => e.level).join(' e ') + ' aparece' + (expandidos.length > 1 ? 'm' : '') +
+        ' com todos os segmentos marcados porque num eletrodo direcional não existe contato anelar nesse nível: ' +
+        'o aparelho usa os três segmentos em curto, funcionando como anel'
+      : null
+  };
+}
+
+/* leadSummary(spec) — uma linha para o selo das figuras. */
+function leadSummary(spec) {
+  if (!spec || !spec.identified) return (spec && spec.reason) || 'eletrodo não identificado';
+  const g = leadGeometry(spec);
+  return `${spec.label} · ${spec.family === 'directional' ? '8 contatos, arquitetura 1-3-3-1' : '4 contatos anelares'} · ` +
+    `altura ${spec.family === 'directional' ? spec.levelHeightMm : spec.contactHeightMm} mm, ` +
+    `espaçamento ${spec.spacingMm} mm, arranjo de ${spec.arrayLengthMm} mm · Ø ${spec.bodyDiameterMm} mm` +
+    (spec.dimensionsVerified ? '' : ' · MEDIDAS NÃO CONFERIDAS NO MANUAL') +
+    (g.ok ? '' : '');
+}
+
+/* leadSpan(spec, contatos) — a que distância física estão dois contatos.
+
+   É o número que torna "par 0-3" interpretável: no 3389 são 7,5 mm de arranjo,
+   no 3391 são 24 mm. O par tem o mesmo NOME e cobre territórios diferentes.  */
+function leadSpan(spec, ids) {
+  const g = leadGeometry(spec);
+  if (!g.ok) return { ok: false, reason: g.reason };
+  const exp = expandContacts(ids, g);
+  const alvo = exp.ids.map(x => g.contacts.find(c => c.id === x)).filter(Boolean);
+  if (alvo.length < 2) return { ok: false, reason: 'são necessários dois contatos identificáveis' };
+  const centros = alvo.map(c => (c.z0 + c.z1) / 2);
+  const d = Math.max.apply(null, centros) - Math.min.apply(null, centros);
+  const z0 = Math.min.apply(null, alvo.map(c => c.z0));
+  const z1 = Math.max.apply(null, alvo.map(c => c.z1));
+  return {
+    ok: true,
+    centerDistanceMm: +d.toFixed(3),
+    coveredSpanMm: +(z1 - z0).toFixed(3),
+    fromTipMm: [+z0.toFixed(3), +z1.toFixed(3)],
+    ids: alvo.map(c => c.id),
+    note: `os centros distam ${d.toFixed(1)} mm e o par abrange ${(z1 - z0).toFixed(1)} mm do eletrodo` +
+      (spec.dimensionsVerified ? '' : ' (medidas do modelo não conferidas no manual)')
+  };
+}
+
 /* ---------- core/index.js ---------- */
 /* core/index.js — barrel do núcleo.
    Monta o objeto PerceptCore com EXATAMENTE a mesma superfície pública de antes
    do refactor modular (Prompt 0.1), para que app.js e a suíte de testes não mudem.
    Ver docs/arquitetura.md para o mapa de módulos e a regra de dependência. */
+
 
 
 
@@ -17005,7 +17346,10 @@ const API = {
   dailyComposition, compareConditions, circadianStateProfile, timelineGrid,
   doseMarkers, diaryVsLfpAgreement, levodopaResponse,
   /* confiabilidade longitudinal, impedância e uso (Onda 4.3) */
-  icc, impedanceDrift, usageAndBattery, longitudinalReliability
+  icc, impedanceDrift, usageAndBattery, longitudinalReliability,
+  /* geometria dos eletrodos, em escala real (Onda 13) */
+  LEAD_MODELS, leadSpec, leadsOf, contactsOfChannel, parseContactId,
+  leadGeometry, leadSummary, leadSpan, expandContacts
 };
 if (typeof module !== "undefined" && module.exports) module.exports = API;
 root.PerceptCore = API;
@@ -17560,7 +17904,242 @@ function toCSV(rows, headers) {
   return [h.join(','), ...rows.map(r => h.map(k => esc(r[k])).join(','))].join('\n');
 }
 
-const API = { Chart, polarBars, CMAPS, fmt, niceTicks, logTicks, downloadCanvas, downloadText, toCSV };
+/* =========================================================== eletrodos ====
+   Desenho do eletrodo de DBS em escala real, com os contatos em uso marcados.
+
+   POR QUE DESENHAR EM VEZ DE EMBUTIR SVG. As figuras de referência (em
+   docs/referencias/eletrodos/) são estáticas: elas não sabem qual par bipolar
+   está sendo mostrado agora. O ponto desta função é justamente marcar, em cada
+   figura, QUAIS contatos estão em uso — o que exige desenhar com estado. De
+   quebra, sai no mesmo canvas do resto do software, exporta em 2× pelo mesmo
+   caminho e não acrescenta 65 KB de SVG ao arquivo único.
+
+   `geo` vem de core/leads/leadGeometry, em MILÍMETROS. Aqui só há pixels.
+
+   opts:
+     highlight   { id: 'sensing' | 'anode' | 'cathode' | 'flag' | true }
+     orient      'vertical' (padrão, ponta embaixo) | 'horizontal'
+     scalePxPerMm  escala explícita; sem ela, ajusta à altura disponível
+     labels      mostrar rótulo de cada contato (padrão true)
+     title, subtitle
+     ruler       régua em mm ao lado (padrão true)                          */
+
+const LEAD_CORES = {
+  corpo: '#E6EAEF', corpoBorda: '#98A2B3',
+  metal: '#5A6675', metalBorda: '#1D2530',
+  sensing: '#0C6E6B', cathode: '#9C3050', anode: '#1B4A72', flag: '#A8621B',
+  tinta: '#0E1A24', suave: '#5C7284', regua: '#C7D3DC'
+};
+
+function leadContactFill(estado) {
+  if (!estado) return LEAD_CORES.metal;
+  if (estado === true || estado === 'sensing') return LEAD_CORES.sensing;
+  return LEAD_CORES[estado] || LEAD_CORES.metal;
+}
+
+/* Desenha o eletrodo. Devolve as caixas de cada contato em pixels, para que
+   quem chamou possa ligar rótulo, tooltip ou seta a um contato específico. */
+function drawLead(canvas, geo, opts) {
+  const o = opts || {};
+  const ctx = canvas.getContext('2d');
+  const dpr = o.dpr || (typeof devicePixelRatio !== 'undefined' ? devicePixelRatio : 1) || 1;
+  const W = o.width || canvas.width / dpr || 240;
+  const H = o.height || canvas.height / dpr || 320;
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  const caixas = [];
+  if (!geo || !geo.ok) {
+    ctx.fillStyle = LEAD_CORES.suave;
+    ctx.font = '12px system-ui, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    quebraTexto(ctx, (geo && geo.reason) || 'geometria do eletrodo indisponível', W / 2, H / 2, W - 16, 15);
+    return { boxes: caixas, ok: false };
+  }
+
+  const rotulos = o.labels !== false;
+  const regua = o.ruler !== false;
+  const topo = (o.title ? 34 : 10) + (o.subtitle ? 14 : 0);
+  const base = 12;
+  const margemEsq = regua ? 40 : 10;
+  const margemDir = rotulos ? Math.min(120, W * 0.42) : 10;
+
+  /* escala: o eletrodo inteiro (ponta + arranjo) cabe na altura útil, com uma
+     folga proximal para mostrar que a haste continua */
+  const mmVisiveis = geo.totalMm * 1.22;
+  const alturaUtil = H - topo - base;
+  const px = isFinite(o.scalePxPerMm) ? o.scalePxPerMm : alturaUtil / mmVisiveis;
+  const larguraHaste = Math.max(6, geo.diameterMm * px);
+  const cx = margemEsq + (W - margemEsq - margemDir - larguraHaste) / 2 + larguraHaste / 2;
+  const yDe = mm => H - base - mm * px;              /* ponta embaixo */
+
+  if (o.title) {
+    ctx.fillStyle = LEAD_CORES.tinta;
+    ctx.font = '600 12.5px system-ui, sans-serif';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText(o.title, 6, 6);
+  }
+  if (o.subtitle) {
+    ctx.fillStyle = LEAD_CORES.suave;
+    ctx.font = '10.5px system-ui, sans-serif';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText(o.subtitle, 6, o.title ? 22 : 6);
+  }
+
+  /* haste, com ponta romba arredondada */
+  const xe = cx - larguraHaste / 2, xd = cx + larguraHaste / 2;
+  const yTopo = yDe(mmVisiveis), yPonta = yDe(0);
+  const r = larguraHaste / 2;
+  ctx.beginPath();
+  ctx.moveTo(xe, yTopo);
+  ctx.lineTo(xe, yPonta - r);
+  ctx.arc(cx, yPonta - r, r, Math.PI, 0, true);
+  ctx.lineTo(xd, yTopo);
+  ctx.closePath();
+  ctx.fillStyle = LEAD_CORES.corpo; ctx.fill();
+  ctx.strokeStyle = LEAD_CORES.corpoBorda; ctx.lineWidth = 1; ctx.stroke();
+
+  /* contatos */
+  const marca = o.highlight || {};
+  geo.contacts.forEach(c => {
+    const y1 = yDe(c.z1), y0 = yDe(c.z0);
+    const alt = Math.max(2, y0 - y1);
+    const estado = marca[c.id];
+    let x0 = xe, larg = larguraHaste;
+    if (!c.ring) {
+      /* segmento: desenhado como uma fatia da largura, na posição do seu ângulo,
+         para que a a/b/c seja distinguível de relance sem exigir a vista axial */
+      const i = { a: 0, b: 1, c: 2 }[c.segment] || 0;
+      larg = larguraHaste / 3;
+      x0 = xe + i * larg;
+    }
+    ctx.fillStyle = leadContactFill(estado);
+    ctx.fillRect(x0, y1, larg, alt);
+    ctx.strokeStyle = LEAD_CORES.metalBorda; ctx.lineWidth = 0.8;
+    ctx.strokeRect(x0 + 0.4, y1 + 0.4, larg - 0.8, alt - 0.8);
+    caixas.push({ id: c.id, x: x0, y: y1, w: larg, h: alt, state: estado || null, ring: c.ring });
+  });
+
+  /* rótulos à direita, um por NÍVEL (os três segmentos compartilham a linha) */
+  if (rotulos) {
+    const porNivel = {};
+    geo.contacts.forEach(c => { (porNivel[c.level] = porNivel[c.level] || []).push(c); });
+    ctx.font = '10.5px system-ui, sans-serif';
+    ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+    Object.keys(porNivel).forEach(k => {
+      const grupo = porNivel[k];
+      const ym = (yDe(grupo[0].z0) + yDe(grupo[0].z1)) / 2;
+      const usados = grupo.filter(c => marca[c.id]);
+      ctx.strokeStyle = LEAD_CORES.regua; ctx.lineWidth = 0.8;
+      ctx.beginPath(); ctx.moveTo(xd + 2, ym); ctx.lineTo(xd + 12, ym); ctx.stroke();
+      const txt = grupo.length === 1 ? grupo[0].id : grupo.map(c => c.id).join(' ');
+      ctx.fillStyle = usados.length ? leadContactFill(usados[0].id && marca[usados[0].id]) : LEAD_CORES.suave;
+      ctx.font = usados.length ? '600 10.5px system-ui, sans-serif' : '10.5px system-ui, sans-serif';
+      ctx.fillText(txt, xd + 15, ym);
+    });
+  }
+
+  /* régua em mm a partir da ponta — é ela que torna o desenho uma medida */
+  if (regua) {
+    ctx.strokeStyle = LEAD_CORES.regua; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(margemEsq - 14, yDe(0)); ctx.lineTo(margemEsq - 14, yDe(geo.totalMm)); ctx.stroke();
+    ctx.fillStyle = LEAD_CORES.suave;
+    ctx.font = '9.5px system-ui, sans-serif';
+    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    const passo = geo.totalMm > 18 ? 5 : (geo.totalMm > 9 ? 2 : 1);
+    for (let mm = 0; mm <= geo.totalMm + 1e-6; mm += passo) {
+      const y = yDe(mm);
+      ctx.beginPath(); ctx.moveTo(margemEsq - 18, y); ctx.lineTo(margemEsq - 14, y); ctx.stroke();
+      ctx.fillText(String(mm), margemEsq - 20, y);
+    }
+    ctx.save();
+    ctx.translate(10, (yDe(0) + yDe(geo.totalMm)) / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.textAlign = 'center'; ctx.fillText('mm da ponta', 0, 0);
+    ctx.restore();
+  }
+  return { boxes: caixas, ok: true, scalePxPerMm: px, cx, tipY: yDe(0) };
+}
+
+/* Vista axial (corte transversal) de um nível segmentado, para tornar a/b/c
+   inequívoco. Só faz sentido em eletrodo direcional. */
+function drawLeadAxial(canvas, geo, opts) {
+  const o = opts || {};
+  const ctx = canvas.getContext('2d');
+  const dpr = o.dpr || (typeof devicePixelRatio !== 'undefined' ? devicePixelRatio : 1) || 1;
+  const W = o.width || canvas.width / dpr || 150;
+  const H = o.height || canvas.height / dpr || 150;
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  if (!geo || !geo.ok || geo.family !== 'directional') return { ok: false };
+
+  const nivel = o.level == null ? 1 : o.level;
+  const marca = o.highlight || {};
+  const cx = W / 2, cy = H / 2 + (o.title ? 8 : 0);
+  const R = Math.min(W, H) / 2 - (o.title ? 22 : 12);
+  const rIn = R * 0.42;
+
+  if (o.title) {
+    ctx.fillStyle = LEAD_CORES.tinta;
+    ctx.font = '600 11px system-ui, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.fillText(o.title, cx, 4);
+  }
+
+  /* corpo e lúmen */
+  ctx.beginPath(); ctx.arc(cx, cy, R, 0, 2 * Math.PI);
+  ctx.fillStyle = LEAD_CORES.corpo; ctx.fill();
+  ctx.strokeStyle = LEAD_CORES.corpoBorda; ctx.lineWidth = 1; ctx.stroke();
+
+  ['a', 'b', 'c'].forEach((seg, i) => {
+    const id = String(nivel) + seg;
+    /* −90° põe o segmento "a" no topo; a → b → c anti-horário, que é a
+       convenção do fabricante vista da extremidade proximal */
+    const centro = -Math.PI / 2 - i * (2 * Math.PI / 3);
+    const meia = (110 * Math.PI / 180) / 2;      /* ~110° de arco, com folga entre segmentos */
+    ctx.beginPath();
+    ctx.arc(cx, cy, R, centro - meia, centro + meia);
+    ctx.arc(cx, cy, rIn, centro + meia, centro - meia, true);
+    ctx.closePath();
+    ctx.fillStyle = leadContactFill(marca[id]);
+    ctx.fill();
+    ctx.strokeStyle = LEAD_CORES.metalBorda; ctx.lineWidth = 0.8; ctx.stroke();
+    const rt = (R + rIn) / 2;
+    ctx.fillStyle = marca[id] ? '#FFFFFF' : '#E6EAEF';
+    ctx.font = '600 10px system-ui, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(id, cx + rt * Math.cos(centro), cy + rt * Math.sin(centro));
+  });
+
+  ctx.beginPath(); ctx.arc(cx, cy, rIn, 0, 2 * Math.PI);
+  ctx.fillStyle = '#FFFFFF'; ctx.fill();
+  ctx.strokeStyle = LEAD_CORES.corpoBorda; ctx.lineWidth = 0.8; ctx.stroke();
+  ctx.fillStyle = LEAD_CORES.suave;
+  ctx.font = '8.5px system-ui, sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('lúmen', cx, cy);
+  return { ok: true };
+}
+
+function quebraTexto(ctx, texto, x, y, maxW, lh) {
+  const palavras = String(texto).split(/\s+/);
+  const linhas = [];
+  let atual = '';
+  palavras.forEach(p => {
+    const tentativa = atual ? atual + ' ' + p : p;
+    if (ctx.measureText(tentativa).width > maxW && atual) { linhas.push(atual); atual = p; }
+    else atual = tentativa;
+  });
+  if (atual) linhas.push(atual);
+  const y0 = y - (linhas.length - 1) * lh / 2;
+  linhas.forEach((l, i) => ctx.fillText(l, x, y0 + i * lh));
+}
+
+const API = { Chart, polarBars, CMAPS, fmt, niceTicks, logTicks, downloadCanvas, downloadText, toCSV, drawLead, drawLeadAxial, LEAD_CORES };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 root.PerceptPlot = API;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
@@ -18483,6 +19062,136 @@ function qualitySeal(node, td) {
   }));
 }
 
+/* ============================================================ eletrodos ====
+   POR QUE ESTE PAINEL EXISTE. Todas as figuras falam de contatos — "par 1-3",
+   "catodo em 2b", "contato 0 com impedância alta" — e esses nomes eram só
+   texto. Um par "0-3" abrange 7,5 mm num eletrodo 3389 e 24 mm num 3391: mesmo
+   rótulo, situações anatômicas diferentes. O desenho em escala, com os contatos
+   em uso marcados, torna isso visível sem exigir tabela decorada.
+
+   O modelo é detectado do próprio JSON (`LeadConfiguration`); quando não é
+   reconhecido, o painel diz isso em vez de desenhar um eletrodo genérico como
+   se fosse o do paciente.                                                    */
+
+/* Estado de cada contato numa figura: 'sensing' (par bipolar em uso),
+   'cathode' / 'anode' (estimulação) e 'flag' (algo a apontar, p.ex. impedância
+   fora de faixa). */
+function marcasDeContatos(ids, estado) {
+  const m = {};
+  (ids || []).forEach(id => { if (id) m[String(id).toLowerCase()] = estado || 'sensing'; });
+  return m;
+}
+
+/* painelEletrodo(parent, opts)
+     hemisphere  'Left' | 'Right'
+     highlight   { '1': 'sensing', '3': 'sensing', ... }
+     title, subtitle, altura, semRegua, semAxial
+   Devolve o canvas principal, para exportação em PNG.                       */
+function painelEletrodo(parent, opts) {
+  opts = opts || {};
+  const hemi = opts.hemisphere || 'Left';
+  const p0 = activeFiles()[0] && activeFiles()[0].parsed;
+  const porLado = p0 ? C.leadsOf(p0) : {};
+  const lead = porLado[hemi] || null;
+  const spec = lead ? lead.spec : C.leadSpec(null);
+  const geo = C.leadGeometry(spec);
+
+  const wrap = el('div', { class: 'lead-wrap' });
+  const alturaEl = opts.altura || 260;
+
+  if (!geo.ok) {
+    wrap.appendChild(el('div', {
+      class: 'note lead-na',
+      html: `<b>Eletrodo não desenhado.</b> ${geo.reason}. O software não desenha um eletrodo genérico no lugar: ` +
+        'a geometria muda o que "par 0-3" significa, e um desenho errado seria pior do que nenhum.'
+    }));
+    parent.appendChild(wrap);
+    return null;
+  }
+
+  /* um nível pedido num eletrodo direcional vira os três segmentos — ver
+     expandContacts: não existe contato anelar nesse nível */
+  const pedidos = Object.keys(opts.highlight || {});
+  const exp = C.expandContacts(pedidos, geo);
+  const marcacao = {};
+  exp.ids.forEach(id => {
+    const origem = opts.highlight[id] ||
+      opts.highlight[String(id).replace(/[abc]$/, '')] || 'sensing';
+    marcacao[id] = origem;
+  });
+
+  const cv = document.createElement('canvas');
+  cv.setAttribute('role', 'img');
+  const marcados = Object.keys(marcacao);
+  cv.setAttribute('aria-label',
+    `esquema em escala do eletrodo ${spec.label} no hemisfério ${hname(hemi)}` +
+    (marcados.length ? `, com os contatos ${marcados.join(', ')} destacados` : ''));
+  const col = el('div', { class: 'lead-col' });
+  col.appendChild(cv);
+  wrap.appendChild(col);
+
+  P.drawLead(cv, geo, {
+    width: opts.largura || 210, height: alturaEl,
+    highlight: marcacao,
+    title: opts.title || `${spec.label} · STN ${hname(hemi)}`,
+    subtitle: opts.subtitle || (lead && lead.target ? `alvo ${lead.target}` : null),
+    ruler: !opts.semRegua
+  });
+
+  /* vista axial só quando há segmento em uso — senão é ruído */
+  const temSegmento = marcados.some(id => /[abc]$/.test(id));
+  if (geo.family === 'directional' && temSegmento && !opts.semAxial) {
+    const niveis = Array.from(new Set(marcados.filter(id => /[abc]$/.test(id)).map(id => +id[0])));
+    niveis.slice(0, 2).forEach(nv => {
+      const ax = document.createElement('canvas');
+      ax.setAttribute('role', 'img');
+      ax.setAttribute('aria-label', `corte axial do nível ${nv} do eletrodo, com os segmentos em uso destacados`);
+      const c2 = el('div', { class: 'lead-col' });
+      c2.appendChild(ax);
+      wrap.appendChild(c2);
+      P.drawLeadAxial(ax, geo, {
+        width: 132, height: 132, level: nv,
+        highlight: marcacao, title: `nível ${nv} (axial)`
+      });
+    });
+  }
+
+  parent.appendChild(wrap);
+
+  if (opts.semLegenda !== true) {
+    const partes = [C.leadSummary(spec)];
+    if (marcados.length >= 2) {
+      const sp = C.leadSpan(spec, marcados);
+      if (sp.ok) partes.push(sp.note);
+    }
+    if (exp.note) partes.push(exp.note);
+    parent.appendChild(el('div', { class: 'lead-legenda', text: partes.join(' · ') }));
+    if (!spec.dimensionsVerified) parent.appendChild(el('div', {
+      class: 'note', html: `<b>Medidas não conferidas.</b> As dimensões do ${spec.label} vêm de catálogo e da ` +
+        'literatura, não do manual de implante conferido. Confirme antes de publicar.'
+    }));
+    if (geo.family === 'directional' && temSegmento) parent.appendChild(el('div', {
+      class: 'note', html: `<b>Orientação.</b> ${geo.orientationNote}.`
+    }));
+  }
+  return cv;
+}
+
+/* Painel dos DOIS hemisférios lado a lado, para as figuras que mostram ambos. */
+function painelEletrodosBilateral(parent, marcasPorHemi, opts) {
+  opts = opts || {};
+  const linha = el('div', { class: 'lead-bilateral' });
+  const canvases = {};
+  ['Left', 'Right'].forEach(h => {
+    if (!marcasPorHemi[h]) return;
+    const cel = el('div');
+    canvases[h] = painelEletrodo(cel, Object.assign({}, opts, { hemisphere: h, highlight: marcasPorHemi[h] }));
+    linha.appendChild(cel);
+  });
+  parent.appendChild(linha);
+  return canvases;
+}
+
 function exportRow(items) {
   const d = el('div', { class: 'ctrls' });
   items.forEach(i => d.appendChild(el('button', { class: 'btn', onclick: i.fn, text: i.label })));
@@ -18648,6 +19357,21 @@ const FIGURES = [
         bt.map(b => [{ html: `<span style="color:${b.color};font-weight:600">${b.label} ${b.key}</span>` },
         `${b.lo}–${b.hi}`, b.absolute, b.relative, b.peakF, b.peakV])));
 
+      /* --- eletrodo em escala, com o par mostrado marcado ------------------- */
+      {
+        const ids = C.contactsOfChannel(cur.canal ? (cur.canal.channel || cur.label) : cur.label);
+        const hemiCur = cur.hemi || (cur.canal && cur.canal.hemisphere) || 'Left';
+        if (ids.length) {
+          node.appendChild(el('h4', {
+            class: 'qc-title', html: `<b>Onde este par fica no eletrodo</b>`
+          }));
+          painelEletrodo(node, {
+            hemisphere: hemiCur,
+            highlight: marcasDeContatos(ids, 'sensing'),
+            subtitle: `par ${ids.join('–')} · o que está sendo mostrado acima`
+          });
+        }
+      }
       node.appendChild(el('div', {
         class: 'note', html: '<b>O que o Survey grava, e o que ele exclui.</b> Para um eletrodo 1x4, <b>todos</b> os ' +
           'pares daquele lead são gravados <b>simultaneamente</b> — o que torna legítima a coerência <i>dentro</i> do ' +
@@ -18816,6 +19540,31 @@ const FIGURES = [
         class: 'note', html: `<b>Um par ausente do Survey não é um par sem sinal.</b> ${C.IMPEDANCE_LIMITS.exclusionNote}. ` +
           `[${C.IMPEDANCE_LIMITS.source}]`
       }));
+
+      /* --- eletrodo com os contatos fora dos limites marcados ------------ */
+      {
+        const marcas = {};
+        hemis.forEach(h => {
+          marcas[h] = {};
+          (d.impedance[h].mono || []).forEach(m => {
+            if (!isFinite(m.ohm)) return;
+            const ids = C.contactsOfChannel(m.b || m.a);
+            const fora = m.ohm < curto || m.ohm > aberto;
+            ids.forEach(id => { if (fora) marcas[h][id] = 'flag'; });
+          });
+        });
+        const algum = hemis.some(h => Object.keys(marcas[h]).length);
+        node.appendChild(el('h4', {
+          class: 'qc-title', html: algum
+            ? '<b>Quais contatos estão fora dos limites do fabricante</b>'
+            : '<b>Eletrodo implantado</b>'
+        }));
+        painelEletrodosBilateral(node, marcas, { altura: 250 });
+        if (!algum) node.appendChild(el('div', {
+          class: 'note', text: 'nenhum contato fora dos limites de curto ou de circuito aberto — o desenho está aqui ' +
+            'para dar a escala do eletrodo deste paciente, que é o que torna "par 0-3" interpretável'
+        }));
+      }
       node.appendChild(exportRow([
         { label: '⤓ PNG (a)', fn: () => P.downloadCanvas(b1.canvas, 'F3a_impedancia_mono') },
         { label: '⤓ PNG (b)', fn: () => P.downloadCanvas(b2.canvas, 'F3b_impedancia_bipolar') },
@@ -19035,6 +19784,18 @@ const FIGURES = [
         ['potência beta 13–30 Hz', f(C.bandPower(psd.f, psd.p, 13, 30), 3)],
         ...(ecg ? [['artefato cardíaco', `${ecg.nBeats} batimentos · ${f(ecg.bpm, 0)} bpm · template subtraído`]] : [])
       ]));
+      {
+        const ids = C.contactsOfChannel(td.channel || td.label);
+        if (ids.length) {
+          node.appendChild(el('h4', { class: 'qc-title', html: '<b>Qual par gerou este traçado</b>' }));
+          painelEletrodo(node, {
+            hemisphere: td.hemisphere || 'Left',
+            highlight: marcasDeContatos(ids, 'sensing'),
+            subtitle: `par ${ids.join('–')} · ${td.label}`,
+            altura: 230
+          });
+        }
+      }
       node.appendChild(exportRow([
         { label: '⤓ PNG traçado', fn: () => P.downloadCanvas(b1.canvas, 'F6a_tracado') },
         { label: '⤓ PNG espectrograma', fn: () => P.downloadCanvas(b2.canvas, 'F6b_espectrograma') },
@@ -19162,7 +19923,40 @@ const FIGURES = [
         ]));
       } else {
         node.appendChild(el('div', { class: 'warnbox', html: 'A amplitude de estimulação não variou o suficiente neste registro para uma curva dose-resposta. Para obtê-la, execute uma rampa de titulação durante o streaming.' }));
-        node.appendChild(exportRow([{ label: '⤓ PNG série', fn: () => P.downloadCanvas(b1.canvas, 'F7a_streaming') }]));
+        {
+        /* aqui o que importa não é o par de sensing: é onde a corrente entra */
+        const p0 = activeFiles()[0] && activeFiles()[0].parsed;
+        const gAtivo = ((p0 && p0.groups) || []).find(g => g.active) || ((p0 && p0.groups) || [])[0];
+        const marcas = {};
+        ((gAtivo && gAtivo.programs) || []).forEach(pr => {
+          const h = pr.hemisphere === 'Left' || pr.hemisphere === 'Right' ? pr.hemisphere : null;
+          if (!h) return;
+          marcas[h] = marcas[h] || {};
+          /* `contactsOfChannel` entende as duas formas — a verbosa do JSON e a
+             curta que o parser já converteu ("1a", "0-3") */
+          (pr.contacts || []).forEach(c => C.contactsOfChannel(c).forEach(id => { marcas[h][id] = 'cathode'; }));
+          (pr.anode || []).forEach(c => C.contactsOfChannel(c).forEach(id => { marcas[h][id] = 'anode'; }));
+        });
+        /* e o par de SENSING junto, porque a pergunta clínica é a relação entre
+           onde se estimula e onde se registra */
+        ((gAtivo && gAtivo.sensing) || []).forEach(sc => {
+          const h = sc.hemisphere;
+          if (!h) return;
+          marcas[h] = marcas[h] || {};
+          C.contactsOfChannel(sc.channel).forEach(id => { if (!marcas[h][id]) marcas[h][id] = 'sensing'; });
+        });
+        if (Object.keys(marcas).length) {
+          node.appendChild(el('h4', { class: 'qc-title', html: '<b>Onde a corrente entra e onde o sinal é lido</b>' }));
+          painelEletrodosBilateral(node, marcas, { altura: 250 });
+          node.appendChild(el('div', {
+            class: 'lead-legenda',
+            html: `<span style="color:${P.LEAD_CORES.cathode}">■</span> catodo · ` +
+              `<span style="color:${P.LEAD_CORES.anode}">■</span> anodo · ` +
+              `<span style="color:${P.LEAD_CORES.sensing}">■</span> par de sensing`
+          }));
+        }
+      }
+      node.appendChild(exportRow([{ label: '⤓ PNG série', fn: () => P.downloadCanvas(b1.canvas, 'F7a_streaming') }]));
       }
       node.appendChild(el('div', {
         class: 'note', html: `<b>Leitura.</b> A potência é calculada pelo próprio dispositivo em janela de ${f(th.averagingMs, 0)} ms centrada em ${f(th.centerFreq, 1)} Hz e amostrada a 2 Hz. ` +
@@ -21711,6 +22505,26 @@ const FIGURES = [
           `identifica esta calibração: se ela mudar entre duas análises, os números não são comparáveis. ` +
           `${pass.fingerprintNote || ''}`
       }));
+      /* --- o par do passaporte, desenhado no eletrodo do paciente -------- */
+      {
+        const marcas = {};
+        ['Left', 'Right'].forEach(h => {
+          const b = pass.byHemisphere[h];
+          if (!b || b.channel == null) return;
+          const ids = C.contactsOfChannel(b.channel);
+          if (ids.length) marcas[h] = marcasDeContatos(ids, b.usable ? 'sensing' : 'flag');
+        });
+        if (Object.keys(marcas).length) {
+          node.appendChild(el('h4', { class: 'qc-title', html: '<b>Onde o biomarcador foi definido</b>' }));
+          painelEletrodosBilateral(node, marcas, { altura: 250 });
+          node.appendChild(el('div', {
+            class: 'lead-legenda',
+            html: `<span style="color:${P.LEAD_CORES.sensing}">■</span> par utilizável · ` +
+              `<span style="color:${P.LEAD_CORES.flag}">■</span> par escolhido mas NÃO utilizável`
+          }));
+        }
+      }
+
       node.appendChild(el('div', {
         class: 'note', html: '<b>Qual critério o APARELHO usa.</b> No BrainSense Setup o dispositivo escolhe ' +
           'automaticamente o <b>maior pico do canal</b>, desde que esse pico esteja na faixa de <b>beta ou gama</b> e ' +
@@ -22566,6 +23380,18 @@ const FIGURES = [
       }));
 
       /* ---------------- exportações ------------------------------------ */
+      {
+        const ids = C.contactsOfChannel(td.channel || td.label);
+        if (ids.length) {
+          node.appendChild(el('h4', { class: 'qc-title', html: '<b>Qual par gerou este espectrograma</b>' }));
+          painelEletrodo(node, {
+            hemisphere: td.hemisphere || 'Left',
+            highlight: marcasDeContatos(ids, 'sensing'),
+            subtitle: `par ${ids.join('–')} · ${td.label}`,
+            altura: 230
+          });
+        }
+      }
       node.appendChild(exportRow([
         { label: '⤓ PNG', fn: () => P.downloadCanvas(box.canvas, `F30_espectrograma_${metodo}`) },
         { label: '⤓ CSV (formato longo)', fn: () => P.downloadText(csvEspectrograma(spec, tm, td, dB), `F30_spectrogram_${metodo}.csv`, 'text/csv') },

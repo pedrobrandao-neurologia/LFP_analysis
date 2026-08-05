@@ -38,6 +38,8 @@ output/
 # nascimento e número de série.
 !docs/referencias/
 !docs/referencias/*.pdf
+!docs/referencias/eletrodos/
+!docs/referencias/eletrodos/*
 
 # Exceção: resultados do benchmark (sinal sintético, sem qualquer dado de paciente)
 !benchmark/resultados.csv

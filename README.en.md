@@ -10,7 +10,7 @@
 
 ## What it is
 
-A **single-file** web application (`index.html`, 1270 KB) that reads the JSON *Session Reports* exported from the Medtronic Percept™ clinician programmer and produces **33 interactive figures** organised into seven tabs, quantitative metrics, a clinical PDF report and statistics-ready exports.
+A **single-file** web application (`index.html`, 1297 KB) that reads the JSON *Session Reports* exported from the Medtronic Percept™ clinician programmer and produces **33 interactive figures** organised into seven tabs, quantitative metrics, a clinical PDF report and statistics-ready exports.
 
 Opens by **double-click**. Nothing to install, no server required, and it never issues a single network request.
 
@@ -299,7 +299,7 @@ The density scaling is checked against exact identities rather than against anot
 
 ### Regression suite
 
-`node tests/run.mjs` — **300 tests**, including all 33 figure renderers exercised against a minimal simulated DOM. No existing test may be removed or weakened to make new code pass.
+`node tests/run.mjs` — **309 tests**, including all 33 figure renderers exercised against a minimal simulated DOM. No existing test may be removed or weakened to make new code pass.
 
 ---
 
@@ -308,7 +308,7 @@ The density scaling is checked against exact identities rather than against anot
 ```bash
 node tools/gerar_exemplo.mjs examples   # synthetic dataset (no real data)
 cd src && node build.mjs                # generates index.html from src/
-node tests/run.mjs                      # 300 tests
+node tests/run.mjs                      # 309 tests
 node tests/benchmark.mjs --check        # 87 criteria, fails on regression
 ```
 
@@ -321,6 +321,32 @@ Install the hook that blocks commits containing identifying data:
 ```bash
 cp tools/pre-commit .git/hooks/ && chmod +x .git/hooks/pre-commit
 ```
+
+---
+
+## Lead schematic, to scale, with the contacts in use marked
+
+The lead model is **detected automatically** from `LeadConfiguration`, and every figure that names
+contacts now shows the lead drawn to real scale with that figure's contacts highlighted: the
+bipolar pair whose spectrum is shown (F1), the contacts outside the manufacturer's short/open
+limits (F3), the pair behind a trace (F6) or a spectrogram (F30), cathode + anode + sensing pair
+together (F7), and where the biomarker was defined (F31).
+
+Models with geometry: **3387**, **3389**, **3391**, **SenSight B33005** and **B33015** — contact
+height, spacing, array length, distal tip and body diameter in millimetres, from the implant
+manuals (3387/3389, 2020; SenSight, 2021).
+
+**Why this is not decoration.** A "0-3" pair spans **7.5 mm** on a 3389, **10.5 mm** on a 3387 and
+**24 mm** on a 3391 — same label, different anatomical situations.
+
+Three honesty decisions worth noting: an unrecognised model is **not** drawn as a generic lead (the
+panel says so and why); on a directional lead there is **no contact "1"** — level 1 is 1a/1b/1c and
+the device shorts all three, which is what the drawing shows and explains; and the **anatomical
+orientation of the segments is never asserted** — the a/b/c angles are nomenclature, while the real
+rotation comes from the radiopaque marker on the intraoperative radiograph and is not in the JSON.
+The 3391 dimensions are flagged as **not verified against the implant manual**.
+
+Reference vector figures in [`docs/referencias/eletrodos/`](docs/referencias/eletrodos/).
 
 ---
 

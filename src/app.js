@@ -916,6 +916,136 @@ function qualitySeal(node, td) {
   }));
 }
 
+/* ============================================================ eletrodos ====
+   POR QUE ESTE PAINEL EXISTE. Todas as figuras falam de contatos — "par 1-3",
+   "catodo em 2b", "contato 0 com impedância alta" — e esses nomes eram só
+   texto. Um par "0-3" abrange 7,5 mm num eletrodo 3389 e 24 mm num 3391: mesmo
+   rótulo, situações anatômicas diferentes. O desenho em escala, com os contatos
+   em uso marcados, torna isso visível sem exigir tabela decorada.
+
+   O modelo é detectado do próprio JSON (`LeadConfiguration`); quando não é
+   reconhecido, o painel diz isso em vez de desenhar um eletrodo genérico como
+   se fosse o do paciente.                                                    */
+
+/* Estado de cada contato numa figura: 'sensing' (par bipolar em uso),
+   'cathode' / 'anode' (estimulação) e 'flag' (algo a apontar, p.ex. impedância
+   fora de faixa). */
+function marcasDeContatos(ids, estado) {
+  const m = {};
+  (ids || []).forEach(id => { if (id) m[String(id).toLowerCase()] = estado || 'sensing'; });
+  return m;
+}
+
+/* painelEletrodo(parent, opts)
+     hemisphere  'Left' | 'Right'
+     highlight   { '1': 'sensing', '3': 'sensing', ... }
+     title, subtitle, altura, semRegua, semAxial
+   Devolve o canvas principal, para exportação em PNG.                       */
+function painelEletrodo(parent, opts) {
+  opts = opts || {};
+  const hemi = opts.hemisphere || 'Left';
+  const p0 = activeFiles()[0] && activeFiles()[0].parsed;
+  const porLado = p0 ? C.leadsOf(p0) : {};
+  const lead = porLado[hemi] || null;
+  const spec = lead ? lead.spec : C.leadSpec(null);
+  const geo = C.leadGeometry(spec);
+
+  const wrap = el('div', { class: 'lead-wrap' });
+  const alturaEl = opts.altura || 260;
+
+  if (!geo.ok) {
+    wrap.appendChild(el('div', {
+      class: 'note lead-na',
+      html: `<b>Eletrodo não desenhado.</b> ${geo.reason}. O software não desenha um eletrodo genérico no lugar: ` +
+        'a geometria muda o que "par 0-3" significa, e um desenho errado seria pior do que nenhum.'
+    }));
+    parent.appendChild(wrap);
+    return null;
+  }
+
+  /* um nível pedido num eletrodo direcional vira os três segmentos — ver
+     expandContacts: não existe contato anelar nesse nível */
+  const pedidos = Object.keys(opts.highlight || {});
+  const exp = C.expandContacts(pedidos, geo);
+  const marcacao = {};
+  exp.ids.forEach(id => {
+    const origem = opts.highlight[id] ||
+      opts.highlight[String(id).replace(/[abc]$/, '')] || 'sensing';
+    marcacao[id] = origem;
+  });
+
+  const cv = document.createElement('canvas');
+  cv.setAttribute('role', 'img');
+  const marcados = Object.keys(marcacao);
+  cv.setAttribute('aria-label',
+    `esquema em escala do eletrodo ${spec.label} no hemisfério ${hname(hemi)}` +
+    (marcados.length ? `, com os contatos ${marcados.join(', ')} destacados` : ''));
+  const col = el('div', { class: 'lead-col' });
+  col.appendChild(cv);
+  wrap.appendChild(col);
+
+  P.drawLead(cv, geo, {
+    width: opts.largura || 210, height: alturaEl,
+    highlight: marcacao,
+    title: opts.title || `${spec.label} · STN ${hname(hemi)}`,
+    subtitle: opts.subtitle || (lead && lead.target ? `alvo ${lead.target}` : null),
+    ruler: !opts.semRegua
+  });
+
+  /* vista axial só quando há segmento em uso — senão é ruído */
+  const temSegmento = marcados.some(id => /[abc]$/.test(id));
+  if (geo.family === 'directional' && temSegmento && !opts.semAxial) {
+    const niveis = Array.from(new Set(marcados.filter(id => /[abc]$/.test(id)).map(id => +id[0])));
+    niveis.slice(0, 2).forEach(nv => {
+      const ax = document.createElement('canvas');
+      ax.setAttribute('role', 'img');
+      ax.setAttribute('aria-label', `corte axial do nível ${nv} do eletrodo, com os segmentos em uso destacados`);
+      const c2 = el('div', { class: 'lead-col' });
+      c2.appendChild(ax);
+      wrap.appendChild(c2);
+      P.drawLeadAxial(ax, geo, {
+        width: 132, height: 132, level: nv,
+        highlight: marcacao, title: `nível ${nv} (axial)`
+      });
+    });
+  }
+
+  parent.appendChild(wrap);
+
+  if (opts.semLegenda !== true) {
+    const partes = [C.leadSummary(spec)];
+    if (marcados.length >= 2) {
+      const sp = C.leadSpan(spec, marcados);
+      if (sp.ok) partes.push(sp.note);
+    }
+    if (exp.note) partes.push(exp.note);
+    parent.appendChild(el('div', { class: 'lead-legenda', text: partes.join(' · ') }));
+    if (!spec.dimensionsVerified) parent.appendChild(el('div', {
+      class: 'note', html: `<b>Medidas não conferidas.</b> As dimensões do ${spec.label} vêm de catálogo e da ` +
+        'literatura, não do manual de implante conferido. Confirme antes de publicar.'
+    }));
+    if (geo.family === 'directional' && temSegmento) parent.appendChild(el('div', {
+      class: 'note', html: `<b>Orientação.</b> ${geo.orientationNote}.`
+    }));
+  }
+  return cv;
+}
+
+/* Painel dos DOIS hemisférios lado a lado, para as figuras que mostram ambos. */
+function painelEletrodosBilateral(parent, marcasPorHemi, opts) {
+  opts = opts || {};
+  const linha = el('div', { class: 'lead-bilateral' });
+  const canvases = {};
+  ['Left', 'Right'].forEach(h => {
+    if (!marcasPorHemi[h]) return;
+    const cel = el('div');
+    canvases[h] = painelEletrodo(cel, Object.assign({}, opts, { hemisphere: h, highlight: marcasPorHemi[h] }));
+    linha.appendChild(cel);
+  });
+  parent.appendChild(linha);
+  return canvases;
+}
+
 function exportRow(items) {
   const d = el('div', { class: 'ctrls' });
   items.forEach(i => d.appendChild(el('button', { class: 'btn', onclick: i.fn, text: i.label })));
@@ -1081,6 +1211,21 @@ const FIGURES = [
         bt.map(b => [{ html: `<span style="color:${b.color};font-weight:600">${b.label} ${b.key}</span>` },
         `${b.lo}–${b.hi}`, b.absolute, b.relative, b.peakF, b.peakV])));
 
+      /* --- eletrodo em escala, com o par mostrado marcado ------------------- */
+      {
+        const ids = C.contactsOfChannel(cur.canal ? (cur.canal.channel || cur.label) : cur.label);
+        const hemiCur = cur.hemi || (cur.canal && cur.canal.hemisphere) || 'Left';
+        if (ids.length) {
+          node.appendChild(el('h4', {
+            class: 'qc-title', html: `<b>Onde este par fica no eletrodo</b>`
+          }));
+          painelEletrodo(node, {
+            hemisphere: hemiCur,
+            highlight: marcasDeContatos(ids, 'sensing'),
+            subtitle: `par ${ids.join('–')} · o que está sendo mostrado acima`
+          });
+        }
+      }
       node.appendChild(el('div', {
         class: 'note', html: '<b>O que o Survey grava, e o que ele exclui.</b> Para um eletrodo 1x4, <b>todos</b> os ' +
           'pares daquele lead são gravados <b>simultaneamente</b> — o que torna legítima a coerência <i>dentro</i> do ' +
@@ -1249,6 +1394,31 @@ const FIGURES = [
         class: 'note', html: `<b>Um par ausente do Survey não é um par sem sinal.</b> ${C.IMPEDANCE_LIMITS.exclusionNote}. ` +
           `[${C.IMPEDANCE_LIMITS.source}]`
       }));
+
+      /* --- eletrodo com os contatos fora dos limites marcados ------------ */
+      {
+        const marcas = {};
+        hemis.forEach(h => {
+          marcas[h] = {};
+          (d.impedance[h].mono || []).forEach(m => {
+            if (!isFinite(m.ohm)) return;
+            const ids = C.contactsOfChannel(m.b || m.a);
+            const fora = m.ohm < curto || m.ohm > aberto;
+            ids.forEach(id => { if (fora) marcas[h][id] = 'flag'; });
+          });
+        });
+        const algum = hemis.some(h => Object.keys(marcas[h]).length);
+        node.appendChild(el('h4', {
+          class: 'qc-title', html: algum
+            ? '<b>Quais contatos estão fora dos limites do fabricante</b>'
+            : '<b>Eletrodo implantado</b>'
+        }));
+        painelEletrodosBilateral(node, marcas, { altura: 250 });
+        if (!algum) node.appendChild(el('div', {
+          class: 'note', text: 'nenhum contato fora dos limites de curto ou de circuito aberto — o desenho está aqui ' +
+            'para dar a escala do eletrodo deste paciente, que é o que torna "par 0-3" interpretável'
+        }));
+      }
       node.appendChild(exportRow([
         { label: '⤓ PNG (a)', fn: () => P.downloadCanvas(b1.canvas, 'F3a_impedancia_mono') },
         { label: '⤓ PNG (b)', fn: () => P.downloadCanvas(b2.canvas, 'F3b_impedancia_bipolar') },
@@ -1468,6 +1638,18 @@ const FIGURES = [
         ['potência beta 13–30 Hz', f(C.bandPower(psd.f, psd.p, 13, 30), 3)],
         ...(ecg ? [['artefato cardíaco', `${ecg.nBeats} batimentos · ${f(ecg.bpm, 0)} bpm · template subtraído`]] : [])
       ]));
+      {
+        const ids = C.contactsOfChannel(td.channel || td.label);
+        if (ids.length) {
+          node.appendChild(el('h4', { class: 'qc-title', html: '<b>Qual par gerou este traçado</b>' }));
+          painelEletrodo(node, {
+            hemisphere: td.hemisphere || 'Left',
+            highlight: marcasDeContatos(ids, 'sensing'),
+            subtitle: `par ${ids.join('–')} · ${td.label}`,
+            altura: 230
+          });
+        }
+      }
       node.appendChild(exportRow([
         { label: '⤓ PNG traçado', fn: () => P.downloadCanvas(b1.canvas, 'F6a_tracado') },
         { label: '⤓ PNG espectrograma', fn: () => P.downloadCanvas(b2.canvas, 'F6b_espectrograma') },
@@ -1595,7 +1777,40 @@ const FIGURES = [
         ]));
       } else {
         node.appendChild(el('div', { class: 'warnbox', html: 'A amplitude de estimulação não variou o suficiente neste registro para uma curva dose-resposta. Para obtê-la, execute uma rampa de titulação durante o streaming.' }));
-        node.appendChild(exportRow([{ label: '⤓ PNG série', fn: () => P.downloadCanvas(b1.canvas, 'F7a_streaming') }]));
+        {
+        /* aqui o que importa não é o par de sensing: é onde a corrente entra */
+        const p0 = activeFiles()[0] && activeFiles()[0].parsed;
+        const gAtivo = ((p0 && p0.groups) || []).find(g => g.active) || ((p0 && p0.groups) || [])[0];
+        const marcas = {};
+        ((gAtivo && gAtivo.programs) || []).forEach(pr => {
+          const h = pr.hemisphere === 'Left' || pr.hemisphere === 'Right' ? pr.hemisphere : null;
+          if (!h) return;
+          marcas[h] = marcas[h] || {};
+          /* `contactsOfChannel` entende as duas formas — a verbosa do JSON e a
+             curta que o parser já converteu ("1a", "0-3") */
+          (pr.contacts || []).forEach(c => C.contactsOfChannel(c).forEach(id => { marcas[h][id] = 'cathode'; }));
+          (pr.anode || []).forEach(c => C.contactsOfChannel(c).forEach(id => { marcas[h][id] = 'anode'; }));
+        });
+        /* e o par de SENSING junto, porque a pergunta clínica é a relação entre
+           onde se estimula e onde se registra */
+        ((gAtivo && gAtivo.sensing) || []).forEach(sc => {
+          const h = sc.hemisphere;
+          if (!h) return;
+          marcas[h] = marcas[h] || {};
+          C.contactsOfChannel(sc.channel).forEach(id => { if (!marcas[h][id]) marcas[h][id] = 'sensing'; });
+        });
+        if (Object.keys(marcas).length) {
+          node.appendChild(el('h4', { class: 'qc-title', html: '<b>Onde a corrente entra e onde o sinal é lido</b>' }));
+          painelEletrodosBilateral(node, marcas, { altura: 250 });
+          node.appendChild(el('div', {
+            class: 'lead-legenda',
+            html: `<span style="color:${P.LEAD_CORES.cathode}">■</span> catodo · ` +
+              `<span style="color:${P.LEAD_CORES.anode}">■</span> anodo · ` +
+              `<span style="color:${P.LEAD_CORES.sensing}">■</span> par de sensing`
+          }));
+        }
+      }
+      node.appendChild(exportRow([{ label: '⤓ PNG série', fn: () => P.downloadCanvas(b1.canvas, 'F7a_streaming') }]));
       }
       node.appendChild(el('div', {
         class: 'note', html: `<b>Leitura.</b> A potência é calculada pelo próprio dispositivo em janela de ${f(th.averagingMs, 0)} ms centrada em ${f(th.centerFreq, 1)} Hz e amostrada a 2 Hz. ` +
@@ -4144,6 +4359,26 @@ const FIGURES = [
           `identifica esta calibração: se ela mudar entre duas análises, os números não são comparáveis. ` +
           `${pass.fingerprintNote || ''}`
       }));
+      /* --- o par do passaporte, desenhado no eletrodo do paciente -------- */
+      {
+        const marcas = {};
+        ['Left', 'Right'].forEach(h => {
+          const b = pass.byHemisphere[h];
+          if (!b || b.channel == null) return;
+          const ids = C.contactsOfChannel(b.channel);
+          if (ids.length) marcas[h] = marcasDeContatos(ids, b.usable ? 'sensing' : 'flag');
+        });
+        if (Object.keys(marcas).length) {
+          node.appendChild(el('h4', { class: 'qc-title', html: '<b>Onde o biomarcador foi definido</b>' }));
+          painelEletrodosBilateral(node, marcas, { altura: 250 });
+          node.appendChild(el('div', {
+            class: 'lead-legenda',
+            html: `<span style="color:${P.LEAD_CORES.sensing}">■</span> par utilizável · ` +
+              `<span style="color:${P.LEAD_CORES.flag}">■</span> par escolhido mas NÃO utilizável`
+          }));
+        }
+      }
+
       node.appendChild(el('div', {
         class: 'note', html: '<b>Qual critério o APARELHO usa.</b> No BrainSense Setup o dispositivo escolhe ' +
           'automaticamente o <b>maior pico do canal</b>, desde que esse pico esteja na faixa de <b>beta ou gama</b> e ' +
@@ -4999,6 +5234,18 @@ const FIGURES = [
       }));
 
       /* ---------------- exportações ------------------------------------ */
+      {
+        const ids = C.contactsOfChannel(td.channel || td.label);
+        if (ids.length) {
+          node.appendChild(el('h4', { class: 'qc-title', html: '<b>Qual par gerou este espectrograma</b>' }));
+          painelEletrodo(node, {
+            hemisphere: td.hemisphere || 'Left',
+            highlight: marcasDeContatos(ids, 'sensing'),
+            subtitle: `par ${ids.join('–')} · ${td.label}`,
+            altura: 230
+          });
+        }
+      }
       node.appendChild(exportRow([
         { label: '⤓ PNG', fn: () => P.downloadCanvas(box.canvas, `F30_espectrograma_${metodo}`) },
         { label: '⤓ CSV (formato longo)', fn: () => P.downloadText(csvEspectrograma(spec, tm, td, dB), `F30_spectrogram_${metodo}.csv`, 'text/csv') },

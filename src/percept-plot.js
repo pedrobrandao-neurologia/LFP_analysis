@@ -548,7 +548,242 @@ function toCSV(rows, headers) {
   return [h.join(','), ...rows.map(r => h.map(k => esc(r[k])).join(','))].join('\n');
 }
 
-const API = { Chart, polarBars, CMAPS, fmt, niceTicks, logTicks, downloadCanvas, downloadText, toCSV };
+/* =========================================================== eletrodos ====
+   Desenho do eletrodo de DBS em escala real, com os contatos em uso marcados.
+
+   POR QUE DESENHAR EM VEZ DE EMBUTIR SVG. As figuras de referência (em
+   docs/referencias/eletrodos/) são estáticas: elas não sabem qual par bipolar
+   está sendo mostrado agora. O ponto desta função é justamente marcar, em cada
+   figura, QUAIS contatos estão em uso — o que exige desenhar com estado. De
+   quebra, sai no mesmo canvas do resto do software, exporta em 2× pelo mesmo
+   caminho e não acrescenta 65 KB de SVG ao arquivo único.
+
+   `geo` vem de core/leads/leadGeometry, em MILÍMETROS. Aqui só há pixels.
+
+   opts:
+     highlight   { id: 'sensing' | 'anode' | 'cathode' | 'flag' | true }
+     orient      'vertical' (padrão, ponta embaixo) | 'horizontal'
+     scalePxPerMm  escala explícita; sem ela, ajusta à altura disponível
+     labels      mostrar rótulo de cada contato (padrão true)
+     title, subtitle
+     ruler       régua em mm ao lado (padrão true)                          */
+
+const LEAD_CORES = {
+  corpo: '#E6EAEF', corpoBorda: '#98A2B3',
+  metal: '#5A6675', metalBorda: '#1D2530',
+  sensing: '#0C6E6B', cathode: '#9C3050', anode: '#1B4A72', flag: '#A8621B',
+  tinta: '#0E1A24', suave: '#5C7284', regua: '#C7D3DC'
+};
+
+function leadContactFill(estado) {
+  if (!estado) return LEAD_CORES.metal;
+  if (estado === true || estado === 'sensing') return LEAD_CORES.sensing;
+  return LEAD_CORES[estado] || LEAD_CORES.metal;
+}
+
+/* Desenha o eletrodo. Devolve as caixas de cada contato em pixels, para que
+   quem chamou possa ligar rótulo, tooltip ou seta a um contato específico. */
+function drawLead(canvas, geo, opts) {
+  const o = opts || {};
+  const ctx = canvas.getContext('2d');
+  const dpr = o.dpr || (typeof devicePixelRatio !== 'undefined' ? devicePixelRatio : 1) || 1;
+  const W = o.width || canvas.width / dpr || 240;
+  const H = o.height || canvas.height / dpr || 320;
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  const caixas = [];
+  if (!geo || !geo.ok) {
+    ctx.fillStyle = LEAD_CORES.suave;
+    ctx.font = '12px system-ui, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    quebraTexto(ctx, (geo && geo.reason) || 'geometria do eletrodo indisponível', W / 2, H / 2, W - 16, 15);
+    return { boxes: caixas, ok: false };
+  }
+
+  const rotulos = o.labels !== false;
+  const regua = o.ruler !== false;
+  const topo = (o.title ? 34 : 10) + (o.subtitle ? 14 : 0);
+  const base = 12;
+  const margemEsq = regua ? 40 : 10;
+  const margemDir = rotulos ? Math.min(120, W * 0.42) : 10;
+
+  /* escala: o eletrodo inteiro (ponta + arranjo) cabe na altura útil, com uma
+     folga proximal para mostrar que a haste continua */
+  const mmVisiveis = geo.totalMm * 1.22;
+  const alturaUtil = H - topo - base;
+  const px = isFinite(o.scalePxPerMm) ? o.scalePxPerMm : alturaUtil / mmVisiveis;
+  const larguraHaste = Math.max(6, geo.diameterMm * px);
+  const cx = margemEsq + (W - margemEsq - margemDir - larguraHaste) / 2 + larguraHaste / 2;
+  const yDe = mm => H - base - mm * px;              /* ponta embaixo */
+
+  if (o.title) {
+    ctx.fillStyle = LEAD_CORES.tinta;
+    ctx.font = '600 12.5px system-ui, sans-serif';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText(o.title, 6, 6);
+  }
+  if (o.subtitle) {
+    ctx.fillStyle = LEAD_CORES.suave;
+    ctx.font = '10.5px system-ui, sans-serif';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText(o.subtitle, 6, o.title ? 22 : 6);
+  }
+
+  /* haste, com ponta romba arredondada */
+  const xe = cx - larguraHaste / 2, xd = cx + larguraHaste / 2;
+  const yTopo = yDe(mmVisiveis), yPonta = yDe(0);
+  const r = larguraHaste / 2;
+  ctx.beginPath();
+  ctx.moveTo(xe, yTopo);
+  ctx.lineTo(xe, yPonta - r);
+  ctx.arc(cx, yPonta - r, r, Math.PI, 0, true);
+  ctx.lineTo(xd, yTopo);
+  ctx.closePath();
+  ctx.fillStyle = LEAD_CORES.corpo; ctx.fill();
+  ctx.strokeStyle = LEAD_CORES.corpoBorda; ctx.lineWidth = 1; ctx.stroke();
+
+  /* contatos */
+  const marca = o.highlight || {};
+  geo.contacts.forEach(c => {
+    const y1 = yDe(c.z1), y0 = yDe(c.z0);
+    const alt = Math.max(2, y0 - y1);
+    const estado = marca[c.id];
+    let x0 = xe, larg = larguraHaste;
+    if (!c.ring) {
+      /* segmento: desenhado como uma fatia da largura, na posição do seu ângulo,
+         para que a a/b/c seja distinguível de relance sem exigir a vista axial */
+      const i = { a: 0, b: 1, c: 2 }[c.segment] || 0;
+      larg = larguraHaste / 3;
+      x0 = xe + i * larg;
+    }
+    ctx.fillStyle = leadContactFill(estado);
+    ctx.fillRect(x0, y1, larg, alt);
+    ctx.strokeStyle = LEAD_CORES.metalBorda; ctx.lineWidth = 0.8;
+    ctx.strokeRect(x0 + 0.4, y1 + 0.4, larg - 0.8, alt - 0.8);
+    caixas.push({ id: c.id, x: x0, y: y1, w: larg, h: alt, state: estado || null, ring: c.ring });
+  });
+
+  /* rótulos à direita, um por NÍVEL (os três segmentos compartilham a linha) */
+  if (rotulos) {
+    const porNivel = {};
+    geo.contacts.forEach(c => { (porNivel[c.level] = porNivel[c.level] || []).push(c); });
+    ctx.font = '10.5px system-ui, sans-serif';
+    ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+    Object.keys(porNivel).forEach(k => {
+      const grupo = porNivel[k];
+      const ym = (yDe(grupo[0].z0) + yDe(grupo[0].z1)) / 2;
+      const usados = grupo.filter(c => marca[c.id]);
+      ctx.strokeStyle = LEAD_CORES.regua; ctx.lineWidth = 0.8;
+      ctx.beginPath(); ctx.moveTo(xd + 2, ym); ctx.lineTo(xd + 12, ym); ctx.stroke();
+      const txt = grupo.length === 1 ? grupo[0].id : grupo.map(c => c.id).join(' ');
+      ctx.fillStyle = usados.length ? leadContactFill(usados[0].id && marca[usados[0].id]) : LEAD_CORES.suave;
+      ctx.font = usados.length ? '600 10.5px system-ui, sans-serif' : '10.5px system-ui, sans-serif';
+      ctx.fillText(txt, xd + 15, ym);
+    });
+  }
+
+  /* régua em mm a partir da ponta — é ela que torna o desenho uma medida */
+  if (regua) {
+    ctx.strokeStyle = LEAD_CORES.regua; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(margemEsq - 14, yDe(0)); ctx.lineTo(margemEsq - 14, yDe(geo.totalMm)); ctx.stroke();
+    ctx.fillStyle = LEAD_CORES.suave;
+    ctx.font = '9.5px system-ui, sans-serif';
+    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    const passo = geo.totalMm > 18 ? 5 : (geo.totalMm > 9 ? 2 : 1);
+    for (let mm = 0; mm <= geo.totalMm + 1e-6; mm += passo) {
+      const y = yDe(mm);
+      ctx.beginPath(); ctx.moveTo(margemEsq - 18, y); ctx.lineTo(margemEsq - 14, y); ctx.stroke();
+      ctx.fillText(String(mm), margemEsq - 20, y);
+    }
+    ctx.save();
+    ctx.translate(10, (yDe(0) + yDe(geo.totalMm)) / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.textAlign = 'center'; ctx.fillText('mm da ponta', 0, 0);
+    ctx.restore();
+  }
+  return { boxes: caixas, ok: true, scalePxPerMm: px, cx, tipY: yDe(0) };
+}
+
+/* Vista axial (corte transversal) de um nível segmentado, para tornar a/b/c
+   inequívoco. Só faz sentido em eletrodo direcional. */
+function drawLeadAxial(canvas, geo, opts) {
+  const o = opts || {};
+  const ctx = canvas.getContext('2d');
+  const dpr = o.dpr || (typeof devicePixelRatio !== 'undefined' ? devicePixelRatio : 1) || 1;
+  const W = o.width || canvas.width / dpr || 150;
+  const H = o.height || canvas.height / dpr || 150;
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  if (!geo || !geo.ok || geo.family !== 'directional') return { ok: false };
+
+  const nivel = o.level == null ? 1 : o.level;
+  const marca = o.highlight || {};
+  const cx = W / 2, cy = H / 2 + (o.title ? 8 : 0);
+  const R = Math.min(W, H) / 2 - (o.title ? 22 : 12);
+  const rIn = R * 0.42;
+
+  if (o.title) {
+    ctx.fillStyle = LEAD_CORES.tinta;
+    ctx.font = '600 11px system-ui, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.fillText(o.title, cx, 4);
+  }
+
+  /* corpo e lúmen */
+  ctx.beginPath(); ctx.arc(cx, cy, R, 0, 2 * Math.PI);
+  ctx.fillStyle = LEAD_CORES.corpo; ctx.fill();
+  ctx.strokeStyle = LEAD_CORES.corpoBorda; ctx.lineWidth = 1; ctx.stroke();
+
+  ['a', 'b', 'c'].forEach((seg, i) => {
+    const id = String(nivel) + seg;
+    /* −90° põe o segmento "a" no topo; a → b → c anti-horário, que é a
+       convenção do fabricante vista da extremidade proximal */
+    const centro = -Math.PI / 2 - i * (2 * Math.PI / 3);
+    const meia = (110 * Math.PI / 180) / 2;      /* ~110° de arco, com folga entre segmentos */
+    ctx.beginPath();
+    ctx.arc(cx, cy, R, centro - meia, centro + meia);
+    ctx.arc(cx, cy, rIn, centro + meia, centro - meia, true);
+    ctx.closePath();
+    ctx.fillStyle = leadContactFill(marca[id]);
+    ctx.fill();
+    ctx.strokeStyle = LEAD_CORES.metalBorda; ctx.lineWidth = 0.8; ctx.stroke();
+    const rt = (R + rIn) / 2;
+    ctx.fillStyle = marca[id] ? '#FFFFFF' : '#E6EAEF';
+    ctx.font = '600 10px system-ui, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(id, cx + rt * Math.cos(centro), cy + rt * Math.sin(centro));
+  });
+
+  ctx.beginPath(); ctx.arc(cx, cy, rIn, 0, 2 * Math.PI);
+  ctx.fillStyle = '#FFFFFF'; ctx.fill();
+  ctx.strokeStyle = LEAD_CORES.corpoBorda; ctx.lineWidth = 0.8; ctx.stroke();
+  ctx.fillStyle = LEAD_CORES.suave;
+  ctx.font = '8.5px system-ui, sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('lúmen', cx, cy);
+  return { ok: true };
+}
+
+function quebraTexto(ctx, texto, x, y, maxW, lh) {
+  const palavras = String(texto).split(/\s+/);
+  const linhas = [];
+  let atual = '';
+  palavras.forEach(p => {
+    const tentativa = atual ? atual + ' ' + p : p;
+    if (ctx.measureText(tentativa).width > maxW && atual) { linhas.push(atual); atual = p; }
+    else atual = tentativa;
+  });
+  if (atual) linhas.push(atual);
+  const y0 = y - (linhas.length - 1) * lh / 2;
+  linhas.forEach((l, i) => ctx.fillText(l, x, y0 + i * lh));
+}
+
+const API = { Chart, polarBars, CMAPS, fmt, niceTicks, logTicks, downloadCanvas, downloadText, toCSV, drawLead, drawLeadAxial, LEAD_CORES };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 root.PerceptPlot = API;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

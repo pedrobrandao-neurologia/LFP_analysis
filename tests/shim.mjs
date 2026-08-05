@@ -2,6 +2,7 @@
 class Ctx {
   constructor(){ this.calls=0; }
   setTransform(){} save(){} restore(){} translate(){} rotate(){} scale(){} beginPath(){} closePath(){} clip(){} rect(){}
+  clearRect(){} quadraticCurveTo(){} bezierCurveTo(){} ellipse(){} roundRect(){}
   moveTo(){} lineTo(){} arc(){} stroke(){} fill(){} fillRect(){} strokeRect(){}
   setLineDash(){} drawImage(){} measureText(t){return {width:String(t).length*6};}
   fillText(){this.calls++;} createImageData(w,h){return {data:new Uint8ClampedArray(w*h*4)};}

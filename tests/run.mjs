@@ -3891,6 +3891,213 @@ sec('conformidade com o white paper do fabricante (UC202012929cEN FY24)');
   });
 }
 
+
+/* ------------------------------ geometria dos eletrodos de DBS ----------- */
+sec('eletrodos: geometria em escala, detecção automática e marcação de contatos');
+{
+  t('o modelo é detectado do JSON, e o que não é reconhecido NÃO vira eletrodo genérico', () => {
+    const casos = [
+      ['LeadModelDef.B33005', 'B33005'], ['Model 3389', '3389'], ['3387', '3387'],
+      ['3391', '3391'], ['B33015', 'B33015'], ['B3300533M', 'B33005']
+    ];
+    casos.forEach(([entrada, esperado]) => {
+      const sp = C.leadSpec(entrada);
+      assert(sp.identified && sp.id === esperado, `${entrada} → ${sp.id}, esperado ${esperado}`);
+    });
+    assert(C.leadSpec('B3300533M').bilateralMarkers === true, 'o sufixo M não foi reconhecido');
+    ['', 'xyz', null].forEach(x => {
+      const sp = C.leadSpec(x);
+      assert(!sp.identified, `"${x}" não deveria ser identificado`);
+      assert(sp.reason && sp.reason.length > 10, 'recusou sem motivo legível');
+      assert(!C.leadGeometry(sp).ok, 'produziu geometria para um modelo não identificado');
+    });
+    /* e a detecção a partir do arquivo real */
+    const L = C.leadsOf(parsed[0]);
+    assert(Object.keys(L).length >= 1, 'nenhum eletrodo detectado no exemplo');
+    Object.keys(L).forEach(h => assert(L[h].spec.identified, `hemisfério ${h} não identificado`));
+    return `${casos.length} modelos + sufixo M · ${Object.keys(L).length} lado(s) detectado(s) no exemplo: ` +
+      Object.keys(L).map(h => L[h].spec.id).join(', ');
+  });
+
+  t('a geometria reproduz as medidas do manual, e o arranjo bate com a soma das partes', () => {
+    const esperado = {
+      '3389': { h: 1.5, sp: 0.5, arr: 7.5, tip: 1.5, d: 1.27, fam: 'ring' },
+      '3387': { h: 1.5, sp: 1.5, arr: 10.5, tip: 1.5, d: 1.27, fam: 'ring' },
+      '3391': { h: 3.0, sp: 4.0, arr: 24.0, tip: 1.5, d: 1.27, fam: 'ring' },
+      'B33005': { h: 1.5, sp: 0.5, arr: 7.5, tip: 1.0, d: 1.36, fam: 'directional' },
+      'B33015': { h: 1.5, sp: 1.5, arr: 10.5, tip: 1.0, d: 1.36, fam: 'directional' }
+    };
+    Object.keys(esperado).forEach(id => {
+      const e = esperado[id], sp = C.leadSpec(id), g = C.leadGeometry(sp);
+      assert(g.ok, `geometria de ${id} não calculada`);
+      assert(sp.family === e.fam, `${id}: família ${sp.family}`);
+      assert(sp.spacingMm === e.sp, `${id}: espaçamento ${sp.spacingMm} ≠ ${e.sp}`);
+      assert(sp.bodyDiameterMm === e.d, `${id}: diâmetro ${sp.bodyDiameterMm} ≠ ${e.d}`);
+      assert(sp.tipMm === e.tip, `${id}: ponta ${sp.tipMm} ≠ ${e.tip}`);
+      /* a extensão declarada tem de bater com 4 alturas + 3 espaçamentos */
+      const calc = 4 * e.h + 3 * e.sp;
+      assert(Math.abs(calc - e.arr) < 1e-9, `${id}: 4×${e.h} + 3×${e.sp} = ${calc} ≠ ${e.arr} declarado`);
+      assert(Math.abs(sp.arrayLengthMm - e.arr) < 1e-9, `${id}: arranjo ${sp.arrayLengthMm} ≠ ${e.arr}`);
+      /* contatos contíguos e na ordem certa: 0 é o mais distal */
+      const anel = g.contacts.filter(c => c.segment === null || c.level === 0 || c.level === 3);
+      assert(g.contacts[0].level === 0, `${id}: o primeiro contato deveria ser o nível 0`);
+      assert(Math.abs(g.contacts[0].z0 - e.tip) < 1e-9, `${id}: o contato 0 deveria começar em ${e.tip} mm`);
+      const ultimo = g.contacts[g.contacts.length - 1];
+      assert(Math.abs(ultimo.z1 - (e.tip + e.arr)) < 1e-9, `${id}: o arranjo deveria terminar em ${e.tip + e.arr} mm`);
+      void anel;
+    });
+    /* direcional: 8 contatos, com 3 segmentos nos níveis 1 e 2 */
+    const gd = C.leadGeometry(C.leadSpec('B33005'));
+    assert(gd.contacts.length === 8, 'o SenSight deveria ter 8 contatos, tem ' + gd.contacts.length);
+    assert(gd.contacts.filter(c => !c.ring).length === 6, 'deveria haver 6 segmentos');
+    assert(gd.contacts.filter(c => c.ring).length === 2, 'os níveis 0 e 3 deveriam ser anelares');
+    const angulos = gd.contacts.filter(c => c.level === 1).map(c => c.angleDeg);
+    assert(JSON.stringify(angulos) === '[0,120,240]', 'os segmentos deveriam estar a 120°, veio ' + angulos);
+    /* e o anelar tem 4 */
+    assert(C.leadGeometry(C.leadSpec('3389')).contacts.length === 4, 'o anelar deveria ter 4 contatos');
+    return '5 modelos conferidos contra as medidas do manual, com o arranjo verificado por soma';
+  });
+
+  t('o 3391 sai marcado como medida NÃO conferida — a ressalva vale para dimensão também', () => {
+    assert(C.leadSpec('3391').dimensionsVerified === false, 'o 3391 deveria sair marcado como não conferido');
+    assert(/catálogo|literatura/i.test(C.leadSpec('3391').source), 'não declara a origem das medidas');
+    ['3387', '3389', 'B33005', 'B33015'].forEach(id =>
+      assert(C.leadSpec(id).dimensionsVerified === true, `${id} deveria estar conferido`));
+    assert(/NÃO CONFERIDAS/.test(C.leadSummary(C.leadSpec('3391'))), 'o resumo do 3391 não avisa');
+    assert(!/NÃO CONFERIDAS/.test(C.leadSummary(C.leadSpec('3389'))), 'o resumo do 3389 avisa sem motivo');
+    return 'o 3391 declara a origem das medidas; os quatro conferidos não carregam a ressalva';
+  });
+
+  t('nome de canal do Percept vira lista de contatos, e "_AND_" não vira o segmento a', () => {
+    const casos = [
+      ['ZERO_THREE_LEFT', ['0', '3']],
+      ['ONE_AND_THREE_RIGHT', ['1', '3']],
+      ['SensingChannelDef.ONE_THREE_RIGHT', ['1', '3']],
+      ['ONE_C_AND_TWO_C_LEFT', ['1c', '2c']],
+      ['ZERO_A_AND_TWO_LEFT_RING', ['0a', '2']],
+      ['THREE_LEFT', ['3']]
+    ];
+    casos.forEach(([entrada, esperado]) => {
+      const r = C.contactsOfChannel(entrada);
+      assert(JSON.stringify(r) === JSON.stringify(esperado), `${entrada} → ${JSON.stringify(r)}, esperado ${JSON.stringify(esperado)}`);
+    });
+    assert(C.contactsOfChannel('').length === 0, 'canal vazio deveria dar lista vazia');
+    assert(C.contactsOfChannel('LIXO_SEM_CONTATO').length === 0, 'inventou contato onde não há');
+    return `${casos.length} formas de nome reconhecidas, inclusive o par sem segmento em "_AND_"`;
+  });
+
+  t('o mesmo par bipolar cobre distâncias diferentes conforme o modelo — que é o ponto do desenho', () => {
+    const spans = ['3389', '3387', '3391'].map(id => C.leadSpan(C.leadSpec(id), ['0', '3']));
+    spans.forEach((s2, i) => assert(s2.ok, `span ${i} não calculado`));
+    assert(Math.abs(spans[0].coveredSpanMm - 7.5) < 1e-9, '0-3 no 3389 deveria abranger 7,5 mm');
+    assert(Math.abs(spans[1].coveredSpanMm - 10.5) < 1e-9, '0-3 no 3387 deveria abranger 10,5 mm');
+    assert(Math.abs(spans[2].coveredSpanMm - 24) < 1e-9, '0-3 no 3391 deveria abranger 24 mm');
+    assert(spans[2].coveredSpanMm > 3 * spans[0].coveredSpanMm, 'a diferença entre modelos sumiu');
+    /* e um par de segmentos do mesmo nível não tem distância longitudinal */
+    const seg = C.leadSpan(C.leadSpec('B33005'), ['1a', '1c']);
+    assert(seg.ok && seg.centerDistanceMm === 0, 'dois segmentos do mesmo nível estão na mesma altura');
+    return `0-3 abrange 7,5 / 10,5 / 24 mm em 3389 / 3387 / 3391 · segmentos do mesmo nível: 0 mm de distância axial`;
+  });
+
+  t('a orientação anatômica dos segmentos NÃO é afirmada a partir do JSON', () => {
+    const g = C.leadGeometry(C.leadSpec('B33005'));
+    assert(/NOMENCLATURA|nomenclatura/.test(g.orientationNote), 'não declara que o ângulo é de nomenclatura');
+    assert(/NÃO está no JSON|não está no JSON/.test(g.orientationNote), 'não diz que a rotação real não está no arquivo');
+    assert(/radiograf/i.test(g.orientationNote), 'não diz de onde a orientação real viria');
+    const ga = C.leadGeometry(C.leadSpec('3389'));
+    assert(/360|radialmente/.test(ga.orientationNote), 'o anelar deveria declarar a simetria radial');
+    return 'ângulo declarado como nomenclatura, com a origem da orientação real dita';
+  });
+
+  t('o desenho do eletrodo sai no canvas e devolve a caixa de cada contato', () => {
+    const cv = document.createElement('canvas');
+    const g = C.leadGeometry(C.leadSpec('B33005'));
+    const r = P.drawLead(cv, g, { width: 200, height: 260, highlight: { '1a': 'sensing', '3': 'cathode' } });
+    assert(r.ok, 'o desenho falhou');
+    assert(r.boxes.length === 8, 'deveria devolver 8 caixas, veio ' + r.boxes.length);
+    const marcadas = r.boxes.filter(b => b.state);
+    assert(marcadas.length === 2, 'deveria haver 2 contatos marcados, há ' + marcadas.length);
+    assert(marcadas.some(b => b.id === '1a' && b.state === 'sensing'), '1a não foi marcado como sensing');
+    assert(marcadas.some(b => b.id === '3' && b.state === 'cathode'), '3 não foi marcado como catodo');
+    /* o contato 0 é o mais distal: na tela, o de maior y (a ponta fica embaixo) */
+    const c0 = r.boxes.find(b => b.id === '0'), c3 = r.boxes.find(b => b.id === '3');
+    assert(c0.y > c3.y, 'o contato 0 deveria estar abaixo do 3 no desenho (ponta embaixo)');
+    /* segmento ocupa um terço da largura; anel, a largura toda */
+    const seg = r.boxes.find(b => b.id === '1a');
+    assert(seg.w < c0.w, 'o segmento deveria ser mais estreito que o anel');
+    /* modelo não identificado não desenha eletrodo nenhum */
+    const vazio = P.drawLead(document.createElement('canvas'), C.leadGeometry(C.leadSpec('xyz')), { width: 200, height: 200 });
+    assert(!vazio.ok && vazio.boxes.length === 0, 'desenhou um eletrodo para um modelo desconhecido');
+    return `8 contatos desenhados · 2 marcados · ordem distal-proximal correta · modelo desconhecido não desenha`;
+  });
+
+  t('os contatos de estimulação do grupo ativo viram marcação de catodo e anodo', () => {
+    /* é o caminho da F7, que o exemplo não exercita por não ter BrainSenseLfp */
+    const g = (parsed[0].groups || []).find(x => x.active) || (parsed[0].groups || [])[0];
+    assert(g, 'o exemplo precisa ter ao menos um grupo');
+    const marcas = {};
+    (g.programs || []).forEach(pr => {
+      if (pr.hemisphere !== 'Left' && pr.hemisphere !== 'Right') return;
+      marcas[pr.hemisphere] = marcas[pr.hemisphere] || {};
+      (pr.contacts || []).forEach(c => C.contactsOfChannel(c).forEach(id => { marcas[pr.hemisphere][id] = 'cathode'; }));
+      (pr.anode || []).forEach(c => C.contactsOfChannel(c).forEach(id => { marcas[pr.hemisphere][id] = 'anode'; }));
+    });
+    (g.sensing || []).forEach(sc => {
+      if (!sc.hemisphere) return;
+      marcas[sc.hemisphere] = marcas[sc.hemisphere] || {};
+      C.contactsOfChannel(sc.channel).forEach(id => { if (!marcas[sc.hemisphere][id]) marcas[sc.hemisphere][id] = 'sensing'; });
+    });
+    const lados = Object.keys(marcas);
+    assert(lados.length >= 1, 'nenhum hemisfério com contatos marcados');
+    const total = lados.reduce((a, h) => a + Object.keys(marcas[h]).length, 0);
+    assert(total >= 2, 'poucos contatos marcados: ' + total);
+    const temCatodo = lados.some(h => Object.keys(marcas[h]).some(k => marcas[h][k] === 'cathode'));
+    const temSensing = lados.some(h => Object.keys(marcas[h]).some(k => marcas[h][k] === 'sensing'));
+    assert(temCatodo, 'nenhum catodo marcado a partir dos programas do grupo');
+    assert(temSensing, 'o par de sensing não foi marcado junto');
+    /* o desenho aceita a marcação sem inventar contato que não existe */
+    const spec = C.leadsOf(parsed[0])[lados[0]].spec;
+    const geo = C.leadGeometry(spec);
+    /* num eletrodo direcional NÃO existe contato "1": pedir o nível 1 tem de
+       marcar 1a, 1b e 1c, porque é assim que o aparelho o usa */
+    const exp = C.expandContacts(Object.keys(marcas[lados[0]]), geo);
+    const marcacao = {};
+    exp.ids.forEach(id => { marcacao[id] = marcas[lados[0]][id] || marcas[lados[0]][id.replace(/[abc]$/, '')] || 'sensing'; });
+    const r = P.drawLead(document.createElement('canvas'), geo, { width: 200, height: 250, highlight: marcacao });
+    const marcadas = r.boxes.filter(b => b.state).map(b => b.id).sort();
+    assert(JSON.stringify(marcadas) === JSON.stringify(exp.ids.slice().sort()),
+      `desenhou ${JSON.stringify(marcadas)} para ${JSON.stringify(exp.ids)}`);
+    if (geo.family === 'directional') {
+      assert(exp.expanded.length >= 1, 'o nível pedido num direcional deveria ter sido expandido em segmentos');
+      assert(/em curto|anel/.test(exp.note || ''), 'a expansão não é explicada ao usuário');
+      ['1a', '1b', '1c'].forEach(id => assert(marcadas.indexOf(id) >= 0, `o segmento ${id} não foi marcado`));
+    }
+    return lados.map(h => `${h}: ${Object.keys(marcas[h]).map(k => k + '=' + marcas[h][k]).join(' ')}`).join(' · ');
+  });
+
+  t('as figuras que citam contatos mostram o eletrodo com eles marcados', () => {
+    const d = H.ds();
+    const varre = (n, acc) => {
+      acc.tags.push(n.tagName || (typeof n.getContext === 'function' ? 'CANVAS' : '?'));
+      acc.aria.push((n.attrs && n.attrs['aria-label']) || '');
+      acc.txt += ' ' + (n.textContent || '') + ' ' + (n.innerHTML || '');
+      (n.children || []).forEach(c => varre(c, acc));
+      return acc;
+    };
+    const comEletrodo = [];
+    ['F1', 'F3', 'F6', 'F7', 'F31'].forEach(id => {
+      const fig = H.FIGURES.find(x => x.id === id);
+      if (!fig || !fig.has(d)) return;
+      const n = document.createElement('div');
+      fig.render(n, d);
+      const a = varre(n, { tags: [], aria: [], txt: '' });
+      if (a.aria.some(x => /esquema em escala do eletrodo/.test(x))) comEletrodo.push(id);
+    });
+    assert(comEletrodo.length >= 3, 'poucas figuras mostram o eletrodo: ' + comEletrodo.join(', '));
+    return comEletrodo.join(', ') + ' mostram o eletrodo com os contatos em uso marcados';
+  });
+}
+
 /* ------------------------------------------------------------- resultado -- */
 console.log(`\n${'='.repeat(58)}`);
 console.log(`  ${ok} passaram   ${falhas} falharam   ${pulados} sem dados`);
