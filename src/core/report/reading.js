@@ -235,6 +235,67 @@ export function qcTrafficLight(painel) {
 /* ------------------------------------------------------------------ fachada */
 /* clinicalReadings(bundle, opts) — `bundle` é a saída de extractMetrics.
    opts: { profileId, qcPanel }                                               */
+/* ------------------------------------------------------ ODR (Onda 12) ---- */
+
+/* odrReading(odr) — leitura em linguagem clínica da série de ODR.
+
+   Não entra em `clinicalReadings` porque não vem do bundle de métricas: vem
+   direto da figura, que é onde o ODR é calculado. A assinatura é a mesma das
+   demais (frase, números, parâmetro, ressalva, nível) para que o relatório
+   possa tratá-la sem caso especial.                                         */
+export function odrReading(odr) {
+  const base = { id: 'odr', figura: 'F34' };
+  if (!odr || !odr.ok) return leitura('odr', 'ODR — dinâmica multi-banda',
+    'O ODR não pôde ser calculado neste registro.',
+    Object.assign({
+      nivel: 'insuficiente',
+      numeros: (odr && odr.reason) ? String(odr.reason).slice(0, 220) : 'sem sinal bruto no domínio do tempo',
+      ressalva: 'Recusar o cálculo é o resultado correto quando o numerador mediria a resposta da rede à própria ' +
+        'estimulação, ou quando não há pico individual de gama. Um número aqui seria pior do que nenhum.'
+    }, base));
+
+  const s = (odr.windows || []).map(w => w.odrLog).filter(isFinite);
+  const inc = odr.trendPerWindow || {};
+  const nJan = s.length;
+  const primeiroTerco = s.slice(0, Math.max(1, Math.floor(nJan / 3)));
+  const ultimoTerco = s.slice(-Math.max(1, Math.floor(nJan / 3)));
+  const md = v => v.reduce((a, b) => a + b, 0) / v.length;
+  const delta = md(ultimoTerco) - md(primeiroTerco);
+  /* "subiu" precisa de um limiar declarado, senão qualquer flutuação vira
+     movimento. Meio desvio-padrão do próprio ODR do registro é o critério. */
+  const dp = Math.sqrt(odrVar(s));
+  const limiar = 0.5 * dp;
+  const subiu = delta > limiar, caiu = delta < -limiar;
+
+  const lado = odr.nHemispheres === 1 ? ' (um hemisfério só)' : ' (média dos dois hemisférios)';
+  return leitura('odr', 'ODR — dinâmica multi-banda',
+    'O ODR combina três ritmos num único número: sobe quando o teta e a gama sobem e quando o beta cai — o padrão ' +
+    'descrito nos períodos de discinesia. Aqui ele ' +
+    (subiu ? 'subiu' : caiu ? 'caiu' : 'não se moveu') + ' ao longo do registro' + lado + '.',
+    Object.assign({
+      nivel: 'ok',
+      numeros: `${nJan} janela(s) de ${odr.params.windowS} s · primeiro terço ${n2(md(primeiroTerco))}, ` +
+        `último terço ${n2(md(ultimoTerco))} (Δ ${n2(delta)}, critério de movimento ${n2(limiar)} = 0,5 DP)` +
+        (isFinite(inc.slope) ? ` · inclinação ${n2(inc.slope)} por janela` : ''),
+      parametro: `formulação ${odr.formulationUsed === 'literal' ? 'literal do artigo' : 'logarítmica'} · ` +
+        `θ 4–8 Hz, β↓ 12–20 Hz, γ ${odr.params.gammaSource === 'broad' ? 'banda larga 60–90 Hz' : 'pico individual ± 2,5 Hz'} · ` +
+        `z-score ao longo do registro inteiro · Spearman entre as duas formulações ${odr.spearmanLogVsLiteral}`,
+      ressalva: 'É um marcador exploratório: no estudo que o propôs, ele acertou a presença de discinesia em pouco ' +
+        'mais de metade dos casos — acurácia balanceada de 0,61 (DP 0,14), com detecção significativa em 8 de 21 ' +
+        'sujeitos — e em condições melhores que as deste registro, com decomposição espectro-espacial para otimizar ' +
+        'a razão sinal-ruído, estimulação desligada e rótulo clínico validado por vídeo. Aqui não há rótulo clínico ' +
+        'nenhum: esta leitura descreve o que a série fez, não afirma que houve discinesia.' +
+        (odr.unilateralWarning ? ' ' + odr.unilateralWarning + '.' : '')
+    }, base));
+}
+
+/* variância populacional local, para não depender de import extra */
+function odrVar(v) {
+  if (v.length < 2) return 0;
+  const m = v.reduce((a, b) => a + b, 0) / v.length;
+  return v.reduce((a, x) => a + (x - m) * (x - m), 0) / v.length;
+}
+
 export function clinicalReadings(bundle, opts) {
   opts = opts || {};
   if (!bundle) return null;

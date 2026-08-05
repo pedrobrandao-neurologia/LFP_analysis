@@ -10,7 +10,7 @@
 
 ## What it is
 
-A **single-file** web application (`index.html`, 1124 KB) that reads the JSON *Session Reports* exported from the Medtronic Percept™ clinician programmer and produces **31 interactive figures** organised into seven tabs, quantitative metrics, a clinical PDF report and statistics-ready exports.
+A **single-file** web application (`index.html`, 1223 KB) that reads the JSON *Session Reports* exported from the Medtronic Percept™ clinician programmer and produces **33 interactive figures** organised into seven tabs, quantitative metrics, a clinical PDF report and statistics-ready exports.
 
 Opens by **double-click**. Nothing to install, no server required, and it never issues a single network request.
 
@@ -76,7 +76,7 @@ Every tab opens with an orientation header declaring **the inference layer**, wh
 | Mode | For what | What it shows |
 |---|---|---|
 | **Clinical** | Consultation, programming decisions | The subset of figures that answers clinic questions, chosen by the disease profile, plus plain-language readings |
-| **Research** | Analysis, publication | All 31 figures, all parameter controls, all exports |
+| **Research** | Analysis, publication | All 33 figures, all parameter controls, all exports |
 
 The same numbers, the same caveats and the same declared parameters in both modes — clinical mode hides figures, never uncertainty. The preference is stored in `localStorage` (interface preference only; no patient data is ever written to disk).
 
@@ -96,7 +96,7 @@ The profile is suggested from the JSON content (lead target, sensing band) and c
 
 ---
 
-## The 31 figures
+## The 33 figures
 
 ### Acute signal — spectrum and time domain
 
@@ -112,6 +112,7 @@ The profile is suggested from the JSON content (lead target, sensing band) and c
 | **F21** | **PAC** — phase-amplitude coupling and comodulogram | raw signal (fs ≥ 250 Hz) | Whether gamma amplitude tracks beta phase |
 | **F22** | Finely-tuned gamma vs. entrained gamma at f_stim/2 | spectrum reaching 95 Hz | Whether a gamma peak is endogenous or an echo of stimulation itself |
 | **F30** | **Spectrogram following BRAVO** | raw signal | How the spectrum changes across the recording, by five methods, using the `scipy` density scaling |
+| **F34** | **ODR and windowed features** | raw signal | How theta, peak gamma and low beta move together across the recording, with inter-STN coherence and the spectral variation of the envelope |
 
 ### Chronic signal — days and weeks
 
@@ -204,6 +205,7 @@ Three independent methods, **with quantified validation instead of faith**: QRS 
 - **Cluster-based permutation** (Maris & Oostenveld) with the Sassenhagen & Draschkow caveat embedded in the output.
 - **Two-sample permutation** with **exact** enumeration when the number of partitions allows, and a fixed seed when it does not.
 - **Non-parametric chronobiology** borrowed from actigraphy, because the beta rhythm is often not sinusoidal and the cosinor underestimates amplitude when it cannot follow the corners: **IS** (interdaily stability), **IV** (intradaily variability), **M10/L5** and **RA** (relative amplitude, unit-invariant). These are descriptive — they test nothing; what tests whether a rhythm exists is the cosinor, and both readings are reported together.
+- **Windowed features** following Habets et al. (*Brain* 2026): **ODR** = (θ × γpeak)/β↓, **spectral variation** (CV of the Hilbert envelope) and **inter-STN coherence**, all over 5/10/30 s windows. The ODR is reported in both formulations — the logarithmic `z(log θ) + z(log γ) − z(log β)`, which is the same ratio without a division, and the article's literal form, which is unstable because it divides by a z-scored value that crosses zero by construction — together with the correlation between them and the fraction of windows where the literal one escapes. Guards: the computation is **refused** when the gamma peak falls at f_stim/2 (the numerator would be measuring the network's response to its own stimulation, and the two clinical readings are opposite), and substituting broadband gamma for the individual peak is never silent. See [`docs/odr.md`](docs/odr.md).
 - **Change-point detection** by binary segmentation with a two-sample CUSUM over the daily value, significance by permutation of the window itself, with optional block permutation to preserve autocorrelation — and annotation against known markers, separating an explained step from an orphan one. *Not a t-test between "before and after".*
 - **ICC(2,1) and ICC(3,1)** with F-based CI — both, because the choice changes the number.
 - **Wilson CI** for proportions; Sarle's bimodality coefficient; Cohen's kappa with CI.
@@ -297,7 +299,7 @@ The density scaling is checked against exact identities rather than against anot
 
 ### Regression suite
 
-`node tests/run.mjs` — **271 tests**, including all 31 figure renderers exercised against a minimal simulated DOM. No existing test may be removed or weakened to make new code pass.
+`node tests/run.mjs` — **285 tests**, including all 33 figure renderers exercised against a minimal simulated DOM. No existing test may be removed or weakened to make new code pass.
 
 ---
 
@@ -306,7 +308,7 @@ The density scaling is checked against exact identities rather than against anot
 ```bash
 node tools/gerar_exemplo.mjs examples   # synthetic dataset (no real data)
 cd src && node build.mjs                # generates index.html from src/
-node tests/run.mjs                      # 271 tests
+node tests/run.mjs                      # 285 tests
 node tests/benchmark.mjs --check        # 87 criteria, fails on regression
 ```
 

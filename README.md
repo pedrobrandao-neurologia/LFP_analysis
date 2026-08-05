@@ -8,7 +8,7 @@
 
 ## O que é
 
-Um aplicativo web de **arquivo único** (`index.html`, 1124 KB) que lê os *Session Reports* em JSON exportados do programador do neuroestimulador Medtronic Percept™ e produz **31 figuras interativas** organizadas em sete abas, métricas quantitativas, relatório clínico em PDF e exportações prontas para estatística.
+Um aplicativo web de **arquivo único** (`index.html`, 1223 KB) que lê os *Session Reports* em JSON exportados do programador do neuroestimulador Medtronic Percept™ e produz **33 figuras interativas** organizadas em sete abas, métricas quantitativas, relatório clínico em PDF e exportações prontas para estatística.
 
 Abre com **duplo clique**. Não instala nada, não precisa de servidor, não faz uma única requisição de rede.
 
@@ -74,7 +74,7 @@ Cada aba abre com um cabeçalho de orientação que declara **a camada de infer�
 | Modo | Para quê | O que mostra |
 |---|---|---|
 | **Clínico** | Consulta, decisão de programação | O subconjunto de figuras que responde às perguntas de consultório, escolhido pelo perfil de doença, mais leituras em linguagem simples |
-| **Pesquisa** | Análise, publicação | Todas as 31 figuras, todos os controles de parâmetro, todas as exportações |
+| **Pesquisa** | Análise, publicação | Todas as 33 figuras, todos os controles de parâmetro, todas as exportações |
 
 Os mesmos números, as mesmas ressalvas e os mesmos parâmetros declarados nos dois modos — o modo clínico esconde figuras, nunca esconde incerteza. A preferência fica no `localStorage` (apenas a preferência de interface; nenhum dado de paciente é gravado).
 
@@ -94,7 +94,7 @@ O perfil é sugerido pelo conteúdo do JSON (alvo do eletrodo, banda de sensing)
 
 ---
 
-## As 31 figuras
+## As 33 figuras
 
 ### Sinal agudo — espectro e domínio do tempo
 
@@ -110,6 +110,7 @@ O perfil é sugerido pelo conteúdo do JSON (alvo do eletrodo, banda de sensing)
 | **F21** | **PAC** — acoplamento fase-amplitude e comodulograma | sinal bruto (fs ≥ 250 Hz) | Se a amplitude do gama acompanha a fase do beta |
 | **F22** | Gama fina vs. gama *entrained* em f_stim/2 | espectro até 95 Hz | Se um pico de gama é endógeno ou eco da própria estimulação |
 | **F30** | **Espectrograma no padrão do BRAVO** | sinal bruto | Como o espectro muda ao longo do registro, por cinco métodos, com a escala de densidade do `scipy` |
+| **F34** | **ODR e features por janela** | sinal bruto | Como teta, gama de pico e beta baixo se movem juntos ao longo do registro, com a coerência entre os dois STN e a variação espectral do envelope |
 
 ### Sinal crônico — dias e semanas
 
@@ -203,6 +204,7 @@ Três métodos independentes, **com validação quantificada em vez de fé**: in
 - **Permutação de duas amostras** com enumeração **exata** quando o número de partições permite, e semente fixa quando não.
 - **ICC(2,1) e ICC(3,1)** com IC pelo método F — os dois, porque a escolha muda o número.
 - **Cronobiologia não paramétrica** emprestada da actigrafia, porque o ritmo do beta muitas vezes não é senoidal e o cosinor subestima a amplitude quando não consegue seguir os cantos: **IS** (estabilidade interdiária), **IV** (variabilidade intradiária), **M10/L5** e **RA** (amplitude relativa, invariante à unidade). São descritivas — não testam nada; quem testa se o ritmo existe é o cosinor, e as duas leituras saem juntas.
+- **Features por janela** no padrão de Habets et al. (*Brain* 2026): **ODR** = (θ × γpico)/β↓, **variação espectral** (CV do envelope de Hilbert) e **coerência inter-STN**, todas em janelas de 5/10/30 s. O ODR sai nas duas formulações — a logarítmica `z(log θ) + z(log γ) − z(log β)`, que é a mesma razão sem divisão, e a literal do artigo, que é instável porque divide por um valor z-scored que cruza zero por construção — com a correlação entre elas e a fração de janelas em que a literal escapa. Guardas: o cálculo é **recusado** quando o pico de gama cai em f_stim/2 (o numerador mediria a resposta da rede à própria estimulação, e as duas leituras clínicas são opostas), e a substituição do pico individual por gama de banda larga nunca é silenciosa. Ver [`docs/odr.md`](docs/odr.md).
 - **Detecção de pontos de mudança** por segmentação binária com CUSUM de duas amostras sobre o valor diário, significância por permutação da própria janela, com opção de permutação em blocos para preservar autocorrelação — e anotação contra marcos conhecidos, separando degrau explicado de degrau órfão. *Não teste t entre "antes e depois".*
 - **IC de Wilson** para proporções; bimodalidade de Sarle; kappa de Cohen com IC.
 
@@ -295,7 +297,7 @@ A escala de densidade é conferida contra identidades exatas, não contra outra 
 
 ### Suíte de regressão
 
-`node tests/run.mjs` — **271 testes**, incluindo os 31 renderizadores de figura exercitados sobre um DOM mínimo simulado. Nenhum teste pode ser removido ou afrouxado para fazer código novo passar.
+`node tests/run.mjs` — **285 testes**, incluindo os 33 renderizadores de figura exercitados sobre um DOM mínimo simulado. Nenhum teste pode ser removido ou afrouxado para fazer código novo passar.
 
 ---
 
@@ -304,7 +306,7 @@ A escala de densidade é conferida contra identidades exatas, não contra outra 
 ```bash
 node tools/gerar_exemplo.mjs examples   # dataset sintético (nenhum dado real)
 cd src && node build.mjs                # gera index.html a partir de src/
-node tests/run.mjs                      # 271 testes
+node tests/run.mjs                      # 285 testes
 node tests/benchmark.mjs --check        # 87 critérios, falha se houver regressão
 ```
 

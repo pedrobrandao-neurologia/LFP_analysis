@@ -28,7 +28,7 @@ import { cohortSummary, wilsonCI } from './metrics/cohort.js';
 import { PROFILES, PROFILE_IDS, getProfile, suggestProfile, bandsOf, normalizeSpectrum, detectTremorFrequency, spearman, movingAverageDays } from './profiles/index.js';
 import { createProvenance, verifyManifest, sha256Hex, canonical } from './provenance/index.js';
 import { generateChecklist, checklistDocx, CHECKLIST_ITEMS } from './report/checklist.js';
-import { clinicalReadings, qcTrafficLight } from './report/reading.js';
+import { clinicalReadings, qcTrafficLight, odrReading } from './report/reading.js';
 import { makeZip, makeDocx, crc32 } from './export/zip.js';
 import { writeEdf } from './export/edf.js';
 import { buildPdf, textWidth, unmappedChars } from './export/pdf.js';
@@ -59,6 +59,12 @@ import {
 import { sensingConfigOf, configBlocks, segmentTrendByConfig, crossBlockWarning } from './metrics/config.js';
 import { PASSPORT_VERSION, biomarkerPassport, passportSensingSuggestion, passportMatchesConfig, passportCompare } from './metrics/passport.js';
 import { AGENDA_VERSION, sessionAgenda } from './metrics/agenda.js';
+import { windowGrid, spectralVariation, windowedBandPower, windowedCoherence } from './dsp/features.js';
+import { ODR_BANDS, ODR_LIMITACOES, ODR_EXPECTATIVA, gammaPeakOf, odrSeries, odrSpectralVariation } from './metrics/odr.js';
+import {
+  pairableRecords, interSTNCoherence, windowedFeatureTable, windowedFeatureMeta,
+  windowedFeatureCsv, WINDOWED_COLUMNS
+} from './metrics/windowed.js';
 import { artifactAlarm } from './qc/alarm.js';
 import { interdailyStability, intradailyVariability, m10l5, actigraphyPanel } from './stats/actigraphy.js';
 import { changePoints, changePointsInTime, annotateChangePoints } from './stats/changepoint.js';
@@ -100,7 +106,7 @@ const API = {
   createProvenance, verifyManifest, sha256Hex, canonical,
   generateChecklist, checklistDocx, CHECKLIST_ITEMS,
   /* leituras em linguagem clínica e semáforo de QC (Onda 8.1) */
-  clinicalReadings, qcTrafficLight,
+  clinicalReadings, qcTrafficLight, odrReading,
   makeZip, makeDocx, crc32, writeEdf, buildBidsLike, buildPdf, textWidth, unmappedChars,
   /* idiomas (Onda 8.2) */
   t, setLanguage, getLanguage, IDIOMAS, translationCoverage,
@@ -129,6 +135,11 @@ const API = {
   sensingConfigOf, configBlocks, segmentTrendByConfig, crossBlockWarning,
   PASSPORT_VERSION, biomarkerPassport, passportSensingSuggestion, passportMatchesConfig, passportCompare,
   AGENDA_VERSION, sessionAgenda,
+  /* features por janela: ODR, variação espectral e coerência inter-STN (Onda 12) */
+  windowGrid, spectralVariation, windowedBandPower, windowedCoherence,
+  ODR_BANDS, ODR_LIMITACOES, ODR_EXPECTATIVA, gammaPeakOf, odrSeries, odrSpectralVariation,
+  pairableRecords, interSTNCoherence, windowedFeatureTable, windowedFeatureMeta,
+  windowedFeatureCsv, WINDOWED_COLUMNS,
   /* alarme ativo de artefato, em linguagem de consultório (Onda 11) */
   artifactAlarm,
   /* cronobiologia não paramétrica e ponto de mudança (Onda 11) */

@@ -233,8 +233,17 @@ function brutoStreaming(segundos) {
     r2 = 0.80 * r2 + gauss();
     const supress = Math.exp(-0.42 * mAEm(t));
     const env = Math.max(0, 0.55 + 0.9 * Math.sin(2 * Math.PI * 0.7 * t + 1.3) * Math.sin(2 * Math.PI * 0.17 * t));
+    /* Gama finamente sintonizada, presente quando a levodopa está agindo — é
+       o que o ODR (F34) usa como numerador, e sem ela o exemplo não exercita a
+       figura. 72,3 Hz é deliberadamente LONGE de f_stim/2 = 65 Hz: o exemplo
+       precisa passar pela guarda de entrainment, não escapar dela. A amplitude
+       acompanha o efeito de dose, que é a associação descrita na literatura
+       entre gama finamente sintonizada e estado ON: ela cresce ao longo dos
+       120 s do streaming, e é isso que faz o ODR do exemplo se mover. */
+    const ftg = 0.5 + 1.7 / (1 + Math.exp(-(t - 60) / 12));
     x[i] = 0.9 * r1 + 0.5 * r2 + 2.2 * supress * env * Math.sin(2 * Math.PI * picoHz * t)
-      + 0.35 * Math.sin(2 * Math.PI * 6.4 * t + 0.7);
+      + 0.35 * Math.sin(2 * Math.PI * 6.4 * t + 0.7)
+      + ftg * Math.sin(2 * Math.PI * 72.3 * t + 0.4);
     const fase = (t % 0.97) - 0.02;
     if (Math.abs(fase) < 0.05) x[i] += 5.5 * Math.exp(-(fase ** 2) / (2 * 0.008 ** 2));
   }
