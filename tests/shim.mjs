@@ -21,7 +21,8 @@ class Node {
   constructor(tag){ this.tagName=(tag||'div').toUpperCase(); this.children=[]; this.style={}; this.className='';
     this.clientWidth=600; this._text=''; this.attrs={}; }
   appendChild(n){ this.children.push(n); return n; }
-  addEventListener(){} setAttribute(k,v){ this.attrs[k]=v; } removeAttribute(){}
+  addEventListener(){} setAttribute(k,v){ this.attrs[k]=v; } getAttribute(k){ return this.attrs[k]; } removeAttribute(k){ delete this.attrs[k]; }
+  contains(){ return false; } closest(){ return null; }
   getBoundingClientRect(){ return {width:600,height:300}; }
   set textContent(v){ this._text=v; } get textContent(){ return this._text; }
   set innerHTML(v){ this._html=v; } get innerHTML(){ return this._html||''; }
@@ -44,8 +45,26 @@ export function installDOM(){
       return porId.get(id);
     }
   };
+  /* raiz do documento: é nela que o tema e o material são carimbados */
+  doc.documentElement = new Node('html');
   globalThis.document = doc;
   globalThis.window = globalThis;
+  /* armazenamento local em memória — as preferências de aparência são gravadas
+     aqui, e nenhum dado de paciente passa por este caminho */
+  const store = new Map();
+  globalThis.localStorage = {
+    getItem(k){ return store.has(k) ? store.get(k) : null; },
+    setItem(k,v){ store.set(k, String(v)); },
+    removeItem(k){ store.delete(k); },
+    clear(){ store.clear(); }
+  };
+  /* sistema em tema claro por padrão; os testes trocam quando precisam */
+  globalThis.__mediaEscuro = false;
+  globalThis.matchMedia = q => ({
+    media: q,
+    get matches(){ return /prefers-color-scheme:\s*dark/.test(q) ? !!globalThis.__mediaEscuro : false; },
+    addEventListener(){}, removeEventListener(){}, addListener(){}, removeListener(){}
+  });
   globalThis.devicePixelRatio = 1;
   globalThis.Blob = class { constructor(){} };
   globalThis.URL = { createObjectURL(){return 'blob:';}, revokeObjectURL(){} };

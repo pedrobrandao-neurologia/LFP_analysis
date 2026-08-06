@@ -8,7 +8,7 @@
 
 ## O que é
 
-Um aplicativo web de **arquivo único** (`index.html`, 1372 KB) que lê os *Session Reports* em JSON exportados do programador do neuroestimulador Medtronic Percept™ e produz **34 figuras interativas** organizadas em sete abas, métricas quantitativas, relatório clínico em PDF e exportações prontas para estatística.
+Um aplicativo web de **arquivo único** (`index.html`, 1392 KB) que lê os *Session Reports* em JSON exportados do programador do neuroestimulador Medtronic Percept™ e produz **34 figuras interativas** organizadas em sete abas, métricas quantitativas, relatório clínico em PDF e exportações prontas para estatística.
 
 Abre com **duplo clique**. Não instala nada, não precisa de servidor, não faz uma única requisição de rede.
 
@@ -93,6 +93,43 @@ O software não assume que todo paciente é de Parkinson. Cinco perfis mudam a b
 O perfil é sugerido pelo conteúdo do JSON (alvo do eletrodo, banda de sensing) e pode ser trocado a qualquer momento.
 
 ---
+
+## Aparência: tema e material
+
+O botão **aparência**, no cabeçalho, controla duas coisas — e as duas pertencem
+a quem lê a tela, não ao software.
+
+**Tema.** `auto` segue o sistema operacional em tempo real; `claro` e `escuro`
+fixam. O **papel das figuras é branco em qualquer tema**, de propósito: toda
+curva é desenhada em canvas com paleta fixa, e se o papel mudasse com o tema, o
+PNG exportado e o PDF do relatório sairiam diferentes conforme a tela de quem
+exportou. A figura é o conteúdo — ela não muda; o que muda é o cromo em volta.
+
+**Material do cromo.** De `sólido` a `vidro`, com `tingido` como padrão. A
+translucidez se aplica a exatamente duas superfícies, as que flutuam sobre o
+conteúdo: a barra superior (espinha + cabeçalho + abas, numa camada só) e o
+painel de processamento. **Nunca atrás de gráfico, tabela ou nota** — ler uma
+curva de PSD sobre fundo desfocado é risco de leitura, não escolha de estilo.
+
+A opção `sólido` existe porque a Apple recuou do Liquid Glass em 2026
+exatamente por legibilidade, e a correção veio na forma de controle do usuário.
+Aqui a mesma lição vira: piso de opacidade de 0,62 no nível mais transparente,
+queda automática para opaco em navegador sem `backdrop-filter` ou com
+`prefers-contrast: more`, e um clique para desligar tudo.
+
+O que a suíte de testes verifica nesta camada, a cada execução:
+
+| invariante | como é verificada |
+|---|---|
+| contraste WCAG nos dois temas | razão calculada a partir das variáveis do CSS, 20 pares, 4,5:1 no corpo |
+| vidro contido | conta as superfícies com `backdrop-filter`; falha se surgir uma terceira ou se tocar dado |
+| papel imutável | falha se o tema escuro redefinir `--paper` |
+| movimento com função | toda animação usa token de duração (120–300 ms) e curva declarada |
+| alvos de toque | 44 px em ponteiro grosso; `:focus-visible` em tudo que é clicável |
+| condensação do cromo | ao rolar só pode esconder o subtítulo da marca, nada com função |
+
+As preferências ficam em `localStorage` e **nunca** guardam dado de paciente —
+há teste para isso também.
 
 ## As 34 figuras
 
@@ -298,7 +335,7 @@ A escala de densidade é conferida contra identidades exatas, não contra outra 
 
 ### Suíte de regressão
 
-`node tests/run.mjs` — **327 testes**, incluindo os 34 renderizadores de figura exercitados sobre um DOM mínimo simulado. Nenhum teste pode ser removido ou afrouxado para fazer código novo passar.
+`node tests/run.mjs` — **336 testes**, incluindo os 34 renderizadores de figura exercitados sobre um DOM mínimo simulado. Nenhum teste pode ser removido ou afrouxado para fazer código novo passar.
 
 ---
 
@@ -307,7 +344,7 @@ A escala de densidade é conferida contra identidades exatas, não contra outra 
 ```bash
 node tools/gerar_exemplo.mjs examples   # dataset sintético (nenhum dado real)
 cd src && node build.mjs                # gera index.html a partir de src/
-node tests/run.mjs                      # 327 testes
+node tests/run.mjs                      # 336 testes
 node tests/benchmark.mjs --check        # 87 critérios, falha se houver regressão
 ```
 

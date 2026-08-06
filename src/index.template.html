@@ -14,6 +14,11 @@
 
 <a class="skip" href="#figs">ir para as figuras</a>
 
+<!-- Cromo: espinha, cabeçalho e abas são UMA camada sticky, não três empilhadas
+     com deslocamentos calculados à mão. Antes, o cabeçalho crescia (linha de
+     ferramentas quebrando em duas) e cobria a barra de abas, porque cada peça
+     tinha um `top` fixo em pixels. Uma camada só resolve por construção. -->
+<div class="chrome" id="chrome">
 <div class="spine" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
 
 <header class="top">
@@ -46,6 +51,34 @@
         <option value="120">UTC+02</option>
       </select>
     </label>
+    <!-- Aparência: tema e material. Existe porque translucidez e contraste são
+         escolha de quem lê a tela, não do software — foi essa a lição do recuo
+         do Liquid Glass em 2026. O padrão é o intermediário, e `sólido` está a
+         um clique para quem trabalha com pouca luz ou muito contraste. -->
+    <details class="pop" id="popAparencia">
+      <summary class="btn" id="btnAparencia" aria-label="aparência da interface">◐ aparência</summary>
+      <div class="pop-body" role="group" aria-label="aparência da interface">
+        <fieldset>
+          <legend>tema</legend>
+          <div class="segmented" id="segTema" role="group" aria-label="tema">
+            <button type="button" data-tema="auto">auto</button>
+            <button type="button" data-tema="claro">claro</button>
+            <button type="button" data-tema="escuro">escuro</button>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>material do cromo</legend>
+          <div class="segmented" id="segMaterial" role="group" aria-label="material">
+            <button type="button" data-material="solido">sólido</button>
+            <button type="button" data-material="tingido">tingido</button>
+            <button type="button" data-material="vidro">vidro</button>
+          </div>
+        </fieldset>
+        <p class="pop-nota">O material afeta apenas cabeçalho, abas e painel de
+          processamento. Gráficos e tabelas ficam sempre em superfície opaca — ler
+          uma curva sobre fundo desfocado é risco de leitura, não estilo.</p>
+      </div>
+    </details>
     <button class="btn" id="btnExport">⤓ CSV para R</button>
     <button class="btn" id="btnPrint">imprimir / PDF</button>
     <button class="btn primary" onclick="document.getElementById('fileInput').click()">+ carregar JSON</button>
@@ -58,6 +91,7 @@
 <!-- Abas: a hierarquia agudo / crônico é de INFERÊNCIA, não de visualização.
      Ver o comentário em styles.css e o cabeçalho de orientação de cada aba. -->
 <nav class="tabs" id="tabs" role="tablist" aria-label="áreas do aplicativo"></nav>
+</div><!-- /.chrome -->
 
 <div class="wrap">
   <aside class="rail" id="rail" aria-label="painel do registro"></aside>

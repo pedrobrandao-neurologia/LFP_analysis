@@ -334,6 +334,75 @@ function salvarPref(chave, valor) {
 
    O modo muda O QUE É MOSTRADO, nunca COMO É CALCULADO: os mesmos números, as
    mesmas ressalvas, os mesmos parâmetros declarados. */
+/* ========================================================== aparência ====
+   Duas escolhas, e as duas pertencem a quem lê a tela.
+
+   TEMA. `auto` segue o sistema; `claro` e `escuro` fixam. O que o CSS lê é o
+   tema RESOLVIDO em `data-tema`; a escolha fica em `data-tema-escolha`, o que
+   permite um único bloco escuro na folha de estilo em vez de um duplicado
+   dentro de media query. Trocar o tema NÃO redesenha nenhum gráfico: o papel
+   da figura é claro em qualquer tema, para que o PNG exportado não dependa da
+   tela de quem exportou.
+
+   MATERIAL. De `solido` a `vidro`, com `tingido` como padrão. A translucidez
+   se aplica só às três camadas que flutuam sobre o conteúdo — cabeçalho, abas
+   e painel de processamento. Nunca atrás de gráfico, tabela ou nota. O recuo
+   da Apple no Liquid Glass em 2026 foi por legibilidade, e a correção veio na
+   forma de controle do usuário; é essa a forma adotada aqui.              */
+const TEMAS = ['auto', 'claro', 'escuro'];
+const MATERIAIS = ['solido', 'tingido', 'vidro'];
+const APARENCIA_PADRAO = { tema: 'auto', material: 'tingido' };
+
+function temaDoSistema() {
+  try {
+    return (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'escuro' : 'claro';
+  } catch (e) { return 'claro'; }
+}
+function aparenciaAtual() {
+  const p = lerPrefs();
+  return {
+    tema: TEMAS.indexOf(p.tema) >= 0 ? p.tema : APARENCIA_PADRAO.tema,
+    material: MATERIAIS.indexOf(p.material) >= 0 ? p.material : APARENCIA_PADRAO.material
+  };
+}
+function aplicarAparencia() {
+  const a = aparenciaAtual();
+  const resolvido = a.tema === 'auto' ? temaDoSistema() : a.tema;
+  const raiz = document.documentElement;
+  if (!raiz || !raiz.setAttribute) return a;
+  raiz.setAttribute('data-tema', resolvido);
+  raiz.setAttribute('data-tema-escolha', a.tema);
+  raiz.setAttribute('data-material', a.material);
+  /* a barra do navegador acompanha o cromo, senão a moldura do sistema fica
+     clara sobre um app escuro */
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta && meta.setAttribute) meta.setAttribute('content', resolvido === 'escuro' ? '#0B1218' : '#0E1A24');
+  ['segTema', 'segMaterial'].forEach(id => {
+    const g = document.getElementById(id);
+    if (!g) return;
+    (g.children ? Array.prototype.slice.call(g.children) : []).forEach(b => {
+      const v = b.getAttribute(id === 'segTema' ? 'data-tema' : 'data-material');
+      b.setAttribute('aria-pressed', String(v === (id === 'segTema' ? a.tema : a.material)));
+    });
+  });
+  return Object.assign({}, a, { resolvido });
+}
+/* medirCromo() — publica a altura REAL da camada fixa em `--chrome-h`.
+   A coluna lateral gruda logo abaixo dela e as âncoras de figura rolam até
+   ela; com a altura chutada em pixels, uma linha de ferramentas que quebra em
+   duas passava a cobrir a barra de abas e o topo de cada figura. */
+function medirCromo() {
+  const c = document.getElementById('chrome');
+  const raiz = document.documentElement;
+  if (!c || !raiz || !raiz.style || typeof c.getBoundingClientRect !== 'function') return NaN;
+  const h = Math.round(c.getBoundingClientRect().height || 0);
+  if (h > 0) raiz.style.setProperty('--chrome-h', h + 'px');
+  return h;
+}
+
+function setTema(v) { if (TEMAS.indexOf(v) < 0) return; salvarPref('tema', v); aplicarAparencia(); }
+function setMaterial(v) { if (MATERIAIS.indexOf(v) < 0) return; salvarPref('material', v); aplicarAparencia(); }
+
 function modoAtual() { return S.mode === 'pesquisa' ? 'pesquisa' : 'clinico'; }
 function ehClinico() { return modoAtual() === 'clinico'; }
 function setModo(m) {
@@ -7836,6 +7905,59 @@ function init() {
   /* a aba volta como o usuário deixou, mas nunca numa aba de figura antes de
      haver arquivo: sem dado, a única aba com o que mostrar é a de triagem */
   if (prefs.aba && ABAS.some(a => a.id === prefs.aba)) S.aba = prefs.aba;
+  aplicarAparencia();
+  /* tema `auto` acompanha o sistema em tempo real: quem troca o modo escuro do
+     SO no meio da sessão não precisa recarregar */
+  try {
+    const mq = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
+    if (mq && mq.addEventListener) mq.addEventListener('change', () => { if (aparenciaAtual().tema === 'auto') aplicarAparencia(); });
+  } catch (e) { /* sem matchMedia: fica no tema claro */ }
+  const liga = (id, attr, fn) => {
+    const g = document.getElementById(id);
+    if (!g) return;
+    g.addEventListener('click', ev => {
+      const b = ev.target && ev.target.closest ? ev.target.closest('button') : null;
+      if (!b || !b.getAttribute(attr)) return;
+      fn(b.getAttribute(attr));
+    });
+  };
+  liga('segTema', 'data-tema', setTema);
+  liga('segMaterial', 'data-material', setMaterial);
+  /* a altura do cromo muda com a largura da janela (ferramentas quebram), com
+     a troca de idioma (rótulos mudam de comprimento) e com a condensação ao
+     rolar: medir uma vez não basta */
+  medirCromo();
+  /* Condensação: um único limiar, com histerese, para a barra não piscar em
+     torno do ponto de corte quando o dedo hesita no trackpad. */
+  {
+    const c = document.getElementById('chrome');
+    let densa = false, agendado = false;
+    const avaliar = () => {
+      agendado = false;
+      if (!c || !c.classList) return;
+      const y = window.pageYOffset || (document.documentElement && document.documentElement.scrollTop) || 0;
+      const alvo = densa ? y > 24 : y > 56;
+      if (alvo === densa) return;
+      densa = alvo;
+      c.classList[densa ? 'add' : 'remove']('densa');
+      medirCromo();
+    };
+    window.addEventListener('scroll', () => {
+      if (agendado) return;
+      agendado = true;
+      (window.requestAnimationFrame || setTimeout)(avaliar, 16);
+    }, { passive: true });
+  }
+  try {
+    if (typeof ResizeObserver === 'function') new ResizeObserver(medirCromo).observe(document.getElementById('chrome'));
+    else window.addEventListener('resize', medirCromo);
+  } catch (e) { window.addEventListener('resize', medirCromo); }
+  /* o popover fecha ao clicar fora — comportamento esperado de menu */
+  document.addEventListener('click', ev => {
+    const p = document.getElementById('popAparencia');
+    if (p && p.open && p.contains && !p.contains(ev.target)) p.open = false;
+  });
+
   marcarModo();
   renderTabs();
   aplicarIdiomaMoldura();
@@ -7894,5 +8016,5 @@ function init() {
 }
 document.addEventListener('DOMContentLoaded', init);
 /* hook de depuração (usado pela suíte de testes; inerte em produção) */
-window.__PLS__ = { FIGURES, ABAS, setAba, abaAtual, irPara, renderTabs, figurasDaAba, painelTriagem, alarmeDoRegistro, PERGUNTAS, buildProvenance, carregaExterno, carregaDiario, painelMatriz, csvEspectrograma, metaEspectrograma, calculaEspectrograma, exportarPacote, gerarPdfNativo, setIdioma, ds, invalidarDs, S, renderRail, renderFigure, renderFigureAsync, renderAllReady, handleFiles, offMin, exportBundle, exportBundleAsync, buildReportCover, Prog, proximoQuadro, setModo, modoAtual, figurasVisiveis, leiturasClinicas, leiturasClinicasAsync, PIPELINES, rodarPipeline, preencherSemaforo, inserirLeituras, Trabalhador, Instrumentacao };
+window.__PLS__ = { FIGURES, ABAS, setAba, aplicarAparencia, medirCromo, aparenciaAtual, setTema, setMaterial, TEMAS, MATERIAIS, abaAtual, irPara, renderTabs, figurasDaAba, painelTriagem, alarmeDoRegistro, PERGUNTAS, buildProvenance, carregaExterno, carregaDiario, painelMatriz, csvEspectrograma, metaEspectrograma, calculaEspectrograma, exportarPacote, gerarPdfNativo, setIdioma, ds, invalidarDs, S, renderRail, renderFigure, renderFigureAsync, renderAllReady, handleFiles, offMin, exportBundle, exportBundleAsync, buildReportCover, Prog, proximoQuadro, setModo, modoAtual, figurasVisiveis, leiturasClinicas, leiturasClinicasAsync, PIPELINES, rodarPipeline, preencherSemaforo, inserirLeituras, Trabalhador, Instrumentacao };
 })();
