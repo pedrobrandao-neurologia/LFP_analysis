@@ -4472,6 +4472,211 @@ sec('MRDS — movimento vs repouso, ΔMRDS e o que o n permite concluir');
   });
 }
 
+/* ========================================================================= */
+sec('apresentação: contraste medido, vidro contido e movimento com função');
+{
+  const css = fs.readFileSync(path.join(RAIZ, 'src', 'styles.css'), 'utf8');
+
+  /* --- utilitários de cor: contraste do WCAG 2.1, calculado, não estimado -- */
+  const hex = h => {
+    const m = /^#([0-9a-f]{6})$/i.exec(String(h).trim());
+    if (!m) return null;
+    const n = parseInt(m[1], 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  };
+  const lum = rgb => {
+    const c = rgb.map(v => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4); });
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  };
+  const contraste = (a, b) => {
+    const la = lum(hex(a)), lb = lum(hex(b));
+    return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+  };
+  /* lê as variáveis de um bloco de declaração pelo seletor */
+  const semComentarios = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const varsDe = seletor => {
+    const i = semComentarios.indexOf(seletor);
+    assert(i >= 0, `bloco ${seletor} não encontrado no CSS`);
+    const ini = semComentarios.indexOf('{', i), fim = semComentarios.indexOf('}', ini);
+    const mapa = {};
+    semComentarios.slice(ini + 1, fim).split(';').forEach(d => {
+      const m = /^\s*(--[a-z0-9-]+)\s*:\s*(.+?)\s*$/i.exec(d);
+      if (m) mapa[m[1]] = m[2];
+    });
+    return mapa;
+  };
+  const claro = varsDe(':root{');
+  const escuro = varsDe('html[data-tema="escuro"]{');
+
+  t('o texto atinge o contraste do WCAG nos DOIS temas — medido, não estimado', () => {
+    const pares = [
+      ['--ink', '--panel', 4.5, 'corpo sobre painel'],
+      ['--ink', '--ground', 4.5, 'corpo sobre fundo'],
+      ['--ink-2', '--panel', 4.5, 'texto secundário sobre painel'],
+      ['--ink-3', '--panel', 3.0, 'texto auxiliar sobre painel'],
+      ['--ink-2', '--panel-2', 4.5, 'secundário sobre painel alternado'],
+      ['--accent', '--panel', 3.0, 'accent sobre painel'],
+      ['--warn', '--panel', 3.0, 'aviso sobre painel'],
+      ['--ok', '--panel', 3.0, 'sucesso sobre painel'],
+      ['--right', '--panel', 3.0, 'hemisfério direito sobre painel'],
+      ['--left', '--panel', 3.0, 'hemisfério esquerdo sobre painel']
+    ];
+    const piores = [];
+    [['claro', claro], ['escuro', Object.assign({}, claro, escuro)]].forEach(([nome, v]) => {
+      pares.forEach(([fg, bg, min, rot]) => {
+        const r = contraste(v[fg], v[bg]);
+        assert(isFinite(r), `${nome}: cor não resolvida em ${fg}/${bg}`);
+        assert(r >= min, `${nome}: ${rot} (${v[fg]} sobre ${v[bg]}) dá ${r.toFixed(2)}:1, mínimo ${min}`);
+        piores.push([nome + ' ' + rot, r]);
+      });
+    });
+    piores.sort((a, b) => a[1] - b[1]);
+    return `pior par: ${piores[0][0]} ${piores[0][1].toFixed(2)}:1 · ${piores.length} pares verificados`;
+  });
+
+  t('o papel da figura não escurece com o tema — o PNG exportado não depende da tela', () => {
+    assert(!('--paper' in escuro), 'o tema escuro redefiniu --paper: a figura exportada mudaria com o tema da tela');
+    assert(/^#FFFFFF$/i.test(String(claro['--paper']).trim()), `--paper deveria ser branco, é ${claro['--paper']}`);
+    /* e o papel é blindado contra material e animação */
+    const compacto = semComentarios.replace(/\s+/g, '');
+    assert(/\.plotbox,\.plotbox\*\{backdrop-filter:none!important/.test(compacto),
+      'o papel da figura não está blindado contra backdrop-filter');
+    assert(/animation:none!important/.test(compacto.slice(compacto.indexOf('.plotbox,.plotbox*'), compacto.indexOf('.plotbox,.plotbox*') + 200)),
+      'o papel da figura não está blindado contra animação');
+    return 'papel branco fixo, sem backdrop-filter e sem animação em qualquer tema';
+  });
+
+  t('vidro só nas camadas que flutuam sobre o conteúdo, e nunca uma sobre a outra', () => {
+    /* todo seletor que aplica backdrop-filter com desfoque de verdade */
+    const regras = css.split('}').map(b => b + '}');
+    const comVidro = regras
+      .filter(b => /backdrop-filter:\s*blur\(var\(--glass-blur\)\)/.test(b))
+      .map(b => b.split('{')[0].trim().split('\n').pop().trim());
+    /* Duas, e só duas: o cromo (espinha + cabeçalho + abas, numa camada só) e o
+       painel flutuante de processamento. Vidro sobre vidro soma opacidade e
+       produz a mancha ilegível pela qual o Liquid Glass foi criticado, então a
+       contagem é a própria invariante. */
+    const esperados = ['.chrome', '.proc'];
+    assert(comVidro.length === esperados.length,
+      `esperava ${esperados.length} superfícies de vidro, achei ${comVidro.length}: ${comVidro.join(' | ')}`);
+    assert(!/nav\.tabs\{[^}]*backdrop-filter/.test(semComentarios.replace(/\s+/g, '')),
+      'a barra de abas voltou a ter vidro próprio dentro do cromo — seriam duas camadas somadas');
+    esperados.forEach(sel => assert(comVidro.some(c => c.indexOf(sel) >= 0),
+      `${sel} deveria receber vidro; achei ${comVidro.join(' | ')}`));
+    /* e nenhuma superfície de dado pode estar na lista */
+    ['.plotbox', 'table.data', '.note', '.leitura', '.warnbox', '.card', '.fig{'].forEach(proibido =>
+      assert(!comVidro.some(c => c.indexOf(proibido.replace('{', '')) >= 0),
+        `${proibido} recebeu vidro — superfície de dado nunca pode ser translúcida`));
+    return comVidro.join(' · ');
+  });
+
+  t('o material mais transparente ainda mantém um piso de opacidade', () => {
+    const alfas = [...css.matchAll(/--glass-bg:\s*rgba\([^)]*?,\s*\.(\d+)\)/g)].map(m => +('0.' + m[1]));
+    assert(alfas.length >= 2, 'não achei os níveis de material');
+    const piso = Math.min.apply(null, alfas);
+    assert(piso >= 0.6, `o vidro desce a ${piso} de opacidade — abaixo de 0,6 o texto do cromo falha sobre figura clara`);
+    /* e há saída para quem não tem backdrop-filter ou pede mais contraste */
+    assert(/@supports not \(backdrop-filter/.test(css), 'sem fallback para navegador sem backdrop-filter');
+    assert(/@media \(prefers-contrast: more\)/.test(css), 'não respeita prefers-contrast: more');
+    assert(/html\[data-material="solido"\]/.test(css), 'não existe o nível sólido — o usuário não pode desligar o vidro');
+    return `piso de opacidade ${piso} · fallback sem backdrop-filter · sólido disponível`;
+  });
+
+  t('movimento respeita prefers-reduced-motion e fica na faixa de 120–300 ms', () => {
+    const rm = /@media\(prefers-reduced-motion:reduce\)\{([\s\S]*?)\n\}/.exec(css);
+    assert(rm, 'não há bloco de prefers-reduced-motion');
+    assert(/animation-duration:\s*\.01ms!important/.test(rm[1]), 'reduced-motion não desliga keyframes');
+    assert(/transition-duration:\s*\.01ms!important/.test(rm[1]), 'reduced-motion não desliga transições');
+    const durs = [...css.matchAll(/--dur-\d:\s*(\d+)ms/g)].map(m => +m[1]);
+    assert(durs.length >= 3, 'faltam tokens de duração');
+    assert(Math.min.apply(null, durs) >= 100 && Math.max.apply(null, durs) <= 300,
+      `durações fora da faixa recomendada: ${durs.join(', ')} ms`);
+    /* nenhuma animação usa duração avulsa: todas saem dos tokens, senão a
+       faixa de 120–300 ms vira recomendação em vez de garantia */
+    const animes = [...semComentarios.matchAll(/animation:\s*([^;}]+)/g)].map(m => m[1].trim())
+      .filter(v => !/^none/.test(v));
+    assert(animes.length >= 2, `esperava animações declaradas, achei ${animes.length}`);
+    animes.forEach(v => assert(/var\(--dur-\d\)/.test(v), `animação com duração avulsa: ${v}`));
+    animes.forEach(v => assert(/var\(--ease/.test(v), `animação sem curva declarada: ${v}`));
+    return `tokens ${durs.join('/')} ms · ${animes.length} animações, todas com token de duração e curva`;
+  });
+
+  t('alvos de toque de 44 px em ponteiro grosso, e foco visível em tudo que é clicável', () => {
+    const coarse = /@media \(pointer: coarse\)\{([\s\S]*?)\n\}/.exec(css);
+    assert(coarse, 'não há regra para ponteiro grosso');
+    assert(/min-height:44px/.test(coarse[1]), 'os alvos de toque não chegam a 44 px');
+    ['.btn', '.field select', 'nav.tabs button', '.segmented button'].forEach(sel =>
+      assert(css.indexOf(sel + ':focus-visible') >= 0 || css.indexOf(sel + ':focus-visible,') >= 0,
+        `${sel} não declara :focus-visible`));
+    return '44 px em toque · foco visível em botão, campo, aba e segmentado';
+  });
+
+  t('o cromo condensa ao rolar sem esconder nada que tenha função', () => {
+    const compacto = semComentarios.replace(/\s+/g, '');
+    assert(/\.chrome\.densa/.test(compacto), 'o cromo não condensa ao rolar');
+    /* o que a condensação apaga tem de ser decorativo. Abas, ferramentas e o
+       nome do produto continuam na tela em qualquer estado de rolagem. */
+    const regrasDensa = [...compacto.matchAll(/\.chrome\.densa([^{]*)\{([^}]*)\}/g)];
+    assert(regrasDensa.length >= 2, 'condensação declarada de forma incompleta');
+    regrasDensa.forEach(([, alvo, corpo]) => {
+      if (!/display:none/.test(corpo)) return;
+      assert(/\.brandspan/.test(alvo),
+        `a condensação esconde algo com função: ${alvo} → ${corpo}`);
+    });
+    /* e a altura do cromo é MEDIDA, não chutada: quem gruda embaixo dele
+       (coluna lateral e âncora de figura) lê a mesma variável */
+    assert(/--chrome-h/.test(compacto), 'a altura do cromo não é publicada como variável');
+    assert(/aside\.rail\{position:sticky;top:calc\(var\(--chrome-h/.test(compacto),
+      'a coluna lateral não acompanha a altura real do cromo');
+    assert(/scroll-margin-top:calc\(var\(--chrome-h/.test(compacto),
+      'a âncora de figura não acompanha a altura real do cromo — o título ficaria sob a barra');
+    return 'condensação só remove o subtítulo da marca · altura medida, não fixada em pixels';
+  });
+
+  t('a impressão força o tema claro, venha de que tema vier a tela', () => {
+    const pr = css.slice(css.indexOf('@media print{'));
+    assert(/html\[data-tema\]\{[^}]*--panel:#fff/.test(pr.replace(/\s+/g, '')),
+      'a impressão não neutraliza o tema escuro — o relatório sairia com fundo escuro');
+    return 'relatório impresso sempre em fundo claro';
+  });
+
+  t('tema e material são escolha do usuário, persistem, e valor inválido é recusado', () => {
+    const raiz = document.documentElement;
+    localStorage.clear();
+    /* padrão: auto + tingido */
+    let a = H.aparenciaAtual();
+    assert(a.tema === 'auto' && a.material === 'tingido', `padrão veio ${a.tema}/${a.material}`);
+    H.aplicarAparencia();
+    assert(raiz.getAttribute('data-tema') === 'claro', `auto com sistema claro deveria resolver claro, deu ${raiz.getAttribute('data-tema')}`);
+    assert(raiz.getAttribute('data-material') === 'tingido', 'material não foi carimbado na raiz');
+
+    /* auto acompanha o sistema */
+    globalThis.__mediaEscuro = true;
+    H.aplicarAparencia();
+    assert(raiz.getAttribute('data-tema') === 'escuro', 'auto não seguiu o sistema em modo escuro');
+    /* escolha explícita ganha do sistema */
+    H.setTema('claro');
+    assert(raiz.getAttribute('data-tema') === 'claro', 'escolha explícita não sobrepôs o sistema');
+    assert(raiz.getAttribute('data-tema-escolha') === 'claro', 'a escolha não foi registrada separada do resolvido');
+    globalThis.__mediaEscuro = false;
+
+    /* persistência */
+    H.setMaterial('solido');
+    assert(H.aparenciaAtual().material === 'solido', 'o material não persistiu');
+    assert(JSON.parse(localStorage.getItem('pls.prefs.v1')).material === 'solido', 'não gravou em localStorage');
+    /* nada de paciente entra no armazenamento */
+    const bruto = localStorage.getItem('pls.prefs.v1');
+    assert(!/patient|Patient|idHash|sub-/.test(bruto), `o armazenamento local guardou algo além de preferência: ${bruto}`);
+
+    /* valor inválido não muda nada */
+    H.setTema('roxo'); H.setMaterial('holografico');
+    assert(H.aparenciaAtual().tema === 'claro' && H.aparenciaAtual().material === 'solido',
+      'valor inválido alterou a aparência');
+    localStorage.clear(); H.aplicarAparencia();
+    return `${H.TEMAS.join('/')} × ${H.MATERIAIS.join('/')} · inválido recusado · só preferência no armazenamento`;
+  });
+}
+
 /* ------------------------------------------------------------- resultado -- */
 console.log(`\n${'='.repeat(58)}`);
 console.log(`  ${ok} passaram   ${falhas} falharam   ${pulados} sem dados`);

@@ -3,7 +3,7 @@
    figuras, correções — apareçam assim que publicadas), com queda para o cache
    quando offline; CACHE-FIRST para os demais recursos (ícones, manifest).
    Nenhuma requisição carrega dados do paciente: o app é 100% local. */
-const CACHE = 'percept-lfp-studio-v20';
+const CACHE = 'percept-lfp-studio-v21';
 const ASSETS = ['./', './index.html', './manifest.webmanifest',
                 './icon-192.png', './icon-512.png', './icon-1024.png'];
 

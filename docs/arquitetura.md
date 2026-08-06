@@ -259,3 +259,40 @@ mexe na arquitetura:
 
 `ds()` passou a expor `indefiniteStreaming` (Record Streaming, tempo-domínio
 sem estimulação). O parser já o lia; até a F35 nenhuma figura o consumia.
+
+## Camada de apresentação
+
+`src/styles.css` abre com um bloco de tokens — cor, tipografia, ritmo de 4 px,
+raios concêntricos, três níveis de elevação e três durações de animação. Nada
+abaixo dele usa valor avulso; a suíte falha se uma animação declarar duração ou
+curva fora dos tokens.
+
+Três invariantes governam a camada, e todas as três têm teste:
+
+1. **Vidro só onde ele informa.** Translucidez existe para dizer "esta camada
+   está acima do conteúdo". São exatamente duas superfícies: `.chrome` (espinha,
+   cabeçalho e abas numa camada só) e `.proc` (painel flutuante). O teste conta
+   as superfícies com `backdrop-filter` e falha se aparecer uma terceira, ou se
+   uma delas cair sobre gráfico, tabela, nota ou cartão. Vidro sobre vidro soma
+   opacidade e produz a mancha ilegível pela qual o Liquid Glass foi criticado —
+   por isso o cromo é uma camada, não três empilhadas.
+2. **O papel da figura não muda com o tema.** `--paper` é branco em claro e em
+   escuro, e `.plotbox` é blindado contra `backdrop-filter` e contra animação.
+   O motivo não é estético: se o papel escurecesse, o PNG exportado e o PDF do
+   relatório mudariam com o tema da tela de quem exportou, e a mesma análise
+   sairia com duas aparências. O teste falha se o bloco escuro redefinir
+   `--paper`.
+3. **Contraste é medido, não estimado.** O teste extrai as variáveis de cor dos
+   dois temas direto do CSS e calcula a razão de contraste do WCAG 2.1 para
+   vinte pares texto/fundo, exigindo 4,5:1 no corpo e 3:1 no texto auxiliar e
+   nas cores de estado. Mudar uma cor sem verificar quebra a suíte.
+
+`data-tema` carrega o tema **resolvido** (claro|escuro) e `data-tema-escolha` a
+escolha do usuário (auto|claro|escuro). A separação existe para que a folha de
+estilo tenha um único bloco escuro em vez de um duplicado dentro de
+`@media (prefers-color-scheme)`.
+
+`--chrome-h` é a altura **medida** do cromo, publicada por `medirCromo()` e
+observada com `ResizeObserver`. A coluna lateral gruda abaixo dela e a âncora de
+rolagem de cada figura a usa. Antes, cada peça tinha um `top` fixo em pixels, e
+uma linha de ferramentas que quebrasse em duas cobria a barra de abas.

@@ -8,16 +8,122 @@
 <meta name="theme-color" content="#0E1A24">
 <link rel="manifest" href="./manifest.webmanifest">
 <link rel="apple-touch-icon" href="./icon-192.png">
-<style>:root{
+<style>/* ==========================================================================
+   FUNDAÇÕES VISUAIS
+   --------------------------------------------------------------------------
+   Três regras governam tudo o que vem abaixo, e nenhuma delas é estética.
+
+   1. DEFERÊNCIA AO DADO. O cromo recua; a figura é a protagonista. Nenhum
+      efeito de material, sombra ou animação toca a superfície onde há número,
+      curva ou tabela.
+   2. VIDRO SÓ ONDE ELE INFORMA. Translucidez existe para dizer "esta camada
+      está ACIMA do conteúdo" — cabeçalho, abas e painel flutuante, que se
+      sobrepõem ao que rola por baixo. Em qualquer outro lugar ela só rouba
+      contraste. A Apple recuou do Liquid Glass em 2026 exatamente por
+      legibilidade, e a correção veio na forma de CONTROLE DO USUÁRIO: aqui o
+      material vai de sólido a vidro, e o padrão é o intermediário.
+   3. MOVIMENTO SÓ COM FUNÇÃO. Animação que não comunica estado, hierarquia ou
+      origem espacial é latência disfarçada de refinamento. Nada que atrase a
+      leitura de um número se move, e `prefers-reduced-motion` desliga o resto.
+   ========================================================================== */
+:root{
+  /* --- cor: cinzas neutros + um accent que carrega significado ----------- */
   --ground:#E5EAEF; --panel:#FBFCFD; --panel-2:#F1F5F8;
-  --ink:#0E1A24; --ink-2:#4A6070; --ink-3:#7C8FA0;
+  --ink:#0E1A24; --ink-2:#4A6070; --ink-3:#6B8092;
   --rule:#C7D3DC; --rule-2:#DFE7EC;
   --left:#1B4A72; --right:#9C3050; --accent:#0C6E6B; --warn:#A8621B; --ok:#2C7A4B;
   --delta:#3B3F73; --theta:#2F6E8E; --alpha:#2E8B7A; --lowbeta:#B8912A; --highbeta:#C4652B; --gamma:#8E3B4E;
+  /* fundos de estado, derivados das cores acima */
+  --bg-ok:#EFF7F2; --bg-warn:#FBF3EA; --bg-erro:#FBEDF0; --brd-ok:#B9DCC6; --brd-warn:#E8D5BE;
+  /* papel da figura: SEMPRE claro, em qualquer tema — ver nota em [data-tema] */
+  --paper:#FFFFFF; --paper-brd:var(--rule-2);
+
+  /* --- tipografia: pilha nativa, sem uma única requisição de rede -------- */
   --mono:ui-monospace,SFMono-Regular,"SF Mono","JetBrains Mono","IBM Plex Mono",Menlo,Consolas,monospace;
-  --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+  --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+  /* escala tipográfica em passos de ~1,15 — hierarquia por peso e tamanho,
+     nunca por ornamento */
+  --fs-2xs:10px; --fs-xs:10.5px; --fs-sm:11.5px; --fs-md:12.5px;
+  --fs-lg:13.5px; --fs-xl:15px; --fs-2xl:17px;
+
+  /* --- ritmo: múltiplos de 4 ------------------------------------------- */
+  --s-1:4px; --s-2:8px; --s-3:12px; --s-4:16px; --s-5:20px; --s-6:24px; --s-8:32px;
+  /* raios concêntricos: o interno acompanha o externo menos o respiro */
+  --r-xs:4px; --r-sm:6px; --r-md:10px; --r-lg:14px; --r-pill:999px;
+
+  /* --- profundidade: três níveis, e só três ----------------------------- */
+  --elev-0:none;
+  --elev-1:0 1px 2px rgba(14,26,36,.05), 0 1px 1px rgba(14,26,36,.04);
+  --elev-2:0 2px 6px rgba(14,26,36,.07), 0 8px 22px rgba(14,26,36,.06);
+  --elev-3:0 6px 18px rgba(14,26,36,.12), 0 18px 44px rgba(14,26,36,.12);
+
+  /* --- movimento -------------------------------------------------------- */
+  --dur-1:120ms; --dur-2:180ms; --dur-3:260ms;
+  --ease:cubic-bezier(.2,.8,.2,1);          /* sai rápido, chega devagar */
+  --ease-mola:cubic-bezier(.34,1.28,.5,1);  /* leve inércia, só onde há origem espacial */
+
+  /* --- material do cromo (sobrescrito por [data-material]) --------------- */
+  --glass-bg:rgba(251,252,253,.90);
+  --glass-blur:14px; --glass-sat:150%;
+  --glass-brd:rgba(14,26,36,.10);
+  --glass-luz:rgba(255,255,255,.55);   /* realce especular na borda superior */
+
   --rail:302px;
 }
+
+/* --------------------------------------------------------------------------
+   MATERIAL — de sólido a vidro, escolhido pelo usuário.
+   O padrão é `tingido`: translúcido o bastante para revelar a camada de baixo
+   quando o conteúdo rola, opaco o bastante para o texto do cabeçalho manter
+   contraste sobre qualquer coisa que passe atrás. `vidro` não desce de 0,62 de
+   opacidade — abaixo disso o texto do cabeçalho falha sobre uma figura clara.
+   -------------------------------------------------------------------------- */
+html[data-material="solido"]{
+  --glass-bg:var(--panel); --glass-blur:0px; --glass-sat:100%;
+  --glass-luz:transparent;
+}
+html[data-material="vidro"]{
+  --glass-bg:rgba(251,252,253,.62);
+  --glass-blur:22px; --glass-sat:180%;
+}
+/* Sem backdrop-filter o "vidro" seria só um véu que apaga o texto: cai para
+   opaco em vez de degradar para ilegível. */
+@supports not (backdrop-filter: blur(2px)){
+  :root{ --glass-bg:var(--panel); --glass-blur:0px; }
+}
+/* Quem pede mais contraste no sistema não quer translucidez nenhuma. */
+@media (prefers-contrast: more){
+  :root{ --glass-bg:var(--panel); --glass-blur:0px; --glass-luz:transparent; }
+}
+
+/* --------------------------------------------------------------------------
+   TEMA ESCURO.
+   `data-tema` é o tema RESOLVIDO (claro|escuro); a escolha do usuário
+   (auto|claro|escuro) fica em `data-tema-escolha`, para que o CSS tenha um
+   único bloco escuro em vez de um duplicado dentro de media query.
+
+   O PAPEL DA FIGURA NÃO ESCURECE, de propósito. Toda curva, eixo e rótulo é
+   desenhado em canvas com paleta fixa; se o papel mudasse com o tema, o PNG
+   exportado e o PDF do relatório mudariam junto, e a mesma análise sairia com
+   duas aparências dependendo da tela de quem exportou. A figura é o conteúdo:
+   ela permanece a mesma, e é o cromo em volta que muda.
+   -------------------------------------------------------------------------- */
+html[data-tema="escuro"]{
+  --ground:#0B1218; --panel:#141E26; --panel-2:#1B2831;
+  --ink:#E8EFF4; --ink-2:#A9BECD; --ink-3:#7F97A7;
+  --rule:#2C3D49; --rule-2:#22313B;
+  --left:#7FB3DC; --right:#E793A8; --accent:#4FC8C0; --warn:#E0A45E; --ok:#6FCB92;
+  --bg-ok:#132A20; --bg-warn:#2A2113; --bg-erro:#2A1620; --brd-ok:#28503A; --brd-warn:#4A3A22;
+  --glass-bg:rgba(20,30,38,.88);
+  --glass-brd:rgba(255,255,255,.10);
+  --glass-luz:rgba(255,255,255,.10);
+  --elev-1:0 1px 2px rgba(0,0,0,.34);
+  --elev-2:0 2px 6px rgba(0,0,0,.40), 0 8px 22px rgba(0,0,0,.30);
+  --elev-3:0 6px 18px rgba(0,0,0,.48), 0 18px 44px rgba(0,0,0,.40);
+  color-scheme:dark;
+}
+html[data-tema="escuro"][data-material="solido"]{ --glass-bg:var(--panel) }
+html[data-tema="escuro"][data-material="vidro"]{ --glass-bg:rgba(20,30,38,.60) }
 *{box-sizing:border-box}
 html,body{margin:0;padding:0}
 body{
@@ -29,8 +135,31 @@ h1,h2,h3{margin:0}
 button,input,select{font:inherit;color:inherit}
 a{color:var(--accent)}
 
+/* ---------- cromo: espinha + cabeçalho + abas numa camada só ----------
+   Uma superfície de vidro, não três empilhadas. Além de resolver o
+   encobrimento das abas quando a linha de ferramentas quebra, evita o vidro
+   sobre vidro — duas camadas translúcidas somam opacidade e produzem
+   exatamente a mancha ilegível pela qual o Liquid Glass foi criticado. */
+.chrome{position:sticky;top:0;z-index:55;
+  background:var(--glass-bg);
+  backdrop-filter:blur(var(--glass-blur)) saturate(var(--glass-sat));
+  -webkit-backdrop-filter:blur(var(--glass-blur)) saturate(var(--glass-sat));
+  border-bottom:1px solid var(--glass-brd);
+  box-shadow:inset 0 1px 0 var(--glass-luz), var(--elev-1)}
+/* Ao rolar, o cromo condensa: o subtítulo da marca sai e o respiro aperta.
+   São ~34 px devolvidos ao conteúdo — em um laptop, o cromo deixa de ocupar um
+   quinto da tela. O movimento comunica estado ("você está dentro do
+   conteúdo"), e nada de informativo desaparece: o subtítulo é decorativo, e a
+   marca, as ferramentas e as abas continuam todas presentes. */
+.chrome header.top{transition:padding var(--dur-2) var(--ease)}
+.chrome .brand span{transition:opacity var(--dur-1) var(--ease)}
+.chrome.densa header.top{padding-top:var(--s-2);padding-bottom:var(--s-2)}
+.chrome.densa .brand span{display:none}
+.chrome.densa .spine{height:4px}
+.chrome .spine{transition:height var(--dur-2) var(--ease)}
+
 /* ---------- espinha espectral (assinatura) ---------- */
-.spine{position:sticky;top:0;z-index:60;height:7px;display:flex;background:var(--ink)}
+.spine{height:7px;display:flex;background:var(--ink)}
 .spine i{display:block;height:100%}
 .spine i:nth-child(1){flex:3;background:var(--delta)}
 .spine i:nth-child(2){flex:4;background:var(--theta)}
@@ -39,53 +168,104 @@ a{color:var(--accent)}
 .spine i:nth-child(5){flex:15;background:var(--highbeta)}
 .spine i:nth-child(6){flex:65;background:var(--gamma)}
 
-/* ---------- cabeçalho ---------- */
+/* ---------- cabeçalho ----------
+   Uma das três superfícies de vidro: ela flutua sobre a coluna de figuras, e a
+   translucidez comunica essa sobreposição. `--glass-luz` é o realce especular
+   de 1 px na borda de cima — é o que faz a camada ler como material e não como
+   retângulo semitransparente. */
 header.top{
-  position:sticky;top:7px;z-index:55;background:rgba(251,252,253,.94);
-  backdrop-filter:blur(8px);border-bottom:1px solid var(--rule);
-  display:flex;align-items:center;gap:16px;padding:10px 18px;flex-wrap:wrap;
+  display:flex;align-items:center;gap:var(--s-4);padding:var(--s-3) var(--s-5);flex-wrap:wrap;
 }
 .brand{display:flex;flex-direction:column;gap:1px;margin-right:auto}
-.brand b{font:600 15px/1.1 var(--mono);letter-spacing:.02em}
-.brand span{font:10.5px/1.2 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3)}
-.tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.brand b{font:600 var(--fs-xl)/1.1 var(--mono);letter-spacing:.02em}
+.brand span{font:var(--fs-xs)/1.2 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3)}
+.tools{display:flex;align-items:center;gap:var(--s-2);flex-wrap:wrap}
 .btn{
-  border:1px solid var(--rule);background:var(--panel);border-radius:3px;
-  padding:6px 11px;font:11.5px/1 var(--mono);letter-spacing:.03em;cursor:pointer;
-  transition:background .12s,border-color .12s,color .12s;
+  border:1px solid var(--rule);background:var(--panel);border-radius:var(--r-sm);
+  padding:7px 12px;font:var(--fs-sm)/1.15 var(--mono);letter-spacing:.03em;cursor:pointer;
+  min-height:32px;display:inline-flex;align-items:center;gap:6px;
+  transition:background var(--dur-1) var(--ease),border-color var(--dur-1) var(--ease),
+             color var(--dur-1) var(--ease),box-shadow var(--dur-1) var(--ease);
 }
 .btn:hover{background:var(--panel-2);border-color:var(--ink-3)}
+.btn:active{transform:translateY(.5px)}
 .btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.btn.primary{background:var(--ink);color:#F4F8FA;border-color:var(--ink)}
+.btn.primary{background:var(--ink);color:var(--panel);border-color:var(--ink);box-shadow:var(--elev-1)}
 .btn.primary:hover{background:var(--accent);border-color:var(--accent)}
 .btn[disabled]{opacity:.4;cursor:not-allowed}
 .field{display:flex;align-items:center;gap:6px;font:11px/1 var(--mono);color:var(--ink-2)}
 .field select,.field input{
-  border:1px solid var(--rule);background:var(--panel);border-radius:3px;padding:5px 7px;
-  font:11.5px/1 var(--mono);max-width:190px;
+  border:1px solid var(--rule);background:var(--panel);border-radius:var(--r-sm);padding:6px 8px;
+  font:var(--fs-sm)/1.15 var(--mono);max-width:190px;min-height:32px;
+  transition:border-color var(--dur-1) var(--ease);
 }
+.field select:hover,.field input:hover{border-color:var(--ink-3)}
+.field select:focus-visible,.field input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+
+/* ---------- alvos de toque ----------
+   Em ponteiro grosso (dedo) nenhum controle desce de 44 px, que é o mínimo da
+   HIG e do WCAG 2.5.5. Em ponteiro fino a densidade continua alta: comprimir
+   um instrumento de análise no tamanho de dedo desperdiça tela. */
+@media (pointer: coarse){
+  .btn,.field select,.field input,nav.tabs button,.modeswitch button{min-height:44px}
+  .btn{padding-left:var(--s-4);padding-right:var(--s-4)}
+}
+
+/* ---------- popover de aparência ----------
+   Tema e material moram aqui, fora do caminho. Existe porque a lição do recuo
+   da Apple em 2026 não foi "vidro é ruim", foi "quem lê a tela decide". */
+.pop{position:relative}
+.pop>summary{list-style:none;cursor:pointer}
+.pop>summary::-webkit-details-marker{display:none}
+.pop>summary::marker{content:''}
+.pop[open]>summary{background:var(--panel-2);border-color:var(--ink-3)}
+.pop-body{
+  position:absolute;right:0;top:calc(100% + var(--s-2));z-index:70;width:242px;
+  background:var(--panel);border:1px solid var(--rule);border-radius:var(--r-md);
+  box-shadow:var(--elev-3);padding:var(--s-3);
+  display:flex;flex-direction:column;gap:var(--s-3);
+  animation:pop-in var(--dur-2) var(--ease-mola) both;
+}
+@keyframes pop-in{from{opacity:0;transform:translateY(-6px) scale(.98)}to{opacity:1;transform:none}}
+.pop-body fieldset{border:0;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.pop-body legend{padding:0;font:var(--fs-2xs)/1 var(--mono);letter-spacing:.12em;
+  text-transform:uppercase;color:var(--ink-3)}
+.segmented{display:flex;border:1px solid var(--rule);border-radius:var(--r-sm);overflow:hidden;background:var(--panel-2)}
+.segmented button{flex:1;border:0;background:none;cursor:pointer;padding:7px 4px;min-height:32px;
+  font:var(--fs-xs)/1 var(--mono);letter-spacing:.04em;color:var(--ink-2);
+  transition:background var(--dur-1) var(--ease),color var(--dur-1) var(--ease)}
+.segmented button+button{border-left:1px solid var(--rule)}
+.segmented button:hover{background:var(--panel)}
+.segmented button[aria-pressed="true"]{background:var(--ink);color:var(--panel);font-weight:600}
+.segmented button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.pop-nota{margin:0;font:var(--fs-2xs)/1.5 var(--sans);color:var(--ink-3);
+  border-top:1px solid var(--rule-2);padding-top:var(--s-2)}
+@media print{.pop{display:none!important}}
 
 /* ---------- layout ---------- */
 .wrap{display:grid;grid-template-columns:var(--rail) minmax(0,1fr);gap:20px;padding:20px;align-items:start}
 @media(max-width:960px){.wrap{grid-template-columns:1fr;padding:12px;gap:12px}}
 
-aside.rail{position:sticky;top:64px;display:flex;flex-direction:column;gap:14px}
+aside.rail{position:sticky;top:calc(var(--chrome-h,120px) + var(--s-2));display:flex;flex-direction:column;gap:var(--s-4)}
 @media(max-width:960px){aside.rail{position:static}}
 
-.card{background:var(--panel);border:1px solid var(--rule);border-radius:4px}
+/* Cartões da coluna lateral: opacos, sempre. Eles carregam a matriz de dados e
+   a identificação do registro — texto denso, que não pode competir com nada
+   passando por baixo. */
+.card{background:var(--panel);border:1px solid var(--rule);border-radius:var(--r-md);box-shadow:var(--elev-1)}
 .card>h3{
   font:11px/1 var(--mono);letter-spacing:.15em;text-transform:uppercase;color:var(--ink-2);
-  padding:11px 13px;border-bottom:1px solid var(--rule-2);display:flex;align-items:center;gap:8px;
+  padding:var(--s-3) var(--s-3);border-bottom:1px solid var(--rule-2);display:flex;align-items:center;gap:var(--s-2);
 }
 .card>h3 .n{color:var(--ink-3);font-weight:400}
-.card .body{padding:13px}
+.card .body{padding:var(--s-3)}
 
 /* ---------- zona de arquivos ---------- */
 .drop{
   border:1.5px dashed var(--rule);border-radius:4px;padding:18px 12px;text-align:center;
   background:var(--panel-2);cursor:pointer;transition:border-color .15s,background .15s;
 }
-.drop:hover,.drop.over{border-color:var(--accent);background:#E9F3F2}
+.drop:hover,.drop.over{border-color:var(--accent);background:var(--bg-ok)}
 .drop b{display:block;font:12px/1.4 var(--mono);margin-bottom:3px}
 .drop span{font-size:11.5px;color:var(--ink-2)}
 .filelist{list-style:none;margin:11px 0 0;padding:0;display:flex;flex-direction:column;gap:6px}
@@ -106,13 +286,16 @@ aside.rail{position:sticky;top:64px;display:flex;flex-direction:column;gap:14px}
 .matrix td.lbl{text-align:left;color:var(--ink-2);white-space:nowrap;max-width:150px;overflow:hidden;text-overflow:ellipsis}
 .cell{display:inline-flex;align-items:center;justify-content:center;width:100%;min-width:26px;height:17px;
   border-radius:2px;background:var(--panel-2);color:var(--ink-3);border:1px solid var(--rule-2);font-size:9.5px}
-.cell.on{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:600}
+.cell.on{background:var(--accent);color:var(--panel);border-color:var(--accent);font-weight:600}
 .legendrow{display:flex;gap:12px;margin-top:9px;font:10px/1 var(--mono);color:var(--ink-3);flex-wrap:wrap}
 .legendrow i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:-1px}
 
 /* ---------- figuras ---------- */
-main{display:flex;flex-direction:column;gap:16px;min-width:0}
-.fig{background:var(--panel);border:1px solid var(--rule);border-radius:4px;overflow:hidden;scroll-margin-top:74px}
+main{display:flex;flex-direction:column;gap:var(--s-4);min-width:0}
+.fig{background:var(--panel);border:1px solid var(--rule);border-radius:var(--r-lg);overflow:hidden;
+  scroll-margin-top:calc(var(--chrome-h,120px) + var(--s-3));box-shadow:var(--elev-1);
+  transition:box-shadow var(--dur-2) var(--ease),border-color var(--dur-2) var(--ease)}
+.fig[open]{box-shadow:var(--elev-2)}
 .fig>summary{list-style:none;cursor:pointer;display:block}
 .fig>summary::-webkit-details-marker{display:none}
 .fig>summary::marker{content:''}
@@ -131,16 +314,23 @@ main{display:flex;flex-direction:column;gap:16px;min-width:0}
 .fig>summary>header .ttl span{font:11px/1.3 var(--mono);color:var(--ink-3)}
 .fig>summary>header .state{font:10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;
   padding:4px 7px;border-radius:2px;border:1px solid var(--rule);color:var(--ink-2);white-space:nowrap}
-.fig.ready>header .state{color:var(--ok);border-color:#B9DCC6;background:#EFF7F2}
+.fig.ready>header .state{color:var(--ok);border-color:var(--brd-ok);background:var(--bg-ok)}
 .fig.na>header .state{color:var(--ink-3)}
-.fig>summary>header .chev{color:var(--ink-3);font:12px/1 var(--mono);transition:transform .18s}
+.fig>summary>header .chev{color:var(--ink-3);font:12px/1 var(--mono);
+  transition:transform var(--dur-2) var(--ease-mola)}
 .fig[open]>header .chev{transform:rotate(90deg)}
-.fig .content{padding:14px 15px 16px;display:none;border-top:0}
-.fig[open] .content{display:block}
+.fig .content{padding:var(--s-4) var(--s-4) var(--s-5);display:none;border-top:0}
+/* Abrir uma figura tem ORIGEM espacial: o conteúdo vem de trás do cabeçalho.
+   180 ms, deslocamento de 4 px — o suficiente para o olho saber de onde veio,
+   curto o bastante para não ser espera. Nada dentro do conteúdo se move
+   depois disso: gráfico e tabela aparecem prontos para leitura. */
+.fig[open] .content{display:block;animation:conteudo-entra var(--dur-2) var(--ease) both}
+@keyframes conteudo-entra{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
 .fig.na .content{opacity:.85}
 
-.ctrls{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;padding:9px 11px;margin-bottom:12px;
-  background:var(--panel-2);border:1px solid var(--rule-2);border-radius:3px}
+.ctrls{display:flex;flex-wrap:wrap;gap:var(--s-2) var(--s-4);align-items:center;
+  padding:var(--s-2) var(--s-3);margin-bottom:var(--s-3);
+  background:var(--panel-2);border:1px solid var(--rule-2);border-radius:var(--r-sm)}
 .plotgrid{display:grid;gap:14px}
 /* Duas colunas FIXAS, não auto-fit: com auto-fit o primeiro gráfico do par
    media a largura da linha inteira (ele é filho único no instante em que é
@@ -148,27 +338,40 @@ main{display:flex;flex-direction:column;gap:16px;min-width:0}
    à direita em toda figura de dois painéis. */
 .plotgrid.two{grid-template-columns:repeat(2,minmax(0,1fr))}
 @media(max-width:920px){.plotgrid.two{grid-template-columns:1fr}}
-.plotbox{background:#fff;border:1px solid var(--rule-2);border-radius:3px;padding:6px;overflow:hidden}
+/* --------------------------------------------------------------------------
+   PAPEL DA FIGURA — a superfície inviolável.
+   Sem vidro, sem transparência, sem animação, sem sombra que altere o entorno
+   do traçado. Ler uma curva de PSD sobre fundo desfocado é risco metodológico,
+   não escolha de estilo, e o papel é claro em qualquer tema para que o PNG
+   exportado não dependa da tela de quem exportou.
+   -------------------------------------------------------------------------- */
+.plotbox{background:var(--paper);border:1px solid var(--paper-brd);border-radius:var(--r-sm);
+  padding:var(--s-2);overflow:hidden}
 .plotbox canvas{display:block;width:100%}
-.note{font:11.5px/1.55 var(--mono);color:var(--ink-2);margin-top:11px;padding-left:10px;border-left:2px solid var(--rule)}
+.plotbox,.plotbox *{backdrop-filter:none!important;-webkit-backdrop-filter:none!important;animation:none!important}
+
+.note{font:var(--fs-sm)/1.6 var(--mono);color:var(--ink-2);margin-top:var(--s-3);
+  padding-left:var(--s-3);border-left:2px solid var(--rule)}
 .note b{color:var(--ink)}
-.warnbox{font:11.5px/1.5 var(--mono);color:var(--warn);background:#FBF3EA;border:1px solid #E8D5BE;
-  border-radius:3px;padding:9px 11px;margin-top:11px}
-.empty{font:11.5px/1.6 var(--mono);color:var(--ink-3);padding:22px 14px;text-align:center;
-  border:1px dashed var(--rule);border-radius:3px;background:var(--panel-2)}
+.warnbox{font:var(--fs-sm)/1.55 var(--mono);color:var(--warn);background:var(--bg-warn);
+  border:1px solid var(--brd-warn);border-radius:var(--r-sm);padding:var(--s-3) var(--s-3);margin-top:var(--s-3)}
+.empty{font:var(--fs-sm)/1.6 var(--mono);color:var(--ink-3);padding:var(--s-6) var(--s-4);text-align:center;
+  border:1px dashed var(--rule);border-radius:var(--r-sm);background:var(--panel-2)}
 
 /* ---------- tabelas de resultado ---------- */
-table.data{width:100%;border-collapse:collapse;font:11.5px/1.45 var(--mono);margin-top:11px}
+table.data{width:100%;border-collapse:collapse;font:var(--fs-sm)/1.5 var(--mono);margin-top:var(--s-3);
+  font-variant-numeric:tabular-nums}
 table.data th{text-align:left;font-weight:600;color:var(--ink-2);border-bottom:1px solid var(--rule);padding:5px 7px;
   font-size:10px;letter-spacing:.08em;text-transform:uppercase}
 table.data td{padding:4px 7px;border-bottom:1px solid var(--rule-2)}
 table.data td.num{text-align:right;font-variant-numeric:tabular-nums}
 table.data tr:hover td{background:var(--panel-2)}
+table.data tbody tr{transition:background var(--dur-1) var(--ease)}
 .sig{color:var(--ok);font-weight:600}
 .ns{color:var(--ink-3)}
 .hemi-L{color:var(--left);font-weight:600}
 .hemi-R{color:var(--right);font-weight:600}
-.pill{display:inline-block;padding:1px 6px;border-radius:9px;font-size:10px;border:1px solid var(--rule)}
+.pill{display:inline-block;padding:2px 8px;border-radius:var(--r-pill);font-size:10px;border:1px solid var(--rule)}
 
 .kv{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font:11.5px/1.5 var(--mono)}
 .kv dt{color:var(--ink-3)}
@@ -181,7 +384,7 @@ footer.foot{padding:24px 20px 40px;text-align:center;font:11px/1.7 var(--mono);c
 /* ---------- selo de qualidade do dado (Onda 1) ---------- */
 .seal{display:inline-block;font:10.5px/1.4 var(--mono);color:var(--ink-2);background:var(--panel-2);
   border:1px solid var(--rule-2);border-radius:3px;padding:4px 8px;margin-bottom:10px}
-.seal.warn{color:var(--warn);background:#FBF3EA;border-color:#E8D5BE;font-weight:600}
+.seal.warn{color:var(--warn);background:var(--bg-warn);border-color:var(--brd-warn);font-weight:600}
 
 /* ---------- painel de exportação ---------- */
 .exportgrid{display:flex;flex-direction:column;gap:9px}
@@ -206,7 +409,10 @@ footer.foot{padding:24px 20px 40px;text-align:center;font:11px/1.7 var(--mono);c
 .rc-gloss dd{margin:0;color:var(--ink-2)}
 
 @media print{
-  header.top,.spine,aside.rail,footer.foot,.ctrls,.drop{display:none!important}
+  /* O relatório impresso é sempre claro, venha de que tema vier a tela. */
+  html[data-tema]{--ground:#fff;--panel:#fff;--panel-2:#F1F5F8;--ink:#0E1A24;--ink-2:#4A6070;
+    --ink-3:#6B8092;--rule:#C7D3DC;--rule-2:#DFE7EC;--glass-bg:#fff;--glass-blur:0px}
+  .chrome,header.top,.spine,aside.rail,footer.foot,.ctrls,.drop{display:none!important}
   .btn{display:none!important}
   .fig>summary>header .chev,.fig>summary>header .state{display:none!important}
   .wrap{display:block!important;padding:0;gap:0}
@@ -221,7 +427,14 @@ footer.foot{padding:24px 20px 40px;text-align:center;font:11px/1.7 var(--mono);c
   .report-cover table.data td,.report-cover table.data th{font-size:10px;padding:3px 6px}
   a[href]:after{content:''}
 }
-@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+/* Movimento é opcional por definição: quem pede redução no sistema recebe a
+   interface inteira sem transição nem keyframe. Nenhuma informação depende de
+   animação para ser transmitida — ela sempre duplica um sinal já presente em
+   cor, posição ou texto. */
+@media(prefers-reduced-motion:reduce){
+  *,*::before,*::after{transition-duration:.01ms!important;animation-duration:.01ms!important;
+    animation-iteration-count:1!important;scroll-behavior:auto!important}
+}
 
 /* ---------- painel de QC (F17) ---------- */
 .qc-title{font:11.5px/1.5 var(--mono);color:var(--ink-2);margin:14px 0 6px;font-weight:400}
@@ -231,20 +444,27 @@ footer.foot{padding:24px 20px 40px;text-align:center;font:11px/1.7 var(--mono);c
 .qcitem b{font:10.5px/1.3 var(--mono);font-weight:600}
 .qcitem .v{font:11.5px/1.3 var(--mono)}
 .qcitem .m{font:10px/1.35 var(--sans);color:var(--ink-3)}
-.qcitem.verde{border-left-color:var(--ok);background:#EFF7F2}
-.qcitem.amarelo{border-left-color:var(--warn);background:#FBF3EA}
-.qcitem.vermelho{border-left-color:var(--right);background:#FBEDF0}
+.qcitem.verde{border-left-color:var(--ok);background:var(--bg-ok)}
+.qcitem.amarelo{border-left-color:var(--warn);background:var(--bg-warn)}
+.qcitem.vermelho{border-left-color:var(--right);background:var(--bg-erro)}
 .qcitem.cinza{border-left-color:var(--rule);background:var(--panel-2);opacity:.85}
 
 /* ---------- painel de processamento ---------- */
 /* Fica fixo no canto, nunca bloqueia a tela: o usuário vê as figuras surgindo
    ao mesmo tempo em que acompanha o que está sendo calculado. */
-.proc{position:fixed;right:14px;bottom:14px;z-index:60;width:min(370px,calc(100vw - 28px));
-  background:var(--panel);border:1px solid var(--rule);border-radius:5px;
-  box-shadow:0 8px 26px rgba(14,26,36,.16);overflow:hidden}
+/* Terceira e última superfície de vidro: flutua sobre tudo, e entra do canto
+   em que vive — a origem espacial é a informação que a animação carrega. */
+.proc{position:fixed;right:var(--s-4);bottom:var(--s-4);z-index:60;width:min(370px,calc(100vw - 28px));
+  background:var(--glass-bg);
+  backdrop-filter:blur(var(--glass-blur)) saturate(var(--glass-sat));
+  -webkit-backdrop-filter:blur(var(--glass-blur)) saturate(var(--glass-sat));
+  border:1px solid var(--glass-brd);border-radius:var(--r-md);
+  box-shadow:var(--elev-3);overflow:hidden;
+  animation:proc-entra var(--dur-3) var(--ease-mola) both}
+@keyframes proc-entra{from{opacity:0;transform:translate(10px,14px) scale(.97)}to{opacity:1;transform:none}}
 .proc[hidden]{display:none}
 .proc-head{display:flex;align-items:center;gap:8px;padding:9px 11px 8px;
-  border-bottom:1px solid var(--rule-2);background:var(--panel-2)}
+  border-bottom:1px solid var(--rule-2);background:color-mix(in srgb,var(--panel-2) 70%,transparent)}
 .proc-head b{font:600 10.5px/1 var(--mono);letter-spacing:.09em;text-transform:uppercase;color:var(--ink)}
 .proc-pct{margin-left:auto;font:600 11px/1 var(--mono);color:var(--accent);font-variant-numeric:tabular-nums}
 .proc-x{border:0;background:none;cursor:pointer;color:var(--ink-3);font-size:15px;line-height:1;padding:0 1px}
@@ -285,7 +505,7 @@ footer.foot{padding:24px 20px 40px;text-align:center;font:11px/1.7 var(--mono);c
 .leitura.atencao{border-left-color:var(--warn)}
 .leitura.insuficiente{border-left-color:var(--rule);opacity:.9}
 .leitura h4{margin:0 0 5px;font:600 11px/1.3 var(--mono);letter-spacing:.05em;text-transform:uppercase;color:var(--ink)}
-.leitura p{margin:0 0 7px;font:13px/1.62 var(--sans);color:var(--ink)}
+.leitura p{margin:0 0 7px;font:var(--fs-lg)/1.65 var(--sans);color:var(--ink)}
 .leitura .num{font:11.5px/1.5 var(--mono);color:var(--ink-2);display:block;margin-bottom:5px}
 .leitura .par{font:10.5px/1.5 var(--mono);color:var(--ink-3);display:block}
 .leitura .res{margin:7px 0 0;font:11.5px/1.55 var(--sans);color:var(--ink-2);
@@ -319,14 +539,16 @@ footer.foot{padding:24px 20px 40px;text-align:center;font:11px/1.7 var(--mono);c
 
 /* ---------- painel de varredura do Survey (F1) ---------- */
 .svbox{position:relative}
+/* Dica sobre a curva: fica SOBRE o dado, então é opaca e de alto contraste em
+   qualquer tema — a única sobreposição do app que jamais recebe vidro. */
 .svtip{position:absolute;display:none;pointer-events:none;z-index:5;
-  background:var(--ink);color:var(--panel);border-radius:3px;padding:6px 9px;
-  font:10.5px/1.5 var(--mono);max-width:270px;box-shadow:0 5px 16px rgba(14,26,36,.28)}
+  background:#0E1A24;color:#F4F8FA;border-radius:var(--r-sm);padding:7px 10px;
+  font:var(--fs-xs)/1.5 var(--mono);max-width:270px;box-shadow:var(--elev-3)}
 .svtip b{font-weight:600;color:#fff}
 .svtip i{font-style:normal;color:#A9BCC9}
 
 /* ---------- acessibilidade (Onda 8.2) ---------- */
-.skip{position:absolute;left:-9999px;top:0;z-index:100;background:var(--ink);color:#fff;
+.skip{position:absolute;left:-9999px;top:0;z-index:100;background:var(--ink);color:var(--panel);
   padding:9px 14px;border-radius:0 0 4px 0;font:12px/1 var(--mono);text-decoration:none}
 .skip:focus{left:0}
 main:focus{outline:none}
@@ -341,8 +563,7 @@ canvas:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
    Usar um achado de 10 min de consultório para interpretar uma tendência de
    seis semanas — ou o contrário — é a falácia recorrente da literatura de
    Percept, e a navegação existe para tornar essa fronteira visível. */
-nav.tabs{position:sticky;top:60px;z-index:40;display:flex;gap:0;overflow-x:auto;
-  background:var(--panel);border-bottom:1px solid var(--rule);
+nav.tabs{display:flex;gap:0;overflow-x:auto;border-top:1px solid var(--glass-brd);
   padding:0 clamp(12px,4vw,40px);scrollbar-width:thin}
 nav.tabs button{position:relative;flex:0 0 auto;border:0;background:none;cursor:pointer;
   padding:11px 15px 10px;display:flex;flex-direction:column;gap:2px;align-items:flex-start;
@@ -350,6 +571,8 @@ nav.tabs button{position:relative;flex:0 0 auto;border:0;background:none;cursor:
 nav.tabs button b{font:600 11.5px/1.2 var(--mono);letter-spacing:.06em;text-transform:uppercase}
 nav.tabs button i{font-style:normal;font:10px/1.2 var(--sans);color:var(--ink-3);opacity:.85}
 nav.tabs button:hover{color:var(--ink-2);background:var(--panel-2)}
+nav.tabs button{transition:color var(--dur-1) var(--ease),background var(--dur-1) var(--ease),
+  border-bottom-color var(--dur-2) var(--ease)}
 nav.tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent)}
 nav.tabs button[aria-selected="true"] i{color:var(--accent)}
 nav.tabs button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
@@ -460,6 +683,11 @@ nav.tabs .sep{flex:0 0 1px;background:var(--rule);margin:9px 6px}
 
 <a class="skip" href="#figs">ir para as figuras</a>
 
+<!-- Cromo: espinha, cabeçalho e abas são UMA camada sticky, não três empilhadas
+     com deslocamentos calculados à mão. Antes, o cabeçalho crescia (linha de
+     ferramentas quebrando em duas) e cobria a barra de abas, porque cada peça
+     tinha um `top` fixo em pixels. Uma camada só resolve por construção. -->
+<div class="chrome" id="chrome">
 <div class="spine" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
 
 <header class="top">
@@ -492,6 +720,34 @@ nav.tabs .sep{flex:0 0 1px;background:var(--rule);margin:9px 6px}
         <option value="120">UTC+02</option>
       </select>
     </label>
+    <!-- Aparência: tema e material. Existe porque translucidez e contraste são
+         escolha de quem lê a tela, não do software — foi essa a lição do recuo
+         do Liquid Glass em 2026. O padrão é o intermediário, e `sólido` está a
+         um clique para quem trabalha com pouca luz ou muito contraste. -->
+    <details class="pop" id="popAparencia">
+      <summary class="btn" id="btnAparencia" aria-label="aparência da interface">◐ aparência</summary>
+      <div class="pop-body" role="group" aria-label="aparência da interface">
+        <fieldset>
+          <legend>tema</legend>
+          <div class="segmented" id="segTema" role="group" aria-label="tema">
+            <button type="button" data-tema="auto">auto</button>
+            <button type="button" data-tema="claro">claro</button>
+            <button type="button" data-tema="escuro">escuro</button>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>material do cromo</legend>
+          <div class="segmented" id="segMaterial" role="group" aria-label="material">
+            <button type="button" data-material="solido">sólido</button>
+            <button type="button" data-material="tingido">tingido</button>
+            <button type="button" data-material="vidro">vidro</button>
+          </div>
+        </fieldset>
+        <p class="pop-nota">O material afeta apenas cabeçalho, abas e painel de
+          processamento. Gráficos e tabelas ficam sempre em superfície opaca — ler
+          uma curva sobre fundo desfocado é risco de leitura, não estilo.</p>
+      </div>
+    </details>
     <button class="btn" id="btnExport">⤓ CSV para R</button>
     <button class="btn" id="btnPrint">imprimir / PDF</button>
     <button class="btn primary" onclick="document.getElementById('fileInput').click()">+ carregar JSON</button>
@@ -504,6 +760,7 @@ nav.tabs .sep{flex:0 0 1px;background:var(--rule);margin:9px 6px}
 <!-- Abas: a hierarquia agudo / crônico é de INFERÊNCIA, não de visualização.
      Ver o comentário em styles.css e o cabeçalho de orientação de cada aba. -->
 <nav class="tabs" id="tabs" role="tablist" aria-label="áreas do aplicativo"></nav>
+</div><!-- /.chrome -->
 
 <div class="wrap">
   <aside class="rail" id="rail" aria-label="painel do registro"></aside>
@@ -19162,6 +19419,75 @@ function salvarPref(chave, valor) {
 
    O modo muda O QUE É MOSTRADO, nunca COMO É CALCULADO: os mesmos números, as
    mesmas ressalvas, os mesmos parâmetros declarados. */
+/* ========================================================== aparência ====
+   Duas escolhas, e as duas pertencem a quem lê a tela.
+
+   TEMA. `auto` segue o sistema; `claro` e `escuro` fixam. O que o CSS lê é o
+   tema RESOLVIDO em `data-tema`; a escolha fica em `data-tema-escolha`, o que
+   permite um único bloco escuro na folha de estilo em vez de um duplicado
+   dentro de media query. Trocar o tema NÃO redesenha nenhum gráfico: o papel
+   da figura é claro em qualquer tema, para que o PNG exportado não dependa da
+   tela de quem exportou.
+
+   MATERIAL. De `solido` a `vidro`, com `tingido` como padrão. A translucidez
+   se aplica só às três camadas que flutuam sobre o conteúdo — cabeçalho, abas
+   e painel de processamento. Nunca atrás de gráfico, tabela ou nota. O recuo
+   da Apple no Liquid Glass em 2026 foi por legibilidade, e a correção veio na
+   forma de controle do usuário; é essa a forma adotada aqui.              */
+const TEMAS = ['auto', 'claro', 'escuro'];
+const MATERIAIS = ['solido', 'tingido', 'vidro'];
+const APARENCIA_PADRAO = { tema: 'auto', material: 'tingido' };
+
+function temaDoSistema() {
+  try {
+    return (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'escuro' : 'claro';
+  } catch (e) { return 'claro'; }
+}
+function aparenciaAtual() {
+  const p = lerPrefs();
+  return {
+    tema: TEMAS.indexOf(p.tema) >= 0 ? p.tema : APARENCIA_PADRAO.tema,
+    material: MATERIAIS.indexOf(p.material) >= 0 ? p.material : APARENCIA_PADRAO.material
+  };
+}
+function aplicarAparencia() {
+  const a = aparenciaAtual();
+  const resolvido = a.tema === 'auto' ? temaDoSistema() : a.tema;
+  const raiz = document.documentElement;
+  if (!raiz || !raiz.setAttribute) return a;
+  raiz.setAttribute('data-tema', resolvido);
+  raiz.setAttribute('data-tema-escolha', a.tema);
+  raiz.setAttribute('data-material', a.material);
+  /* a barra do navegador acompanha o cromo, senão a moldura do sistema fica
+     clara sobre um app escuro */
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta && meta.setAttribute) meta.setAttribute('content', resolvido === 'escuro' ? '#0B1218' : '#0E1A24');
+  ['segTema', 'segMaterial'].forEach(id => {
+    const g = document.getElementById(id);
+    if (!g) return;
+    (g.children ? Array.prototype.slice.call(g.children) : []).forEach(b => {
+      const v = b.getAttribute(id === 'segTema' ? 'data-tema' : 'data-material');
+      b.setAttribute('aria-pressed', String(v === (id === 'segTema' ? a.tema : a.material)));
+    });
+  });
+  return Object.assign({}, a, { resolvido });
+}
+/* medirCromo() — publica a altura REAL da camada fixa em `--chrome-h`.
+   A coluna lateral gruda logo abaixo dela e as âncoras de figura rolam até
+   ela; com a altura chutada em pixels, uma linha de ferramentas que quebra em
+   duas passava a cobrir a barra de abas e o topo de cada figura. */
+function medirCromo() {
+  const c = document.getElementById('chrome');
+  const raiz = document.documentElement;
+  if (!c || !raiz || !raiz.style || typeof c.getBoundingClientRect !== 'function') return NaN;
+  const h = Math.round(c.getBoundingClientRect().height || 0);
+  if (h > 0) raiz.style.setProperty('--chrome-h', h + 'px');
+  return h;
+}
+
+function setTema(v) { if (TEMAS.indexOf(v) < 0) return; salvarPref('tema', v); aplicarAparencia(); }
+function setMaterial(v) { if (MATERIAIS.indexOf(v) < 0) return; salvarPref('material', v); aplicarAparencia(); }
+
 function modoAtual() { return S.mode === 'pesquisa' ? 'pesquisa' : 'clinico'; }
 function ehClinico() { return modoAtual() === 'clinico'; }
 function setModo(m) {
@@ -26664,6 +26990,59 @@ function init() {
   /* a aba volta como o usuário deixou, mas nunca numa aba de figura antes de
      haver arquivo: sem dado, a única aba com o que mostrar é a de triagem */
   if (prefs.aba && ABAS.some(a => a.id === prefs.aba)) S.aba = prefs.aba;
+  aplicarAparencia();
+  /* tema `auto` acompanha o sistema em tempo real: quem troca o modo escuro do
+     SO no meio da sessão não precisa recarregar */
+  try {
+    const mq = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
+    if (mq && mq.addEventListener) mq.addEventListener('change', () => { if (aparenciaAtual().tema === 'auto') aplicarAparencia(); });
+  } catch (e) { /* sem matchMedia: fica no tema claro */ }
+  const liga = (id, attr, fn) => {
+    const g = document.getElementById(id);
+    if (!g) return;
+    g.addEventListener('click', ev => {
+      const b = ev.target && ev.target.closest ? ev.target.closest('button') : null;
+      if (!b || !b.getAttribute(attr)) return;
+      fn(b.getAttribute(attr));
+    });
+  };
+  liga('segTema', 'data-tema', setTema);
+  liga('segMaterial', 'data-material', setMaterial);
+  /* a altura do cromo muda com a largura da janela (ferramentas quebram), com
+     a troca de idioma (rótulos mudam de comprimento) e com a condensação ao
+     rolar: medir uma vez não basta */
+  medirCromo();
+  /* Condensação: um único limiar, com histerese, para a barra não piscar em
+     torno do ponto de corte quando o dedo hesita no trackpad. */
+  {
+    const c = document.getElementById('chrome');
+    let densa = false, agendado = false;
+    const avaliar = () => {
+      agendado = false;
+      if (!c || !c.classList) return;
+      const y = window.pageYOffset || (document.documentElement && document.documentElement.scrollTop) || 0;
+      const alvo = densa ? y > 24 : y > 56;
+      if (alvo === densa) return;
+      densa = alvo;
+      c.classList[densa ? 'add' : 'remove']('densa');
+      medirCromo();
+    };
+    window.addEventListener('scroll', () => {
+      if (agendado) return;
+      agendado = true;
+      (window.requestAnimationFrame || setTimeout)(avaliar, 16);
+    }, { passive: true });
+  }
+  try {
+    if (typeof ResizeObserver === 'function') new ResizeObserver(medirCromo).observe(document.getElementById('chrome'));
+    else window.addEventListener('resize', medirCromo);
+  } catch (e) { window.addEventListener('resize', medirCromo); }
+  /* o popover fecha ao clicar fora — comportamento esperado de menu */
+  document.addEventListener('click', ev => {
+    const p = document.getElementById('popAparencia');
+    if (p && p.open && p.contains && !p.contains(ev.target)) p.open = false;
+  });
+
   marcarModo();
   renderTabs();
   aplicarIdiomaMoldura();
@@ -26722,7 +27101,7 @@ function init() {
 }
 document.addEventListener('DOMContentLoaded', init);
 /* hook de depuração (usado pela suíte de testes; inerte em produção) */
-window.__PLS__ = { FIGURES, ABAS, setAba, abaAtual, irPara, renderTabs, figurasDaAba, painelTriagem, alarmeDoRegistro, PERGUNTAS, buildProvenance, carregaExterno, carregaDiario, painelMatriz, csvEspectrograma, metaEspectrograma, calculaEspectrograma, exportarPacote, gerarPdfNativo, setIdioma, ds, invalidarDs, S, renderRail, renderFigure, renderFigureAsync, renderAllReady, handleFiles, offMin, exportBundle, exportBundleAsync, buildReportCover, Prog, proximoQuadro, setModo, modoAtual, figurasVisiveis, leiturasClinicas, leiturasClinicasAsync, PIPELINES, rodarPipeline, preencherSemaforo, inserirLeituras, Trabalhador, Instrumentacao };
+window.__PLS__ = { FIGURES, ABAS, setAba, aplicarAparencia, medirCromo, aparenciaAtual, setTema, setMaterial, TEMAS, MATERIAIS, abaAtual, irPara, renderTabs, figurasDaAba, painelTriagem, alarmeDoRegistro, PERGUNTAS, buildProvenance, carregaExterno, carregaDiario, painelMatriz, csvEspectrograma, metaEspectrograma, calculaEspectrograma, exportarPacote, gerarPdfNativo, setIdioma, ds, invalidarDs, S, renderRail, renderFigure, renderFigureAsync, renderAllReady, handleFiles, offMin, exportBundle, exportBundleAsync, buildReportCover, Prog, proximoQuadro, setModo, modoAtual, figurasVisiveis, leiturasClinicas, leiturasClinicasAsync, PIPELINES, rodarPipeline, preencherSemaforo, inserirLeituras, Trabalhador, Instrumentacao };
 })();
 </script>
 </body>

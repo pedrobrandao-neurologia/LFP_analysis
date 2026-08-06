@@ -10,7 +10,7 @@
 
 ## What it is
 
-A **single-file** web application (`index.html`, 1372 KB) that reads the JSON *Session Reports* exported from the Medtronic Percept™ clinician programmer and produces **34 interactive figures** organised into seven tabs, quantitative metrics, a clinical PDF report and statistics-ready exports.
+A **single-file** web application (`index.html`, 1392 KB) that reads the JSON *Session Reports* exported from the Medtronic Percept™ clinician programmer and produces **34 interactive figures** organised into seven tabs, quantitative metrics, a clinical PDF report and statistics-ready exports.
 
 Opens by **double-click**. Nothing to install, no server required, and it never issues a single network request.
 
@@ -102,6 +102,40 @@ The profile is suggested from the JSON content (lead target, sensing band) and c
 
 | # | Figure | Requires | Answers |
 |---|---|---|---|
+## Appearance: theme and material
+
+The **appearance** button in the header controls two things — and both belong to
+whoever is reading the screen, not to the software.
+
+**Theme.** `auto` follows the operating system in real time; `claro` and
+`escuro` pin it. The **figure paper stays white in every theme**, deliberately:
+every curve is drawn on canvas with a fixed palette, and if the paper changed
+with the theme, the exported PNG and the report PDF would differ depending on
+the screen they were exported from. The figure is the content — it does not
+change; the chrome around it does.
+
+**Chrome material.** From `sólido` to `vidro`, with `tingido` as the default.
+Translucency applies to exactly two surfaces, the ones that float above content:
+the top bar (spine + header + tabs, as a single layer) and the processing panel.
+**Never behind a chart, a table or a note** — reading a PSD curve over a blurred
+background is a reading hazard, not a style choice.
+
+The `sólido` option exists because Apple walked back Liquid Glass in 2026
+precisely over legibility, and the correction came in the form of user control.
+Here the same lesson becomes: an opacity floor of 0.62 at the most transparent
+level, automatic fallback to opaque on browsers without `backdrop-filter` or
+with `prefers-contrast: more`, and one click to turn it all off.
+
+What the test suite verifies in this layer, on every run: WCAG contrast in both
+themes (computed from the CSS variables across 20 pairs), glass containment
+(counts `backdrop-filter` surfaces and fails on a third one or on any data
+surface), immutable paper, motion tokens (120–300 ms with a declared curve),
+44 px touch targets with visible focus, and that condensing the chrome on scroll
+only ever hides the decorative brand subtitle.
+
+Preferences live in `localStorage` and never hold patient data — there is a test
+for that too.
+
 | **F1** | Annotated spectrum and **Survey sweep** | `LFPMontage`, `SenseChannelTests` | Where the marker peak is and **which contact pair carries it best** — all bipolar pairs of one hemisphere shown together as a ridgeline, ranked, best one highlighted, with the top-3 combinations listed |
 | **F2** | Periodic / aperiodic decomposition | any spectrum | How much of the peak is real oscillation and how much is the 1/f background |
 | **F5** | Montage map — channel × frequency | `LFPMontage` | Which contact combination has the strongest marker, as a heatmap |
@@ -300,7 +334,7 @@ The density scaling is checked against exact identities rather than against anot
 
 ### Regression suite
 
-`node tests/run.mjs` — **327 tests**, including all 34 figure renderers exercised against a minimal simulated DOM. No existing test may be removed or weakened to make new code pass.
+`node tests/run.mjs` — **336 tests**, including all 34 figure renderers exercised against a minimal simulated DOM. No existing test may be removed or weakened to make new code pass.
 
 ---
 
@@ -309,7 +343,7 @@ The density scaling is checked against exact identities rather than against anot
 ```bash
 node tools/gerar_exemplo.mjs examples   # synthetic dataset (no real data)
 cd src && node build.mjs                # generates index.html from src/
-node tests/run.mjs                      # 327 tests
+node tests/run.mjs                      # 336 tests
 node tests/benchmark.mjs --check        # 87 criteria, fails on regression
 ```
 
