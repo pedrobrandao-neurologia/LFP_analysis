@@ -46,8 +46,20 @@ jobs:
       - name: Verificar que o script é parseável e carrega
         run: |
           Rscript -e 'invisible(parse("R/percept_lfp.R")); cat("parse OK\n")'
+          Rscript -e 'invisible(parse("R/tidal_dt.R")); cat("parse tidal_dt OK\n")'
           Rscript -e 'install.packages(c("jsonlite","ggplot2"), repos="https://cloud.r-project.org")'
           Rscript -e 'source("R/percept_lfp.R"); cat("source OK —", length(ls()), "objetos\n")'
+          Rscript -e 'source("R/tidal_dt.R"); cat("source tidal_dt OK —", length(ls()), "objetos\n")'
+
+      # Critério de aceite do TIDAL-DT: o self-test sintético no app (JS) e o
+      # MESMO dataset no R (gerador determinístico espelhado) devem propor
+      # limiares que divergem menos de 2%.
+      - name: Validação cruzada TIDAL-DT (JS × R, aceite < 2%)
+        run: |
+          node --input-type=module -e 'import {TIDAL} from "./src/core/metrics/tidal.js"; const s=TIDAL.selfTest(); if(!s.pass){console.error("self-test JS falhou", JSON.stringify(s.proposed));process.exit(1);} console.log(s.proposed.lower+" "+s.proposed.upper);' > /tmp/js_thresh.txt
+          cat /tmp/js_thresh.txt
+          Rscript -e 'try(install.packages("mclust", repos="https://cloud.r-project.org"), silent=TRUE)'
+          Rscript -e 'source("R/tidal_dt.R"); st <- tidal_selftest(); js <- scan("/tmp/js_thresh.txt", quiet=TRUE); r <- c(st$res$proposal$lower, st$res$proposal$upper); div <- 100*abs(r-js)/js; cat(sprintf("JS %d/%d · R %d/%d · divergencia %.2f%% / %.2f%%\n", js[1], js[2], r[1], r[2], div[1], div[2])); stopifnot(all(div < 2))'
       - name: Executar sobre o dataset sintético
         run: |
           Rscript -e 'source("R/percept_lfp.R")' -e 'p <- percept_read("examples/exemplo_sintetico.json"); print(p)' \

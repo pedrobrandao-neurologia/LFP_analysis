@@ -74,6 +74,7 @@ const DIC = {
     'Passaporte do biomarcador — o que a sessão aguda calibra no crônico': 'Biomarker passport — what the acute session calibrates in the chronic record',
     'Blocos de configuração e pontos de mudança': 'Configuration blocks and change points',
     'Agenda da próxima sessão': 'Agenda for the next session',
+    'Assistente de limiares de aDBS (TIDAL-DT)': 'aDBS Threshold Advisor (TIDAL-DT)',
     'ODR e features por janela — dinâmica multi-banda do registro agudo':
       'ODR and windowed features — multi-band dynamics of the acute recording',
     'Início': 'Home', 'Agudo': 'Acute', 'Crônico': 'Chronic', 'Ponte': 'Bridge',

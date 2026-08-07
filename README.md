@@ -8,7 +8,7 @@
 
 ## O que é
 
-Um aplicativo web de **arquivo único** (`index.html`, 1392 KB) que lê os *Session Reports* em JSON exportados do programador do neuroestimulador Medtronic Percept™ e produz **34 figuras interativas** organizadas em sete abas, métricas quantitativas, relatório clínico em PDF e exportações prontas para estatística.
+Um aplicativo web de **arquivo único** (`index.html`, 1441 KB) que lê os *Session Reports* em JSON exportados do programador do neuroestimulador Medtronic Percept™ e produz **35 figuras interativas** organizadas em sete abas, métricas quantitativas, relatório clínico em PDF e exportações prontas para estatística.
 
 Abre com **duplo clique**. Não instala nada, não precisa de servidor, não faz uma única requisição de rede.
 
@@ -74,7 +74,7 @@ Cada aba abre com um cabeçalho de orientação que declara **a camada de infer�
 | Modo | Para quê | O que mostra |
 |---|---|---|
 | **Clínico** | Consulta, decisão de programação | O subconjunto de figuras que responde às perguntas de consultório, escolhido pelo perfil de doença, mais leituras em linguagem simples |
-| **Pesquisa** | Análise, publicação | Todas as 34 figuras, todos os controles de parâmetro, todas as exportações |
+| **Pesquisa** | Análise, publicação | Todas as 35 figuras, todos os controles de parâmetro, todas as exportações |
 
 Os mesmos números, as mesmas ressalvas e os mesmos parâmetros declarados nos dois modos — o modo clínico esconde figuras, nunca esconde incerteza. A preferência fica no `localStorage` (apenas a preferência de interface; nenhum dado de paciente é gravado).
 
@@ -131,7 +131,7 @@ O que a suíte de testes verifica nesta camada, a cada execução:
 As preferências ficam em `localStorage` e **nunca** guardam dado de paciente —
 há teste para isso também.
 
-## As 34 figuras
+## As 35 figuras
 
 ### Sinal agudo — espectro e domínio do tempo
 
@@ -170,6 +170,7 @@ há teste para isso também.
 |---|---|---|---|
 | **F31** | **Passaporte do biomarcador** | Survey, Signal Test ou sinal bruto | *(descendente — calibração)* Qual par bipolar, qual pico, qual banda e qual SNR a sessão aguda definiu, com impressão digital versionada, e se a configuração vigente do aparelho ainda reproduz isso |
 | **F33** | **Agenda da próxima sessão** | Timeline crônico | *(ascendente — geração de hipótese)* O que o crônico observou e não explica, transformado em protocolo agudo, com o que cada protocolo **decidiria**. Nunca conduta terapêutica |
+| **F36** | Assistente de limiares de aDBS (TIDAL-DT) | `LFPTrendLogs` | Que limiares de dual threshold o Timeline crônico sustenta, e com que ressalvas |
 
 Oito checagens automáticas alimentam a agenda: assimetria interhemisférica emergente, perda da resposta à dose, anomalia circadiana reprodutível, deriva do nível basal, configuração instável, passaporte desatualizado, cobertura pobre e ritmo fragmentado. Cada uma sai com achado, evidência numérica, protocolo sugerido, o que ficaria decidido e a confiança — e toda checagem que o dado não permitiu sai em `notChecked` com o motivo e o que seria necessário.
 
@@ -335,7 +336,7 @@ A escala de densidade é conferida contra identidades exatas, não contra outra 
 
 ### Suíte de regressão
 
-`node tests/run.mjs` — **336 testes**, incluindo os 34 renderizadores de figura exercitados sobre um DOM mínimo simulado. Nenhum teste pode ser removido ou afrouxado para fazer código novo passar.
+`node tests/run.mjs` — **349 testes**, incluindo os 35 renderizadores de figura exercitados sobre um DOM mínimo simulado. Nenhum teste pode ser removido ou afrouxado para fazer código novo passar.
 
 ---
 
@@ -344,7 +345,7 @@ A escala de densidade é conferida contra identidades exatas, não contra outra 
 ```bash
 node tools/gerar_exemplo.mjs examples   # dataset sintético (nenhum dado real)
 cd src && node build.mjs                # gera index.html a partir de src/
-node tests/run.mjs                      # 336 testes
+node tests/run.mjs                      # 349 testes
 node tests/benchmark.mjs --check        # 87 critérios, falha se houver regressão
 ```
 
