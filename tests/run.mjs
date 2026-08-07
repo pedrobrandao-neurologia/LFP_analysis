@@ -4677,6 +4677,210 @@ sec('apresentação: contraste medido, vidro contido e movimento com função');
   });
 }
 
+/* ========================================================================= */
+sec('TIDAL-DT — limiares de dual threshold derivados do Timeline');
+{
+  const T = C.TIDAL;
+
+  t('o filtro de Hampel rejeita os picos plantados e deixa o resto em paz', () => {
+    const rng = T.tidalRng(7);
+    const xs = [];
+    for (let i = 0; i < 500; i++) xs.push(1.5 + 0.05 * rng.gauss());
+    const plantados = [50, 180, 333];
+    plantados.forEach(i => xs[i] += 2.0);
+    const h = T.hampelFilter(xs, { window: 12, k: 3 });
+    plantados.forEach(i => assert(h.artifact[i] === 1, `o pico em ${i} não foi rejeitado`));
+    /* janela de 12 amostras tem MAD instável: ~3% de falsos positivos em ruído
+       gaussiano puro é o comportamento documentado do Hampel curto, não bug.
+       O que o teste exige é (a) pegar todos os picos e (b) falsos < 6%. */
+    const falsos = h.nRejected - plantados.length;
+    assert(falsos / 500 < 0.06, `taxa de falsos positivos alta demais: ${falsos} em 500`);
+    /* trecho constante: MAD zero não pode rejeitar tudo */
+    const c = T.hampelFilter(new Array(100).fill(2.0).concat([9]), { window: 12, k: 3 });
+    assert(c.nRejected <= 1, 'MAD zero rejeitou pontos de um trecho constante');
+    return `${h.nRejected} rejeições para 3 picos plantados · trecho constante intacto`;
+  });
+
+  t('dia com poucas amostras ou muita rejeição é excluído COM o motivo listado', () => {
+    const syn = T.syntheticTimeline({ days: 5 });
+    /* dia 2 perde 60% das amostras */
+    const rows = syn.rows.filter((r, i) => {
+      const dia = Math.floor(i / 144);
+      return dia !== 2 || (i % 144) < 58;
+    });
+    const res = T.runPipeline(rows, 0, {});
+    assert(res.ok, 'pipeline falhou: ' + (res.reason || ''));
+    assert(res.days.used.length === 4, `esperava 4 dias usados, veio ${res.days.used.length}`);
+    assert(res.days.excluded.length === 1, 'o dia mutilado não foi excluído');
+    assert(/%.*present/.test(res.days.excluded[0].reason), 'a exclusão veio sem motivo legível');
+    return `dia ${res.days.excluded[0].day} excluído: ${res.days.excluded[0].reason}`;
+  });
+
+  t('a janela de vigília é recuperada do ciclo circadiano, e o fallback é rotulado', () => {
+    const syn = T.syntheticTimeline();
+    const x0 = syn.rows.map(r => Math.log10(r.lfp + 1));
+    const clean = syn.rows.map((r, i) => ({ t: r.t, x: x0[i] }));
+    const w = T.detectWakeWindow(clean, 0, {});
+    assert(w.refined, 'não usou cosinor + change-point com ritmo forte');
+    assert(Math.abs(w.wake[0] - 8) <= 1 && Math.abs(w.wake[1] - 23) <= 1,
+      `janela ${w.wake[0]}–${w.wake[1]}, esperada ~8–23`);
+    /* série sem ritmo: fallback declarado */
+    const rng = T.tidalRng(3);
+    const flat = [];
+    for (let i = 0; i < 1000; i++) flat.push({ t: i * 600000, x: 1.5 + 0.05 * rng.gauss() });
+    const wf = T.detectWakeWindow(flat, 0, {});
+    assert(!wf.refined && /fallback fixed 08:00-22:00/.test(wf.method), 'fallback sem rótulo: ' + wf.method);
+    assert(wf.wake[0] === 8 && wf.wake[1] === 22, 'fallback fora de 08–22');
+    return `ritmo forte: ${w.wake[0]}–${w.wake[1]} h (R²=${w.r2.toFixed(2)}) · sem ritmo: fallback 8–22 rotulado`;
+  });
+
+  t('o GMM por EM recupera a mistura plantada e o BIC escolhe k', () => {
+    const rng = T.tidalRng(11);
+    const xs = [];
+    for (let i = 0; i < 400; i++) xs.push(1.45 + 0.06 * rng.gauss());
+    for (let i = 0; i < 400; i++) xs.push(1.75 + 0.07 * rng.gauss());
+    const g2 = T.fitGMM1D(xs, 2), g1 = T.fitGMM1D(xs, 1);
+    assert(g2.converged, 'EM não convergiu');
+    assert(Math.abs(g2.means[0] - 1.45) < 0.02 && Math.abs(g2.means[1] - 1.75) < 0.02,
+      `médias ${g2.means.map(m => m.toFixed(3)).join(', ')}, esperadas 1,45 e 1,75`);
+    assert(g2.bic < g1.bic, 'BIC não preferiu k=2 numa mistura clara');
+    assert(T.ashmanD(g2) > 2, `Ashman d ${T.ashmanD(g2).toFixed(2)} ≤ 2 numa mistura separada`);
+    /* determinismo: duas chamadas, o mesmo ajuste */
+    const g2b = T.fitGMM1D(xs, 2);
+    assert(g2.means[0] === g2b.means[0] && g2.logLik === g2b.logLik, 'o EM não é determinístico');
+    /* unimodal: fallback rotulado */
+    const uni = [];
+    const rng2 = T.tidalRng(13);
+    for (let i = 0; i < 600; i++) uni.push(1.6 + 0.08 * rng2.gauss());
+    const p = T.proposeThresholds(uni, {});
+    assert(!p.bimodal && /percentile fallback \(unimodal distribution\)/.test(p.method),
+      'distribuição unimodal não caiu no fallback rotulado: ' + p.method);
+    return `μ recuperadas ${g2.means.map(m => m.toFixed(3)).join('/')} · Ashman ${T.ashmanD(g2).toFixed(1)} · unimodal → fallback`;
+  });
+
+  t('o limiar superior é o cruzamento das densidades, e ambos saem inteiros nativos', () => {
+    const g = { k: 2, weights: [0.5, 0.5], means: [1.45, 1.75], sigmas: [0.06, 0.07] };
+    const x = T.densityCrossing(g);
+    assert(x > 1.45 && x < 1.75, `cruzamento ${x} fora do intervalo entre as médias`);
+    /* no cruzamento as densidades ponderadas são iguais */
+    const dens = (v, m, s, w) => w * Math.exp(-0.5 * ((v - m) / s) ** 2) / s;
+    assert(Math.abs(dens(x, 1.45, .06, .5) - dens(x, 1.75, .07, .5)) < 1e-6, 'as densidades não se igualam no cruzamento');
+    const syn = T.syntheticTimeline();
+    const res = T.runPipeline(syn.rows, 0, {});
+    const p = res.proposal;
+    assert(Number.isInteger(p.lower) && Number.isInteger(p.upper), 'limiares não inteiros');
+    assert(p.upper > p.lower, 'upper ≤ lower');
+    assert(Math.abs(p.lowerLog - (p.gmm2.means[0] + 0.5 * p.gmm2.sigmas[0])) < 1e-6, 'lower ≠ μ1+0,5σ1');
+    return `cruzamento em ${x.toFixed(4)} log · proposta ${p.lower}/${p.upper} (inteiros nativos)`;
+  });
+
+  t('a simulação: zonas somam 100%, e sem limites de corrente ela diz o que falta', () => {
+    const syn = T.syntheticTimeline();
+    const res = T.runPipeline(syn.rows, 0, {});
+    const s0 = res.sim;
+    assert(!s0.hasCurrent && /current limits not provided/.test(s0.reason),
+      'sem limites de corrente a simulação deveria declarar a ausência');
+    assert(Math.abs(s0.pctBelow + s0.pctWithin + s0.pctAbove - 100) < 1e-9, 'zonas não somam 100%');
+    const s1 = T.simulateDualThreshold(res.wakeRows.map(r => r.lfp), {
+      lower: res.proposal.lower, upper: res.proposal.upper, iMin: 0.5, iMax: 3.5, step: 0.1,
+      dayKeys: res.wakeRows.map(r => C.localDayKey(r.t, 0))
+    });
+    assert(s1.hasCurrent && isFinite(s1.pctSaturated), 'com limites, a saturação deveria ser medida');
+    assert(s1.transitionsPerDay > 0, 'nenhuma transição num sinal com ciclos de medicação');
+    return `zonas ${s0.pctBelow.toFixed(0)}/${s0.pctWithin.toFixed(0)}/${s0.pctAbove.toFixed(0)} · ` +
+      `com corrente: saturação ${s1.pctSaturated.toFixed(1)}%, ${s1.transitionsPerDay} transições/dia`;
+  });
+
+  t('o auto-tune melhora o custo e nunca sai da vizinhança de ±15%', () => {
+    const syn = T.syntheticTimeline();
+    const res = T.runPipeline(syn.rows, 0, {});
+    const p = res.proposal;
+    const at = T.autoTune(res.wakeRows.map(r => r.lfp), p, {
+      iMin: 0.5, iMax: 3.5, step: 0.1, dayKeys: res.wakeRows.map(r => C.localDayKey(r.t, 0))
+    });
+    assert(at.cost <= at.baseCost + 1e-9, 'o auto-tune piorou o custo');
+    assert(at.lower >= Math.round(p.lower * 0.85) - 1 && at.lower <= Math.round(p.lower * 1.15) + 1, `lower ${at.lower} fora de ±15% de ${p.lower}`);
+    assert(at.upper >= Math.round(p.upper * 0.85) - 1 && at.upper <= Math.round(p.upper * 1.15) + 1, `upper ${at.upper} fora de ±15% de ${p.upper}`);
+    assert(at.upper > at.lower, 'auto-tune inverteu os limiares');
+    return `custo ${at.baseCost.toFixed(1)} → ${at.cost.toFixed(1)} com ${at.lower}/${at.upper} (proposta ${p.lower}/${p.upper})`;
+  });
+
+  t('self-test: o pipeline recupera limiares conhecidos com erro < 10%', () => {
+    const st = T.selfTest();
+    assert(st.pass, `self-test falhou: ${JSON.stringify(st.proposed)} vs ${JSON.stringify({ l: st.truth.lower, u: st.truth.upper })}, erros ${st.errLowerPct}%/${st.errUpperPct}%`);
+    assert(st.errLowerPct < 10 && st.errUpperPct < 10, 'erro acima de 10%');
+    assert(/GMM dual-state/.test(st.proposed.method), 'o self-test não usou o caminho bimodal');
+    /* determinismo completo: rodar duas vezes dá o mesmo número */
+    const st2 = T.selfTest();
+    assert(st.proposed.lower === st2.proposed.lower && st.proposed.upper === st2.proposed.upper, 'self-test não determinístico');
+    return `proposto ${st.proposed.lower}/${st.proposed.upper} vs verdade ${st.truth.lower}/${st.truth.upper} — erro ${st.errLowerPct}%/${st.errUpperPct}%`;
+  });
+
+  t('menos de 3 dias utilizáveis bloqueia a proposta citando o ADAPT-START', () => {
+    const syn = T.syntheticTimeline({ days: 2 });
+    const res = T.runPipeline(syn.rows, 0, {});
+    assert(!res.ok && res.blockedByDays, 'registro de 2 dias não foi bloqueado');
+    assert(/ADAPT-START/.test(res.reason) && /10\.1038\/s41531-026-01269-z/.test(res.reason),
+      'o bloqueio não cita a recomendação de ≥3–5 dias: ' + res.reason);
+    return res.reason.slice(0, 84) + '…';
+  });
+
+  t('a linha do CSV tem exatamente os cabeçalhos da especificação, na ordem', () => {
+    const syn = T.syntheticTimeline();
+    const res = T.runPipeline(syn.rows, 0, {});
+    const row = T.tidalCsvRow('Left', res);
+    assert(JSON.stringify(Object.keys(row)) === JSON.stringify(T.CSV_COLUMNS),
+      `cabeçalhos divergem:\n${Object.keys(row).join(',')}\n${T.CSV_COLUMNS.join(',')}`);
+    assert(/^\d{2}\.\d-\d{2}\.\d$/.test(row.wake_window), `wake_window mal formatado: ${row.wake_window}`);
+    return `${T.CSV_COLUMNS.length} colunas, ordem exata · wake_window ${row.wake_window}`;
+  });
+
+  t('o espelho em R existe, com as funções homônimas e o MESMO gerador determinístico', () => {
+    const r = fs.readFileSync(path.join(RAIZ, 'R', 'tidal_dt.R'), 'utf8');
+    ['hampel_filter', 'fit_cosinor', 'detect_wake_window', 'fit_gmm_1d',
+      'propose_thresholds', 'simulate_dual_threshold', 'auto_tune', 'tidal_rng',
+      'tidal_synthetic', 'tidal_selftest'].forEach(fn =>
+        assert(new RegExp('^' + fn + ' <- function', 'm').test(r), `função ${fn} ausente no R`));
+    assert(/48271/.test(r) && /2147483647/.test(r), 'o LCG minstd não está espelhado');
+    assert(/1736121600/.test(r), 'o t0 fixo do gerador não está espelhado');
+    T.CSV_COLUMNS.forEach(ccol => assert(r.indexOf('"' + ccol + '"') >= 0, `coluna ${ccol} ausente no CSV do R`));
+    assert(/Not a medical device/.test(r), 'o disclaimer não está no R');
+    ['10.1038/s41531-025-01124-7', '10.1038/s41531-022-00350-7', '10.1038/s41467-023-41128-6',
+      '10.1038/s41531-026-01269-z', '10.1038/s41531-024-00772-5'].forEach(doi =>
+        assert(r.indexOf(doi) >= 0, `DOI ${doi} ausente no cabeçalho do R`));
+    return '10 funções espelhadas · LCG e t0 idênticos · mesmos cabeçalhos, disclaimer e DOIs';
+  });
+
+  t('F36 renderiza a proposta com método, disclaimer e limitação dos 10 min declarados', () => {
+    const d = H.ds();
+    const fig = H.FIGURES.find(x => x.id === 'F36');
+    assert(fig && fig.has(d), 'F36 sem dados no exemplo');
+    const txt = n => {
+      let s = (n.textContent || '') + ' ' + (n.innerHTML || '');
+      (n.children || []).forEach(c => { s += ' ' + txt(c); });
+      return s;
+    };
+    H.S.opts.F36 = {};
+    const n = document.createElement('div');
+    fig.render(n, d);
+    const s = txt(n);
+    assert(/GMM dual-state|percentile fallback/.test(s), 'nenhum método de limiar declarado');
+    assert(/Not a medical device/.test(s), 'sem o disclaimer');
+    assert(/10-min averages|zone occupancy/.test(s), 'a limitação da resolução de 10 min não está declarada');
+    assert(/Current limits are clinician input|% time saturated/.test(s), 'a decisão de corrente não está atribuída ao clínico');
+    assert(/wake window/.test(s), 'a janela de vigília não aparece');
+
+    /* com menos de 3 dias, a figura bloqueia com o aviso */
+    const curto = { trend: { Left: d.trend[Object.keys(d.trend)[0]].filter(r => r.t < d.trend[Object.keys(d.trend)[0]][0].t + 2 * 864e5) }, all: d.all, snapshots: [] };
+    const n2 = document.createElement('div');
+    fig.render(n2, curto);
+    const s2 = txt(n2);
+    assert(/ADAPT-START/.test(s2), 'registro curto não bloqueou citando o ADAPT-START');
+    H.S.opts.F36 = {};
+    return 'proposta + disclaimer + limitação declarados · registro de 2 dias bloqueado';
+  });
+}
+
 /* ------------------------------------------------------------- resultado -- */
 console.log(`\n${'='.repeat(58)}`);
 console.log(`  ${ok} passaram   ${falhas} falharam   ${pulados} sem dados`);

@@ -10,7 +10,7 @@
 
 ## What it is
 
-A **single-file** web application (`index.html`, 1392 KB) that reads the JSON *Session Reports* exported from the Medtronic Percept™ clinician programmer and produces **34 interactive figures** organised into seven tabs, quantitative metrics, a clinical PDF report and statistics-ready exports.
+A **single-file** web application (`index.html`, 1441 KB) that reads the JSON *Session Reports* exported from the Medtronic Percept™ clinician programmer and produces **35 interactive figures** organised into seven tabs, quantitative metrics, a clinical PDF report and statistics-ready exports.
 
 Opens by **double-click**. Nothing to install, no server required, and it never issues a single network request.
 
@@ -169,6 +169,7 @@ for that too.
 |---|---|---|---|
 | **F31** | **Biomarker passport** | Survey, Signal Test or raw signal | *(descending — calibration)* Which bipolar pair, which peak, which band and which SNR the acute session defined, with a versioned fingerprint, and whether the current device configuration still reproduces it |
 | **F33** | **Agenda for the next session** | Chronic Timeline | *(ascending — hypothesis generation)* What the chronic record observed and cannot explain, turned into an acute protocol, stating what each protocol **would settle**. Never therapeutic conduct |
+| **F36** | aDBS Threshold Advisor (TIDAL-DT) | `LFPTrendLogs` | Which dual-threshold limits the chronic Timeline supports, and with which caveats |
 
 Eight automatic checks feed the agenda: emerging interhemispheric asymmetry, loss of dose response, reproducible circadian anomaly, baseline drift, unstable configuration, outdated passport, poor coverage and fragmented rhythm. Each returns a finding, numerical evidence, a suggested protocol, what it would settle, and a confidence — and every check the data did not permit goes into `notChecked` with the reason and what would be needed.
 
@@ -334,7 +335,7 @@ The density scaling is checked against exact identities rather than against anot
 
 ### Regression suite
 
-`node tests/run.mjs` — **336 tests**, including all 34 figure renderers exercised against a minimal simulated DOM. No existing test may be removed or weakened to make new code pass.
+`node tests/run.mjs` — **349 tests**, including all 35 figure renderers exercised against a minimal simulated DOM. No existing test may be removed or weakened to make new code pass.
 
 ---
 
@@ -343,7 +344,7 @@ The density scaling is checked against exact identities rather than against anot
 ```bash
 node tools/gerar_exemplo.mjs examples   # synthetic dataset (no real data)
 cd src && node build.mjs                # generates index.html from src/
-node tests/run.mjs                      # 336 tests
+node tests/run.mjs                      # 349 tests
 node tests/benchmark.mjs --check        # 87 criteria, fails on regression
 ```
 

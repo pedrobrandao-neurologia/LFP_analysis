@@ -4763,6 +4763,295 @@ const FIGURES = [
     }
   },
 
+  /* ----------------------------------------------------------------- F36 */
+  /* TIDAL-DT — limiares de dual threshold derivados do Timeline crônico.
+     A pedido do projeto, os textos de UI DESTA figura são em inglês; os
+     comentários seguem em pt-BR como o resto do repositório. O núcleo vive em
+     core/metrics/tidal.js (namespace C.TIDAL) — a figura só orquestra.      */
+  {
+    id: 'F36', title: 'Assistente de limiares de aDBS (TIDAL-DT)',
+    sub: 'Timeline-derived automated limits for dual threshold · Hampel → wake/sleep → GMM/BIC → controller simulation',
+    has: d => Object.keys(d.trend).length,
+    render(node, d) {
+      const T = C.TIDAL;
+      const hemis = Object.keys(d.trend);
+      const device = opt('F36', 'device', 'PC');
+      const iMin = parseFloat(opt('F36', 'imin', ''));
+      const iMax = parseFloat(opt('F36', 'imax', ''));
+      const hw = opt('F36', 'hw', T.DEFAULTS.hampelWindow);
+      const hk = opt('F36', 'hk', T.DEFAULTS.hampelK);
+      const minValid = opt('F36', 'minvalid', 100 * T.DEFAULTS.minValidDayFrac);
+      const maxRej = opt('F36', 'maxrej', 100 * T.DEFAULTS.maxRejectedDayFrac);
+      const step = device === 'RC' ? T.DEFAULTS.stepRC : T.DEFAULTS.stepPC;
+
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('device', [{ value: 'PC', label: 'Percept PC (0.1 mA steps)' }, { value: 'RC', label: 'Percept RC (0.01 mA steps)' }],
+          device, v => setOpt('F36', 'device', v)),
+        ctrlText('min current (mA)', opt('F36', 'imin', ''), 'clinician input', v => setOpt('F36', 'imin', v)),
+        ctrlText('max current (mA)', opt('F36', 'imax', ''), 'clinician input', v => setOpt('F36', 'imax', v)),
+        el('button', { class: 'btn', text: 'Run self-test', onclick: () => setOpt('F36', 'selftest', Date.now()) })
+      ]));
+      /* Advanced settings — os parâmetros que mudam número ficam editáveis e
+         declarados, nunca enterrados em constante */
+      {
+        const det = el('details', { class: 'evid' });
+        det.appendChild(el('summary', { text: 'Advanced settings' }));
+        det.appendChild(el('div', { class: 'ctrls' }, [
+          ctrlNumber('Hampel window (samples)', hw, 4, 48, 2, v => setOpt('F36', 'hw', v)),
+          ctrlNumber('Hampel k (×MAD)', hk, 1, 6, .5, v => setOpt('F36', 'hk', v)),
+          ctrlNumber('min valid samples per day (%)', minValid, 30, 100, 5, v => setOpt('F36', 'minvalid', v)),
+          ctrlNumber('max rejected per day (%)', maxRej, 5, 50, 5, v => setOpt('F36', 'maxrej', v))
+        ]));
+        node.appendChild(det);
+      }
+
+      /* self-test sintético: recuperar limiares conhecidos com erro < 10% */
+      if (opt('F36', 'selftest', 0)) {
+        const st = T.selfTest();
+        node.appendChild(el('div', {
+          class: st.pass ? 'note' : 'warnbox',
+          html: `<b>Self-test ${st.pass ? 'PASS' : 'FAIL'}.</b> Synthetic Timeline (circadian cycle + 4-h medication ` +
+            `cycles + 1% outliers, deterministic seed): proposed ${st.proposed.lower}/${st.proposed.upper} vs ground truth ` +
+            `${st.truth.lower}/${st.truth.upper} LFP — error ${st.errLowerPct}% / ${st.errUpperPct}% (acceptance < 10%). ` +
+            `Wake window recovered: ${st.wake[0]}–${st.wake[1]} h (truth ${st.truth.wake[0]}–${st.truth.wake[1]} h).`
+        }));
+      }
+
+      const csvRows = [];
+      hemis.forEach(h => {
+        node.appendChild(el('h3', { class: 'qc-title', html: `<span class="hemi-${h[0]}">STN ${hname(h)}</span> — TIDAL-DT proposal` }));
+
+        /* mudança de configuração no meio do registro: segmenta e usa apenas o
+           segmento mais longo (desempate: o mais recente), declarando isso */
+        let rows = d.trend[h];
+        let segNote = null;
+        const blocos = C.configBlocks(d.all, offMin());
+        const segm = C.segmentTrendByConfig(rows, blocos);
+        if (segm && segm.segments && segm.segments.length > 1) {
+          const comDados = segm.segments.filter(s => s.rows && s.rows.length);
+          if (comDados.length > 1) {
+            const escolhido = comDados.reduce((a, b) =>
+              b.rows.length > a.rows.length || (b.rows.length === a.rows.length && b.rows[0].t > a.rows[0].t) ? b : a);
+            rows = escolhido.rows;
+            segNote = `Sensing configuration changed mid-record: ${comDados.length} segments found; using the longest, most ` +
+              `recent one (${escolhido.rows.length} samples). Thresholds are only valid for the configuration they were derived from.`;
+          }
+        }
+        if (segNote) node.appendChild(el('div', { class: 'warnbox', html: `<b>Segmented record.</b> ${segNote}` }));
+
+        const res = T.runPipeline(rows, offMin(), {
+          hampelWindow: hw, hampelK: hk,
+          minValidDayFrac: minValid / 100, maxRejectedDayFrac: maxRej / 100,
+          iMin, iMax, step
+        });
+        if (!res.ok) {
+          node.appendChild(el('div', { class: 'warnbox', html: `<b>Cannot propose thresholds.</b> ${res.reason}` }));
+          if (res.days && res.days.excluded.length) node.appendChild(table(['excluded day', 'reason'],
+            res.days.excluded.map(x => [x.day, x.reason])));
+          return;
+        }
+        const p = res.proposal;
+
+        /* (a) histograma do log-beta de vigília + curvas do GMM + limiares */
+        const box = plotBox(node, 240);
+        {
+          const xs = res.wakeRows.map(r => r.x).filter(isFinite);
+          const lo = Math.min.apply(null, xs), hi = Math.max.apply(null, xs);
+          const nb = 42, bw = (hi - lo) / nb || 1;
+          const cont = new Float64Array(nb);
+          xs.forEach(v => cont[Math.min(nb - 1, Math.floor((v - lo) / bw))]++);
+          const ymax = Math.max.apply(null, Array.from(cont));
+          const ch = new P.Chart(box.canvas, {
+            width: box.width, height: box.height, xlim: [lo, hi], ylim: [0, ymax * 1.15],
+            xlabel: 'log10(LFP+1), wake only', ylabel: 'samples', title: `wake histogram, GMM and proposed thresholds — ${p.method}`,
+            pad: { l: 58, r: 14, t: 24, b: 40 }
+          });
+          ch.axes({ nx: 6 });
+          const ctx = ch.ctx;
+          ctx.fillStyle = h === 'Left' ? 'rgba(27,74,114,.35)' : 'rgba(156,48,80,.35)';
+          for (let i = 0; i < nb; i++) {
+            const x0 = ch.X(lo + i * bw), x1 = ch.X(lo + (i + 1) * bw);
+            ctx.fillRect(x0 + .5, ch.Y(cont[i]), Math.max(1, x1 - x0 - 1), ch.Y(0) - ch.Y(cont[i]));
+          }
+          if (p.gmm2 && p.bimodal) {
+            const g = p.gmm2, N = xs.length;
+            const dens = (x, m, s, w) => w * N * bw * Math.exp(-0.5 * ((x - m) / s) ** 2) / (s * Math.sqrt(2 * Math.PI));
+            const gx = [], g1 = [], g2 = [];
+            for (let i = 0; i <= 160; i++) {
+              const x = lo + (hi - lo) * i / 160;
+              gx.push(x); g1.push(dens(x, g.means[0], g.sigmas[0], g.weights[0])); g2.push(dens(x, g.means[1], g.sigmas[1], g.weights[1]));
+            }
+            ch.line(gx, g1, { color: COL.accent, width: 1.6, label: 'component 1 (medicated ON)' });
+            ch.line(gx, g2, { color: CORBETA, width: 1.6, label: 'component 2 (OFF)' });
+          }
+          ch.vline(Math.log10(p.lower + 1), { color: COL.ok, width: 1.6, dash: [5, 3] });
+          ch.vline(Math.log10(p.upper + 1), { color: COL.Right, width: 1.6, dash: [5, 3] });
+          ch.text(ch.X(Math.log10(p.lower + 1)) + 4, ch.y1 + 12, `lower ${p.lower}`, { color: COL.ok });
+          ch.text(ch.X(Math.log10(p.upper + 1)) + 4, ch.y1 + 24, `upper ${p.upper}`, { color: COL.Right });
+          ch.legend({ x: ch.x0 + 8, y: ch.y1 + 6 });
+        }
+
+        /* (b) heatmap dia × hora com a máscara de vigília */
+        {
+          const dias = res.days.used;
+          const alt = Math.max(90, 16 + dias.length * 9);
+          const boxH = plotBox(node, alt);
+          const cv = boxH.canvas;
+          cv.width = boxH.width; cv.height = alt;
+          cv.style.height = alt + 'px';
+          const ctx = cv.getContext('2d');
+          ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, alt);
+          const mL = 64, mT = 8, wPlot = cv.width - mL - 8, hRow = (alt - mT - 18) / Math.max(1, dias.length);
+          const porDiaBin = new Map();
+          res.allRows.forEach(r => {
+            const dk = C.localDayKey(r.t, offMin());
+            if (!porDiaBin.has(dk)) porDiaBin.set(dk, new Float64Array(144).fill(NaN));
+            porDiaBin.get(dk)[Math.min(143, Math.floor(C.localHour(r.t, offMin()) * 6))] = isFinite(r.x) ? r.x : (r.artifact ? -1 : NaN);
+          });
+          const todos = res.cleanRows.map(r => r.x);
+          const vlo = C.quantile(todos, .02), vhi = C.quantile(todos, .98);
+          dias.forEach((dk, i) => {
+            const linha = porDiaBin.get(dk) || new Float64Array(144).fill(NaN);
+            for (let b = 0; b < 144; b++) {
+              const v = linha[b];
+              const x = mL + b / 144 * wPlot, y = mT + i * hRow;
+              if (!isFinite(v)) { ctx.fillStyle = '#EEF1F4'; }
+              else if (v === -1) { ctx.fillStyle = '#C24A63'; }
+              else {
+                const f = Math.max(0, Math.min(1, (v - vlo) / (vhi - vlo || 1)));
+                const c = Math.round(235 - f * 195);
+                ctx.fillStyle = `rgb(${c},${Math.round(c * 1.02)},${Math.min(255, c + 40)})`;
+              }
+              ctx.fillRect(x, y, Math.ceil(wPlot / 144), Math.ceil(hRow));
+            }
+            ctx.fillStyle = '#5C7284'; ctx.font = '9px ui-monospace,monospace'; ctx.textAlign = 'right';
+            ctx.fillText(dk.slice(5), mL - 4, mT + i * hRow + hRow * .8);
+          });
+          /* máscara de vigília: bordas verticais */
+          const [wa, wb] = res.wake.wake;
+          ctx.strokeStyle = '#0C6E6B'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
+          [wa, wb].forEach(hh => {
+            const x = mL + hh / 24 * wPlot;
+            ctx.beginPath(); ctx.moveTo(x, mT); ctx.lineTo(x, mT + dias.length * hRow); ctx.stroke();
+          });
+          ctx.setLineDash([]);
+          ctx.fillStyle = '#0E1A24'; ctx.textAlign = 'left'; ctx.font = '10px ui-monospace,monospace';
+          ctx.fillText(`day × hour heatmap · wake mask ${res.wake.wake[0]}–${res.wake.wake[1]} h (${res.wake.method}) · red = artifact`, mL, alt - 5);
+          try { cv.setAttribute('role', 'img'); cv.setAttribute('aria-label', `day-by-hour heatmap with wake mask ${res.wake.wake[0]} to ${res.wake.wake[1]} hours`); } catch (e) { }
+        }
+
+        /* (c) série temporal com os limiares sobrepostos */
+        {
+          const boxS = plotBox(node, 190);
+          const xs = res.cleanRows.map(r => r.t), ys = res.cleanRows.map(r => r.lfp);
+          const ymax = Math.max.apply(null, ys.filter(isFinite)) * 1.1;
+          const ch = new P.Chart(boxS.canvas, {
+            width: boxS.width, height: boxS.height, xlim: [xs[0], xs[xs.length - 1]], ylim: [0, ymax],
+            xlabel: 'local date', ylabel: 'LFP (native units)', title: 'cleaned Timeline with proposed thresholds',
+            pad: { l: 62, r: 12, t: 22, b: 38 }
+          });
+          ch.axes({ nx: 6, xfmt: v => new Date(v + offMin() * 60000).toISOString().slice(5, 10) });
+          ch.line(xs, ys, { color: hcol(h), width: .7 });
+          ch.hline(p.lower, { color: COL.ok, width: 1.4, dash: [5, 3] });
+          ch.hline(p.upper, { color: COL.Right, width: 1.4, dash: [5, 3] });
+          const tuned = opt('F36', 'tune_' + h, null);
+          if (tuned) {
+            ch.hline(tuned.lower, { color: COL.ok, width: 1, dash: [2, 3] });
+            ch.hline(tuned.upper, { color: COL.Right, width: 1, dash: [2, 3] });
+          }
+        }
+
+        /* (d) métricas da simulação */
+        const s = res.sim;
+        const alvo = T.DEFAULTS.targets, acc = T.DEFAULTS.accept;
+        const okz = (v, [a, b]) => v >= a && v <= b;
+        node.appendChild(table(['metric', 'value', 'target', 'acceptance', 'status'], [
+          ['% time below lower', f(s.pctBelow, 1) + '%', alvo.below + '%', `${acc.below[0]}–${acc.below[1]}%`, okz(s.pctBelow, acc.below) ? '✓' : '✗'],
+          ['% time within band', f(s.pctWithin, 1) + '%', alvo.within + '%', `${acc.within[0]}–${acc.within[1]}%`, okz(s.pctWithin, acc.within) ? '✓' : '✗'],
+          ['% time above upper', f(s.pctAbove, 1) + '%', alvo.above + '%', `${acc.above[0]}–${acc.above[1]}%`, okz(s.pctAbove, acc.above) ? '✓' : '✗'],
+          ['zone transitions per day', s.transitionsPerDay, '—', '—', ''],
+          ['% time saturated at current limits', s.hasCurrent ? f(s.pctSaturated, 1) + '%' : 'enter current limits above', 'low', '—',
+            s.hasCurrent ? (s.pctSaturated < 25 ? '✓' : '✗') : '○']
+        ]));
+        if (!s.hasCurrent) node.appendChild(el('div', {
+          class: 'note', html: `<b>Current limits are clinician input.</b> Min/max stimulation current is a safety decision ` +
+            `this module does not automate — enter both fields above to simulate the current trajectory and saturation.`
+        }));
+        const foraDasFaixas = !okz(s.pctBelow, acc.below) || !okz(s.pctWithin, acc.within) || !okz(s.pctAbove, acc.above);
+        if (foraDasFaixas) {
+          const linhaTune = el('div', { class: 'ctrls' });
+          linhaTune.appendChild(el('button', {
+            class: 'btn', text: 'Auto-tune (±15% grid search)', onclick: () => {
+              const at = T.autoTune(res.wakeRows.map(r => r.lfp), p, {
+                iMin, iMax, step, dayKeys: res.wakeRows.map(r => C.localDayKey(r.t, offMin()))
+              });
+              setOpt('F36', 'tune_' + h, { lower: at.lower, upper: at.upper, cost: at.cost, baseCost: at.baseCost });
+            }
+          }));
+          const tuned = opt('F36', 'tune_' + h, null);
+          if (tuned) linhaTune.appendChild(el('span', {
+            class: 'exphint', text: `auto-tuned: ${tuned.lower}/${tuned.upper} (cost ${f(tuned.cost, 1)} vs ${f(tuned.baseCost, 1)} at proposal)`
+          }));
+          node.appendChild(linhaTune);
+        }
+
+        /* (e) medication-cycle check */
+        {
+          const doseInfo = C.doseMarkers(d.snapshots, offMin(), { pattern: /medica|levodopa|dose/i });
+          const mc = doseInfo.ok
+            ? T.medicationCycleCheck(res.cleanRows, doseInfo.doses.map(x => x.t), p)
+            : { ok: false, reason: doseInfo.reason };
+          node.appendChild(el('div', {
+            class: mc.ok && mc.verdict === 'warn' ? 'warnbox' : 'note',
+            html: `<b>Medication-cycle check${mc.ok ? ' — ' + mc.verdict.toUpperCase() : ''}.</b> ` +
+              (mc.ok
+                ? `Mean log-beta trajectory ±90 min around ${mc.nEvents} intake event(s): Δ(post−pre) = ${f(mc.deltaLog, 3)} log units` +
+                (isFinite(mc.separationLog) ? ` against a component separation of ${f(mc.separationLog, 3)}` : '') + `. ${mc.note}.`
+                : `Not verifiable: ${mc.reason}.`)
+          }));
+        }
+
+        /* resumo numérico + linha do CSV */
+        node.appendChild(table(['field', 'value'], [
+          ['method', p.method],
+          ['lower / upper threshold (native LFP)', `${p.lower} / ${p.upper}`],
+          ['Ashman d · BIC k=1 · BIC k=2', `${p.ashman} · ${f(p.gmm1.bic, 1)} · ${f(p.gmm2 ? p.gmm2.bic : NaN, 1)}`],
+          ['wake window', `${res.wake.wake[0]}–${res.wake.wake[1]} h (${res.wake.method}${isFinite(res.wake.r2) ? `, cosinor R²=${f(res.wake.r2, 2)}` : ''})`],
+          ['days used / excluded', `${res.days.used.length} / ${res.days.excluded.length}`],
+          ['artifacts rejected (Hampel)', `${res.nArtifacts} (window ${res.hampel.window}, k=${res.hampel.k})`]
+        ]));
+        if (res.days.excluded.length) node.appendChild(table(['excluded day', 'reason'],
+          res.days.excluded.map(x => [x.day, x.reason])));
+        csvRows.push(T.tidalCsvRow(h, res));
+      });
+
+      /* metodologia e limitação declaradas na própria figura */
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Method.</b> Reference method is manual 25/75 diurnal percentiles of Timeline beta ` +
+          `[doi:10.1038/s41531-025-01124-7]; in-clinic streaming is not representative of chronic beta. Time of day explains ` +
+          `~41% of beta variance, so sleep is excluded [doi:10.1038/s41531-022-00350-7; doi:10.1038/s41467-023-41128-6]. ` +
+          `Non-representative days are excluded and listed [doi:10.1038/s41531-026-01269-z]. ` +
+          `<b>Declared limitation:</b> the real controller triggers on >1.2 s epochs with ~2.5/5 min ramps ` +
+          `[doi:10.1038/s41531-024-00772-5]; the Timeline is 10-min averages, so this simulation estimates zone occupancy ` +
+          `and saturation, not the fine current trajectory. <b>${C.TIDAL.DISCLAIMER}</b>`
+      }));
+
+      if (csvRows.length) node.appendChild(exportRow([
+        {
+          label: '⤓ CSV (R-compatible)', fn: () => P.downloadText(
+            P.toCSV(csvRows), 'TIDAL_DT_thresholds.csv', 'text/csv')
+        },
+        {
+          label: '⤓ Export report (print/PDF)', fn: () => {
+            const fig = document.getElementById('fig-F36');
+            if (fig && fig.scrollIntoView) fig.scrollIntoView();
+            if (typeof window.print === 'function') window.print();
+          }
+        }
+      ]));
+    }
+  },
+
   /* ----------------------------------------------------------------- F33 */
   {
     id: 'F33', title: 'Agenda da próxima sessão',
@@ -6269,7 +6558,7 @@ const ABAS = [
   },
   {
     id: 'ponte', label: 'Ponte', sub: 'calibração · aDBS · agenda', camada: 'ponte',
-    figuras: ['F31', 'F11', 'F23', 'F33'],
+    figuras: ['F31', 'F11', 'F23', 'F36', 'F33'],
     orient: {
       titulo: 'A ponte entre as camadas',
       camada: 'agudo ↔ crônico',

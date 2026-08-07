@@ -22,6 +22,7 @@ import { eventAligned, permutationTest, permutationTwoSample } from './stats/eve
 import { detectStates, betaEnvelopeSeries, streamOnOff } from './stats/states.js';
 import { peakInBand, pickSpectrum, spectralMetrics, burstMetrics, doseResponse, ecgMetrics, deviceStateMetrics } from './metrics/acute.js';
 import { mergeTrend, collectThresholds, chronicMetrics, thresholdSummary, censoringSummary, splitByLocalDay, dayRangeOf } from './metrics/chronic.js';
+import { TIDAL } from './metrics/tidal.js';
 import { MRDS_VERSION, MRDS_PROTOCOL, MRDS_BANDS, MRDS_TOTAL_BAND, MRDS_CELLS, MRDS_LIMITACOES, MRDS_COLUMNS, zscoreEpochs, mrdsEpochPSD, mrdsPair, mrdsBroadbandVerdict, mrdsDesign, mrdsSignFlipTest, mrdsTable, mrdsMeta, mrdsReading } from './metrics/mrds.js';
 import { extractMetrics, daysSince } from './metrics/extract.js';
 import { rankSurveyChannels } from './metrics/survey.js';
@@ -95,6 +96,7 @@ const API = {
   permutationTest, permutationTwoSample, thresholdSummary, histogram, ecdf, fPValue, tPValue, normCDF,
   peakInBand, daysSince, pickSpectrum, spectralMetrics, burstMetrics, doseResponse, ecgMetrics, deviceStateMetrics,
   mergeTrend, collectThresholds, chronicMetrics, censoringSummary, splitByLocalDay, dayRangeOf, extractMetrics,
+  TIDAL,
   MRDS_VERSION, MRDS_PROTOCOL, MRDS_BANDS, MRDS_TOTAL_BAND, MRDS_CELLS, MRDS_LIMITACOES, MRDS_COLUMNS,
   zscoreEpochs, mrdsEpochPSD, mrdsPair, mrdsBroadbandVerdict, mrdsDesign, mrdsSignFlipTest, mrdsTable, mrdsMeta, mrdsReading,
   /* ranking dos pares bipolares do Survey (F1) */
