@@ -4904,7 +4904,16 @@ sec('wiki: documentação publicada junto com o aplicativo');
     const verbetes = [...wiki.matchAll(/class="figbox" id="(f\d+)"/g)].map(m => m[1].toUpperCase());
     const orfaos = verbetes.filter(v => ids.indexOf(v) < 0);
     assert(!orfaos.length, 'verbetes de figuras que não existem: ' + orfaos.join(', '));
-    return `${ids.length} figuras, todas com verbete · nenhum verbete órfão`;
+    /* todo verbete carrega os cinco campos — inclusive "para que serve" e a
+       aplicabilidade com exemplo prático, para que figura nova não nasça sem */
+    const blocos = wiki.split('class="figbox"').slice(1);
+    const campos = ['O que mostra', 'Como usar', 'Para que isso serve?', 'Aplicabilidade clínica e em pesquisa', 'Método e referência'];
+    blocos.forEach(b2 => {
+      const id = (b2.match(/id="(f\d+)"/) || [])[1] || '?';
+      campos.forEach(c => assert(b2.indexOf('<dt>' + c + '</dt>') >= 0, `verbete ${id} sem o campo "${c}"`));
+      assert(/Exemplo:/.test(b2), `verbete ${id} sem exemplo prático na aplicabilidade`);
+    });
+    return `${ids.length} figuras, todas com verbete de 5 campos e exemplo prático · nenhum verbete órfão`;
   });
 
   t('todo link interno da wiki aponta para uma âncora que existe', () => {
