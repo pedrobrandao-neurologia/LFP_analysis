@@ -131,6 +131,12 @@ O que a suíte de testes verifica nesta camada, a cada execução:
 As preferências ficam em `localStorage` e **nunca** guardam dado de paciente —
 há teste para isso também.
 
+## Documentação e tutorial (wiki)
+
+Cada funcionalidade explicada para pesquisadores e neurologistas, com a referência
+científica de cada método: **[wiki de documentação](wiki/index.html)** — publicada
+junto com o aplicativo no GitHub Pages (`/wiki/`).
+
 ## As 35 figuras
 
 ### Sinal agudo — espectro e domínio do tempo

@@ -4881,6 +4881,63 @@ sec('TIDAL-DT — limiares de dual threshold derivados do Timeline');
   });
 }
 
+/* ========================================================================= */
+sec('wiki: documentação publicada junto com o aplicativo');
+{
+  const wiki = fs.readFileSync(path.join(RAIZ, 'wiki', 'index.html'), 'utf8');
+
+  t('a wiki é autocontida: nenhum recurso externo é carregado', () => {
+    /* âncoras <a href> externas são navegação iniciada pelo leitor e são
+       permitidas; o que NÃO pode existir é recurso carregado automaticamente */
+    assert(!/<script[^>]+src=/i.test(wiki), 'script externo na wiki');
+    assert(!/<link[^>]+href=["']https?:/i.test(wiki), 'stylesheet/fonte externa na wiki');
+    assert(!/<img[^>]+src=["']https?:/i.test(wiki), 'imagem externa na wiki');
+    assert(!/@import|fonts\.googleapis|cdn\./i.test(wiki), 'importação externa na wiki');
+    const externos = (wiki.match(/href="https?:\/\//g) || []).length;
+    return `zero recursos carregados de fora · ${externos} links de navegação (DOI/GitHub)`;
+  });
+
+  t('toda figura do aplicativo tem verbete na wiki, e nenhum verbete é órfão', () => {
+    const ids = H.FIGURES.map(f => f.id);
+    const semVerbete = ids.filter(id => !new RegExp('id="' + id.toLowerCase() + '"').test(wiki));
+    assert(!semVerbete.length, 'figuras sem verbete: ' + semVerbete.join(', '));
+    const verbetes = [...wiki.matchAll(/class="figbox" id="(f\d+)"/g)].map(m => m[1].toUpperCase());
+    const orfaos = verbetes.filter(v => ids.indexOf(v) < 0);
+    assert(!orfaos.length, 'verbetes de figuras que não existem: ' + orfaos.join(', '));
+    return `${ids.length} figuras, todas com verbete · nenhum verbete órfão`;
+  });
+
+  t('todo link interno da wiki aponta para uma âncora que existe', () => {
+    const alvos = new Set([...wiki.matchAll(/id="([^"]+)"/g)].map(m => m[1]));
+    const quebrados = [...wiki.matchAll(/href="#([^"]+)"/g)].map(m => m[1])
+      .filter(a => a !== 'top' && !alvos.has(a));
+    assert(!quebrados.length, 'âncoras quebradas: ' + [...new Set(quebrados)].join(', '));
+    /* e toda citação [n] tem a referência correspondente na lista */
+    const citas = [...new Set([...wiki.matchAll(/href="#(r\d+)"/g)].map(m => m[1]))];
+    citas.forEach(r => assert(alvos.has(r), `citação ${r} sem referência na lista`));
+    return `${alvos.size} âncoras · ${citas.length} referências citadas, todas resolvem`;
+  });
+
+  t('as referências centrais do software estão citadas com DOI na wiki', () => {
+    ['UC202012929cEN',
+      '10.1038/s41531-025-01124-7', '10.1038/s41531-022-00350-7', '10.1038/s41467-023-41128-6',
+      '10.1038/s41531-026-01269-z', '10.1038/s41531-024-00772-5',
+      '10.1093/brain/awag256', '10.1002/mds.70035',
+      '10.1038/s41593-020-00744-x', '10.1152/jn.00106.2010',
+      '10.1016/j.jneumeth.2007.03.024', '10.1016/j.clinph.2004.04.029'].forEach(x =>
+        assert(wiki.indexOf(x) >= 0, `referência ausente na wiki: ${x}`));
+    assert(/[Nn]ão é dispositivo médico/.test(wiki), 'a wiki não carrega o aviso de não-dispositivo');
+    assert(/Nenhum dado sai do navegador|nenhum byte/.test(wiki), 'a wiki não declara a privacidade');
+    return '12 fontes centrais verificadas · avisos de escopo presentes';
+  });
+
+  t('o aplicativo aponta para a wiki no rodapé', () => {
+    const idx = fs.readFileSync(path.join(RAIZ, 'index.html'), 'utf8');
+    assert(/href="\.\/wiki\/"/.test(idx), 'o rodapé do app não tem o link para a wiki');
+    return 'link ./wiki/ presente no rodapé do app';
+  });
+}
+
 /* ------------------------------------------------------------- resultado -- */
 console.log(`\n${'='.repeat(58)}`);
 console.log(`  ${ok} passaram   ${falhas} falharam   ${pulados} sem dados`);

@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Percept LFP Studio — documentação e tutorial</title>
+<meta name="description" content="Documentação e tutorial do Percept LFP Studio: cada funcionalidade explicada para pesquisadores e neurologistas que trabalham com DBS, com as referências científicas de cada método.">
+<style>
+/* Documentação em estilo de enciclopédia. Autocontida: nenhum recurso externo
+   é carregado — links para DOIs e GitHub são navegação iniciada pelo leitor. */
+:root{--ink:#202122;--ink2:#54595d;--link:#0645ad;--linkv:#0b0080;--rule:#a2a9b1;--box:#f8f9fa;--accent:#0C6E6B}
+*{box-sizing:border-box}
+body{margin:0;background:#fff;color:var(--ink);
+  font:15px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
+a{color:var(--link);text-decoration:none}
+a:hover{text-decoration:underline}
+a.ext::after{content:"↗";font-size:.75em;margin-left:2px;color:var(--ink2)}
+.page{max-width:1080px;margin:0 auto;padding:0 18px 80px}
+header.site{border-bottom:3px solid var(--accent);padding:18px 0 10px;margin-bottom:6px}
+header.site .kicker{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink2)}
+h1{font:400 30px/1.2 Georgia,'Times New Roman',serif;margin:2px 0 4px}
+.subtitle{color:var(--ink2);font-size:14px;margin:0 0 6px}
+h2{font:400 22px/1.3 Georgia,serif;border-bottom:1px solid var(--rule);padding-bottom:4px;margin:34px 0 12px}
+h3{font:600 17px/1.35 Georgia,serif;margin:24px 0 8px}
+h4{font-size:15px;margin:18px 0 6px}
+p{margin:0 0 12px}
+ul,ol{margin:0 0 12px;padding-left:26px}
+li{margin:3px 0}
+code{font:.92em ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--box);
+  border:1px solid #e3e6e8;border-radius:3px;padding:0 4px}
+sup.ref{font-size:.75em;line-height:0}
+sup.ref a{color:var(--link)}
+table{border-collapse:collapse;margin:0 0 14px;font-size:14px}
+th,td{border:1px solid var(--rule);padding:5px 9px;text-align:left;vertical-align:top}
+th{background:var(--box)}
+.infobox{float:right;width:290px;margin:0 0 14px 20px;border:1px solid var(--rule);background:var(--box);
+  font-size:13px;padding:0}
+.infobox caption,.infobox .cap{background:#eaecf0;font-weight:600;text-align:center;padding:6px 8px;font-size:14px}
+.infobox th,.infobox td{border:0;border-top:1px solid #e3e6e8;padding:5px 8px}
+.infobox th{background:none;width:38%;font-weight:600}
+.toc{display:inline-block;border:1px solid var(--rule);background:var(--box);padding:10px 18px 12px;margin:0 0 18px;font-size:14px}
+.toc b{display:block;text-align:center;margin-bottom:6px}
+.toc ol{margin:0;padding-left:20px}
+.toc ol ol{padding-left:18px}
+.figbox{border:1px solid #dfe3e6;border-left:3px solid var(--accent);background:#fcfdfd;
+  border-radius:2px;padding:10px 14px;margin:0 0 12px}
+.figbox h4{margin:0 0 6px}
+.figbox .fid{display:inline-block;font:600 11px/1 ui-monospace,monospace;background:var(--accent);color:#fff;
+  border-radius:2px;padding:3px 6px;margin-right:7px;vertical-align:1px}
+.figbox dl{margin:0}
+.figbox dt{font-weight:600;font-size:12.5px;color:var(--ink2);text-transform:uppercase;letter-spacing:.04em;margin-top:6px}
+.figbox dd{margin:1px 0 0}
+.aviso{border:1px solid #e0c9a6;background:#fdf6e9;border-radius:3px;padding:10px 14px;margin:0 0 14px;font-size:14px}
+.nota{border-left:3px solid var(--rule);background:var(--box);padding:8px 14px;margin:0 0 14px;font-size:14px}
+.reflist{font-size:13.5px}
+.reflist li{margin:5px 0}
+.reflist li:target,.figbox:target,h3:target,h2:target{background:#fef6e7}
+.topo{font-size:12px}
+@media (max-width:760px){.infobox{float:none;width:100%;margin:0 0 16px}}
+@media print{.toc,.topo{display:none}}
+</style>
+</head>
+<body>
+<div class="page">
+
+<header class="site">
+  <div class="kicker">Documentação · Percept LFP Studio</div>
+  <h1>Percept LFP Studio</h1>
+  <p class="subtitle">Documentação e tutorial de uso — para pesquisadores e neurologistas que trabalham com estimulação cerebral profunda (DBS) e potenciais de campo local (LFP). Cada funcionalidade traz a referência científica que inspirou o método.</p>
+</header>
+
+<table class="infobox">
+  <tr><td class="cap" colspan="2">Percept LFP Studio</td></tr>
+  <tr><th>Tipo</th><td>Aplicativo web de arquivo único (PWA), 100% local</td></tr>
+  <tr><th>Entrada</th><td>Session Report em JSON do programador Medtronic Percept™ PC/RC</td></tr>
+  <tr><th>Figuras</th><td>35 figuras interativas em 7 abas</td></tr>
+  <tr><th>Dependências</th><td>Nenhuma — FFT, filtros, estatística e gráficos escritos no próprio repositório</td></tr>
+  <tr><th>Rede</th><td>Zero: nenhum dado sai do navegador</td></tr>
+  <tr><th>Validação</th><td>349 testes automatizados; espelho em R para validação cruzada</td></tr>
+  <tr><th>Aplicativo</th><td><a href="../">abrir o Percept LFP Studio</a></td></tr>
+  <tr><th>Código</th><td><a class="ext" href="https://github.com/pedrobrandao-neurologia/LFP_analysis">github.com/pedrobrandao-neurologia/LFP_analysis</a></td></tr>
+  <tr><th>Status</th><td>Ferramenta de pesquisa e apoio à decisão. <b>Não é dispositivo médico.</b></td></tr>
+</table>
+
+<p>O <b>Percept LFP Studio</b> lê os <i>Session Reports</i> em JSON exportados do programador do neuroestimulador <b>Medtronic Percept™</b> e produz figuras interativas, métricas quantitativas, relatório clínico e exportações prontas para estatística — tudo dentro do navegador, sem instalar nada e sem enviar um único byte a qualquer servidor. Nome, data de nascimento e número de série nunca saem do leitor de arquivo: toda estrutura a jusante recebe apenas um identificador pseudonimizado.</p>
+
+<p>O diferencial declarado do software é a <b>honestidade metodológica</b>: toda métrica derivada de escolha de parâmetro exporta o parâmetro junto com o valor; dado faltante nunca é imputado em silêncio (perda de pacote vira NaN com contabilidade explícita); quando um método tem controvérsia documentada na literatura, a interface oferece a escolha, registra qual foi usada e cita a controvérsia; e o programa prefere dizer <i>“não é possível determinar com este dado”</i> a produzir um número frágil.</p>
+
+<div class="toc">
+<b>Conteúdo</b>
+<ol>
+  <li><a href="#tutorial">Como começar (tutorial)</a></li>
+  <li><a href="#arquitetura">Agudo, crônico e a ponte — a lógica das abas</a></li>
+  <li><a href="#leitura">O que o programa lê do JSON (e o que ele confere)</a></li>
+  <li><a href="#agudo">Aba Agudo — sessão e experimento</a></li>
+  <li><a href="#cronico">Aba Crônico — dias e vida real</a></li>
+  <li><a href="#ponte">Aba Ponte — calibração, aDBS e agenda</a></li>
+  <li><a href="#qualidade">Aba Qualidade — posso confiar neste sinal?</a></li>
+  <li><a href="#coorte">Aba Coorte — vários registros</a></li>
+  <li><a href="#exportacoes">Relatório, exportações e reprodutibilidade</a></li>
+  <li><a href="#privacidade">Privacidade</a></li>
+  <li><a href="#limitacoes">Limitações e avisos</a></li>
+  <li><a href="#referencias">Referências</a></li>
+  <li><a href="#vertambem">Ver também</a></li>
+</ol>
+</div>
+
+<h2 id="tutorial">1 · Como começar (tutorial)</h2>
+<ol>
+  <li><b>Exporte o Session Report em JSON</b> no programador (tablet clínico): ao fim da sessão, escolha o formato <b>JSON</b> — não o PDF. O JSON contém as séries numéricas; o PDF, não.</li>
+  <li><b>Abra o aplicativo</b> (<a href="../">página inicial</a>) em Chrome, Edge ou Safari. Funciona offline depois da primeira visita (é uma PWA). Nenhum dado é enviado a lugar algum.</li>
+  <li><b>Arraste o arquivo JSON</b> para a área indicada — ou vários arquivos do mesmo paciente de uma vez, ou uma pasta inteira (botão <code>+ pasta</code>).</li>
+  <li><b>Comece pela aba Início.</b> Ela faz a triagem: mostra <i>que perguntas este arquivo consegue responder</i> e leva você direto à figura certa. A <b>Matriz de dados</b> na coluna lateral mostra quais modalidades o arquivo contém.</li>
+  <li><b>Escolha o modo.</b> <i>Clínico</i>: as figuras essenciais com leitura em linguagem simples e semáforo de qualidade. <i>Pesquisa</i>: todas as 35 figuras, todos os parâmetros, todas as exportações. O modo muda o que é mostrado, nunca como é calculado.</li>
+  <li><b>Confira a qualidade antes de interpretar.</b> A aba <a href="#qualidade">Qualidade</a> diz se há artefato cardíaco, perda de pacote ou censura do aparelho — e o alarme aparece sozinho quando o problema compromete a leitura.</li>
+  <li><b>Exporte.</b> Relatório em PDF para o prontuário; CSV com cabeçalhos em inglês para R; pacote completo com manifesto de proveniência para o material suplementar de um artigo.</li>
+</ol>
+<div class="nota">Idioma, fuso horário, tema (claro/escuro) e material da interface ficam no cabeçalho. O fuso padrão é o do próprio arquivo; os horários exibidos são locais do paciente.</div>
+
+<h2 id="arquitetura">2 · Agudo, crônico e a ponte — a lógica das abas</h2>
+<p>A navegação não separa “tipos de gráfico”: separa <b>camadas de inferência</b>. Usar um achado de dez minutos de consultório para interpretar uma tendência de seis semanas — ou o contrário — é a falácia recorrente da literatura de Percept, e as abas existem para tornar essa fronteira visível.</p>
+<table>
+  <tr><th></th><th>Registro agudo (aba Agudo)</th><th>Registro crônico (aba Crônico)</th></tr>
+  <tr><th>O que é</th><td>Sinal denso no espectro e esparso no tempo: streaming a 250 Hz durante minutos, numa sessão controlada</td><td>Sinal denso no tempo e esparso no espectro: uma potência de banda a cada 10 minutos, durante semanas, na vida real<sup class="ref"><a href="#r1">[1]</a></sup></td></tr>
+  <tr><th>Inferência</th><td>Experimental — você manipulou algo e mede o efeito</td><td>Observacional — ninguém controlou medicação, sono ou movimento</td></tr>
+  <tr><th>Responde bem</th><td>Onde está o pico beta, bursts, PAC, resposta aguda a rampa ou levodopa</td><td>Ritmo circadiano, flutuação com a medicação em casa, estabilidade do biomarcador</td></tr>
+  <tr><th>Não responde</th><td>Qualquer coisa que exija dias</td><td>Qualquer coisa que exija resolução espectral ou temporal fina</td></tr>
+</table>
+<p>A aba <b>Ponte</b> é onde as duas camadas se encontram: o <a href="#f31">passaporte do biomarcador</a> (o agudo calibra o crônico), a configuração de <a href="#f23">aDBS</a> e a <a href="#f33">agenda da próxima sessão</a> (o crônico devolve perguntas para o agudo).</p>
+
+<h2 id="leitura">3 · O que o programa lê do JSON (e o que ele confere)</h2>
+<p>O leitor de arquivo foi auditado contra o <i>white paper</i> de sensing do fabricante<sup class="ref"><a href="#r1">[1]</a></sup> e trata como documentado, entre outros: <b>valor negativo no Timeline é censura do aparelho</b> (amostra marcada como artefato — vira NaN com contabilidade própria, separada da perda de pacote); os contadores de pacote têm <i>rollover</i> diferente no Percept PC e no RC; os fluxos <code>BrainSenseTimeDomain</code> e <code>BrainSenseLfp</code> têm sequências intercaladas (ignorar isso produz ~49% de falsa perda de pacote); a cadeia de filtros de hardware é 2× passa-baixa 100 Hz + passa-alta fixo 1 Hz + passa-alta configurável 1/10 Hz — com o passa-alta em 10 Hz, delta e teta são eliminados pelo hardware e o programa avisa; a frequência de amostragem efetiva é medida pelos <i>ticks</i>, não assumida<sup class="ref"><a href="#r27">[27]</a></sup>; e a potência do Timeline é a soma das magnitudes ao quadrado numa banda de ≈5 Hz, sem unidade física direta.</p>
+<p>Quando o arquivo declara o modelo do eletrodo, o programa desenha o <b>esquema em escala real</b> (3387, 3389, 3391, SenSight B33005/B33015) com os contatos em uso marcados, a partir dos manuais de implante<sup class="ref"><a href="#r2">[2]</a></sup>. Num eletrodo direcional não existe “contato 1”: o nível expande para os segmentos 1a/1b/1c, como o aparelho de fato os usa. A orientação anatômica dos segmentos nunca é afirmada — ela depende do marcador radiopaco documentado no intraoperatório.</p>
+
+<h2 id="agudo">4 · Aba Agudo — sessão e experimento</h2>
+
+<div class="figbox" id="f1">
+<h4><span class="fid">F1</span>Espectro de potência anotado e varredura do Survey</h4>
+<dl>
+<dt>O que mostra</dt><dd>Todos os pares bipolares do BrainSense Survey de uma vez, em gráfico de cumeeira (<i>ridgeline</i>), ordenados pela força do marcador beta; ao lado, o detalhe do par escolhido com as bandas anotadas.</dd>
+<dt>Como usar</dt><dd>Passe o mouse para identificar a combinação de contatos; clique para abrir o par no detalhe. A ordenação usa a área acima do fundo aperiódico na banda — ela descreve <i>onde o marcador é mais forte</i>, não escolhe o contato de estimulação.</dd>
+<dt>Método e referência</dt><dd>PSD de Welch<sup class="ref"><a href="#r3">[3]</a></sup> com separação do componente aperiódico<sup class="ref"><a href="#r5">[5]</a></sup>; parâmetros do Survey (~20 s por par, bins de 0,98 Hz) conforme o fabricante<sup class="ref"><a href="#r1">[1]</a></sup>.</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f2">
+<h4><span class="fid">F2</span>Decomposição periódico / aperiódico</h4>
+<dl>
+<dt>O que mostra</dt><dd>O espectro separado em fundo 1/f (aperiódico) e picos oscilatórios verdadeiros, com os parâmetros do ajuste.</dd>
+<dt>Como usar</dt><dd>Use antes de comparar potências entre sessões: mudança de potência “bruta” pode ser só mudança do fundo aperiódico, não da oscilação.</dd>
+<dt>Método e referência</dt><dd>Parametrização espectral no espírito do specparam/FOOOF<sup class="ref"><a href="#r5">[5]</a></sup>, reimplementada localmente com R² do ajuste exportado.</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f5">
+<h4><span class="fid">F5</span>Mapa da montagem — canal × frequência</h4>
+<dl>
+<dt>O que mostra</dt><dd>Matriz canal × frequência do Survey inteiro: cada linha é um par bipolar, a cor é a potência.</dd>
+<dt>Como usar</dt><dd>Visão de um relance da topografia espectral — o pico beta “desce” pelos contatos que o flanqueiam.</dd>
+<dt>Método e referência</dt><dd>Representação padrão de varredura de montagem, como nos toolboxes de referência do ecossistema Percept<sup class="ref"><a href="#r23">[23]</a>,<a href="#r24">[24]</a></sup>.</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f6">
+<h4><span class="fid">F6</span>Domínio do tempo — traçado, espectrograma e bursts</h4>
+<dl>
+<dt>O que mostra</dt><dd>O sinal bruto do streaming, o espectrograma e a detecção de bursts de beta sobre o envelope, com o esquema do eletrodo indicando o par gravado.</dd>
+<dt>Como usar</dt><dd>O limiar de burst (padrão: percentil 75 do envelope) é escolha com controvérsia documentada — a interface permite mudá-lo e o valor usado sai em toda exportação. Bursts encostados em lacuna de pacote são marcados truncados e ficam fora das estatísticas de duração.</dd>
+<dt>Método e referência</dt><dd>Análise de bursts por limiar de percentil sobre o envelope, inspirada em Tinkhauser et&nbsp;al.<sup class="ref"><a href="#r7">[7]</a></sup>.</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f7">
+<h4><span class="fid">F7</span>Streaming com estimulação — potência × amplitude</h4>
+<dl>
+<dt>O que mostra</dt><dd>A potência da banda de sensing contra a amplitude de estimulação ao longo do streaming (ex.: rampa de titulação), com catodo e anodo do grupo ativo marcados no eletrodo.</dd>
+<dt>Como usar</dt><dd>A supressão beta dose-dependente é o achado esperado com estimulação eficaz; quedas em amplitudes altas podem ser saturação/artefato — inspecione o bruto na F6.</dd>
+<dt>Método e referência</dt><dd>Supressão do beta pela DBS conforme a literatura de fisiologia subtalâmica<sup class="ref"><a href="#r18">[18]</a></sup>; detalhes de aquisição do fabricante<sup class="ref"><a href="#r1">[1]</a></sup>.</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f12">
+<h4><span class="fid">F12</span>Espectros por tipo de evento</h4>
+<dl>
+<dt>O que mostra</dt><dd>Os espectros dos <i>snapshots</i> (LfpFrequencySnapshotEvents) agrupados pelo tipo de evento marcado pelo paciente.</dd>
+<dt>Como usar</dt><dd>Compare “sintoma X” contra “bem” do mesmo hemisfério. Lembre: o snapshot cobre os 30 s <i>depois</i> do botão, e não guarda o domínio do tempo<sup class="ref"><a href="#r1">[1]</a></sup>.</dd>
+<dt>Método e referência</dt><dd>Espectros por evento conforme a estrutura documentada pelo fabricante<sup class="ref"><a href="#r1">[1]</a></sup>.</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f18">
+<h4><span class="fid">F18</span>Espectro multitaper com intervalo de confiança</h4>
+<dl>
+<dt>O que mostra</dt><dd>O mesmo trecho estimado por Welch e por multitaper (tapers de Slepian/DPSS), com intervalo de confiança por jackknife.</dd>
+<dt>Como usar</dt><dd>Onde os dois métodos concordam, a estimativa é robusta; onde divergem, há vazamento espectral ou pico estreito que o multitaper resolve melhor.</dd>
+<dt>Método e referência</dt><dd>Thomson<sup class="ref"><a href="#r4">[4]</a></sup>; Welch<sup class="ref"><a href="#r3">[3]</a></sup>.</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f19">
+<h4><span class="fid">F19</span>specparam completo — reta ou joelho, largura dos picos, R²</h4>
+<dl>
+<dt>O que mostra</dt><dd>O ajuste completo do modelo espectral: modo aperiódico (reta ou joelho), centro/largura/altura de cada pico e a qualidade do ajuste.</dd>
+<dt>Como usar</dt><dd>Reporte sempre o R² junto com os parâmetros — um pico “encontrado” num ajuste ruim não é um achado.</dd>
+<dt>Método e referência</dt><dd>Donoghue et&nbsp;al.<sup class="ref"><a href="#r5">[5]</a></sup>.</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f20">
+<h4><span class="fid">F20</span>Wavelet de Morlet — escalograma e bursts delimitados</h4>
+<dl>
+<dt>O que mostra</dt><dd>A decomposição tempo-frequência por wavelet de Morlet, com os bursts delimitados sobre o escalograma.</dd>
+<dt>Como usar</dt><dd>Alternativa ao envelope filtrado (Hilbert) para a dinâmica de bursts — a escolha Hilbert × wavelet é controversa na literatura, e a interface oferece as duas e registra qual foi usada.</dd>
+<dt>Método e referência</dt><dd>Torrence &amp; Compo<sup class="ref"><a href="#r6">[6]</a></sup>; bursts como em Tinkhauser et&nbsp;al.<sup class="ref"><a href="#r7">[7]</a></sup>.</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f21">
+<h4><span class="fid">F21</span>Acoplamento fase-amplitude (PAC) e comodulograma</h4>
+<dl>
+<dt>O que mostra</dt><dd>O índice de modulação entre a fase de uma banda lenta (beta) e a amplitude de uma rápida (gama), com comodulograma e significância por surrogados.</dd>
+<dt>Como usar</dt><dd>A checagem de forma de onda é obrigatória: onda beta não senoidal produz PAC espúrio. A figura roda a checagem e diz quando o acoplamento pode ser artefato de forma.</dd>
+<dt>Método e referência</dt><dd>Índice de Tort et&nbsp;al.<sup class="ref"><a href="#r8">[8]</a></sup>; ressalva de forma de onda de Aru et&nbsp;al.<sup class="ref"><a href="#r9">[9]</a></sup>.</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f22">
+<h4><span class="fid">F22</span>Gama finamente sintonizada vs. gama <i>entrained</i> em f<sub>stim</sub>/2</h4>
+<dl>
+<dt>O que mostra</dt><dd>Separa dois fenômenos que caem na mesma faixa: a gama finamente sintonizada (FTG, 60–90 Hz, ligada a discinesia) e a gama <i>entrained</i> na metade da frequência de estimulação.</dd>
+<dt>Como usar</dt><dd>Sem saber a f<sub>stim</sub>, a figura se recusa a classificar — reportar entrained como FTG inverte a conclusão clínica.</dd>
+<dt>Método e referência</dt><dd>Entrainment em f<sub>stim</sub>/2: Swann et&nbsp;al.<sup class="ref"><a href="#r19">[19]</a></sup>; FTG no STN: Wiest et&nbsp;al.<sup class="ref"><a href="#r20">[20]</a></sup>; FTG, discinesia e aDBS: Olaru et&nbsp;al.<sup class="ref"><a href="#r21">[21]</a></sup>; Mathiopoulou et&nbsp;al.<sup class="ref"><a href="#r22">[22]</a></sup>.</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f24">
+<h4><span class="fid">F24</span>Sinal externo — IMU, EMG ou ECG: alinhamento e coerência</h4>
+<dl>
+<dt>O que mostra</dt><dd>Carrega um CSV de sensor externo (acelerômetro, EMG, ECG), alinha ao streaming e calcula coerência LFP × sinal externo.</dd>
+<dt>Como usar</dt><dd>O alinhamento por timestamp tem incerteza mínima de 1 s (resolução do FirstPacketDateTime<sup class="ref"><a href="#r1">[1]</a></sup>); para sincronização fina use o artefato de estimulação como marcador, como no protocolo DBSsync.</dd>
+<dt>Método e referência</dt><dd>Sincronização e fs efetiva conforme Vivien et&nbsp;al.<sup class="ref"><a href="#r27">[27]</a></sup>.</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f30">
+<h4><span class="fid">F30</span>Espectrograma — análise tempo-frequência no padrão do BRAVO</h4>
+<dl>
+<dt>O que mostra</dt><dd>Espectrograma com as convenções de escala do ecossistema Python/scipy (densidade), Welch/STFT/wavelet/autorregressivo, e a emulação do PSD de bordo do aparelho.</dd>
+<dt>Como usar</dt><dd>Use a emulação de bordo quando quiser comparar o streaming com números que o próprio Percept produziria.</dd>
+<dt>Método e referência</dt><dd>Convenções do toolbox BRAVO (Fixel Institute) e do fabricante<sup class="ref"><a href="#r1">[1]</a></sup>.</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f34">
+<h4><span class="fid">F34</span>ODR e features por janela — dinâmica multi-banda</h4>
+<dl>
+<dt>O que mostra</dt><dd>O <i>Oscillatory Dynamics Ratio</i> — ODR = (θ × γ<sub>pico</sub>)/β<sub>baixo</sub> — por janela, nas duas formulações (log-aditiva e literal, com a divergência entre elas reportada), a variação espectral (CV do envelope) e a coerência inter-STN com os três confundidores de fase zero medidos.</dd>
+<dt>Como usar</dt><dd>O pico individual de gama passa por peneira de proeminência e pela checagem de entrainment antes de entrar no ODR; sem gama endógena identificável, a figura diz isso em vez de usar um pico falso.</dd>
+<dt>Método e referência</dt><dd>Habets, Merk, Mathiopoulou et&nbsp;al.<sup class="ref"><a href="#r34">[34]</a></sup>, restrito ao que o registro do Percept sustenta sozinho (sem SVD espacial — declarado); coerência imaginária como discriminante de condução de volume<sup class="ref"><a href="#r11">[11]</a></sup>.</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f35">
+<h4><span class="fid">F35</span>MRDS — (des)sincronização relacionada ao movimento</h4>
+<dl>
+<dt>O que mostra</dt><dd>O contraste movimento × repouso por banda — MRDS = (P<sub>mov</sub> − P<sub>rep</sub>)/P<sub>rep</sub> — e o segundo nível ΔMRDS = pós − basal, que é onde modulação motora reprodutível (inclusive artefato) cancela.</dd>
+<dt>Como usar</dt><dd>O JSON não tem rótulo de tarefa: você declara quais gravações (ou janelas) são repouso e quais são movimento, e a declaração entra na proveniência. A decomposição exata 1+MRDS = (1+relativo)×(1+total) separa mudança de banda larga (compatível com artefato) de mudança específica de banda.</dd>
+<dt>Método e referência</dt><dd>Protocolo de Alves et&nbsp;al.<sup class="ref"><a href="#r35">[35]</a></sup> (Welch 4 s, 50%, NFFT 1000 = 0,25 Hz exatos); estatística pareada por permutação exata com o piso de p declarado.</dd>
+</dl>
+</div>
+
+<h2 id="cronico">5 · Aba Crônico — dias e vida real</h2>
+
+<div class="figbox" id="f8">
+<h4><span class="fid">F8</span>Timeline crônico — série multi-dia ou um painel por dia</h4>
+<dl>
+<dt>O que mostra</dt><dd>A potência do BrainSense Timeline (uma amostra a cada 10 min) como gráfico contínuo multi-dia ou como um painel por dia civil (0h–23h59), todos no mesmo eixo de horas.</dd>
+<dt>Como usar</dt><dd>Contínuo para deriva e degraus entre dias; dia a dia para o padrão diurno. Dia sem amostra aparece como painel vazio (ausência é informação — pode ser sobrescrita pelo limite de 60/35 dias do aparelho<sup class="ref"><a href="#r1">[1]</a></sup>); o traçado nunca cruza lacunas; a cobertura de cada dia é escrita na legenda.</dd>
+<dt>Método e referência</dt><dd>Estrutura do Timeline conforme o fabricante<sup class="ref"><a href="#r1">[1]</a></sup>; exclusão de outliers por mediana ± k·MAD.</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f9">
+<h4><span class="fid">F9</span>Ritmo circadiano — heatmap, perfil polar e cosinor</h4>
+<dl>
+<dt>O que mostra</dt><dd>Heatmap dia × hora com detrending diário, perfil polar e ajuste cosinor (MESOR, amplitude, acrofase) com IC por bootstrap.</dd>
+<dt>Como usar</dt><dd>A hora do dia explica grande parte da variância do beta crônico — sono derruba o beta<sup class="ref"><a href="#r29">[29]</a>,<a href="#r30">[30]</a></sup>. Ajuste o detrending e a escala de cor; ambos mudam o que o olho vê e a figura declara a escolha.</dd>
+<dt>Método e referência</dt><dd>Cosinor<sup class="ref"><a href="#r17">[17]</a></sup>; fisiologia circadiana do beta subtalâmico<sup class="ref"><a href="#r29">[29]</a>,<a href="#r30">[30]</a></sup>.</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f32">
+<h4><span class="fid">F32</span>Blocos de configuração e pontos de mudança</h4>
+<dl>
+<dt>O que mostra</dt><dd>A linha do tempo segmentada em blocos de configuração comparável (mesmo contato, banda, filtros) e a detecção de pontos de mudança de nível dentro de cada bloco.</dd>
+<dt>Como usar</dt><dd>O programa <b>se recusa a traçar uma linha contínua atravessando uma troca de configuração</b> — “seis semanas atrás vs. hoje” através dessa fronteira é diferença de instrumentação, não clínica. A permutação é por blocos, preservando a autocorrelação AR(1) da série de 10 min.</dd>
+<dt>Método e referência</dt><dd>Inferência por permutação<sup class="ref"><a href="#r12">[12]</a></sup> adaptada a séries autocorrelacionadas; metadados de configuração do fabricante<sup class="ref"><a href="#r1">[1]</a></sup>.</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f13">
+<h4><span class="fid">F13</span>Estados ON/OFF pela amplitude do beta</h4>
+<dl>
+<dt>O que mostra</dt><dd>A série (streaming ou Timeline) classificada em dois estados por k-médias 1-D: beta baixo = ON medicamentoso, beta alto = OFF, com limiar e durações.</dd>
+<dt>Como usar</dt><dd>O coeficiente de bimodalidade de Sarle diz se existem mesmo dois estados; com BC baixo a divisão é arbitrária e a figura avisa. É um correlato, não a verdade clínica.</dd>
+<dt>Método e referência</dt><dd>Flutuação do beta com o ciclo de medicação em registro crônico<sup class="ref"><a href="#r18">[18]</a>,<a href="#r29">[29]</a></sup>.</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f10">
+<h4><span class="fid">F10</span>Resposta alinhada a evento</h4>
+<dl>
+<dt>O que mostra</dt><dd>A trajetória média do beta do Timeline ao redor de eventos marcados (medicação, sintoma), com IC.</dd>
+<dt>Como usar</dt><dd>Defina a janela pré/pós; o n de eventos e a dispersão saem junto — três eventos não fazem uma curva confiável, e a figura mostra isso.</dd>
+<dt>Método e referência</dt><dd>Análise alinhada a evento com inferência por permutação<sup class="ref"><a href="#r12">[12]</a></sup>.</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f25">
+<h4><span class="fid">F25</span>Actograma e banda-controle — o ritmo é específico?</h4>
+<dl>
+<dt>O que mostra</dt><dd>Actograma em duplo-plot (48 h por linha) com deriva de fase, métricas não paramétricas (IS/IV) e a comparação do ritmo do marcador contra uma banda-controle.</dd>
+<dt>Como usar</dt><dd>Se o “ritmo do beta” aparece igual na banda-controle, o que você está vendo é movimento/artefato, não fisiologia da banda. A comparação usa permutação de cluster.</dd>
+<dt>Método e referência</dt><dd>IS/IV de Witting et&nbsp;al.<sup class="ref"><a href="#r15">[15]</a></sup> e Van Someren et&nbsp;al.<sup class="ref"><a href="#r16">[16]</a></sup>; permutação de cluster de Maris &amp; Oostenveld<sup class="ref"><a href="#r10">[10]</a></sup>.</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f28">
+<h4><span class="fid">F28</span>Matriz hora × dia — estados ON/OFF ligados à sua integral</h4>
+<dl>
+<dt>O que mostra</dt><dd>A matriz hora × dia dos estados ON/OFF detectados, com barras empilhadas por dia e a grade do diário de Hauser quando houver diário importado.</dd>
+<dt>Como usar</dt><dd>Compare o padrão detectado no LFP com o diário do paciente célula a célula — concordância e discordância são ambas informativas.</dd>
+<dt>Método e referência</dt><dd>Estados por k-médias com verificação de bimodalidade; flutuações em registro crônico<sup class="ref"><a href="#r29">[29]</a></sup>.</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f29">
+<h4><span class="fid">F29</span>Resposta à levodopa alinhada às tomadas</h4>
+<dl>
+<dt>O que mostra</dt><dd>A curva média do beta ao redor das tomadas de medicação marcadas no aparelho, com IC por bootstrap e significância por surrogados de deslocamento circular.</dd>
+<dt>Como usar</dt><dd>A queda do beta após a dose é o padrão esperado; a magnitude é candidata a biomarcador de resposta. Surrogados circulares preservam o ritmo diurno na hipótese nula.</dd>
+<dt>Método e referência</dt><dd>Queda do beta com levodopa correlacionada à melhora clínica: Kühn et&nbsp;al.<sup class="ref"><a href="#r18">[18]</a></sup>.</dd>
+</dl>
+</div>
+
+<h2 id="ponte">6 · Aba Ponte — calibração, aDBS e agenda</h2>
+
+<div class="figbox" id="f31">
+<h4><span class="fid">F31</span>Passaporte do biomarcador</h4>
+<dl>
+<dt>O que mostra</dt><dd>O documento-síntese que a sessão aguda produz para a camada crônica: qual par bipolar, qual pico, qual banda, com que qualidade — e o que disso o crônico consegue acompanhar.</dd>
+<dt>Como usar</dt><dd>É o elo descendente da hierarquia: sem passaporte, a série crônica é potência numa banda sem pedigree. Inclui o esquema do eletrodo com o par de sensing e os contatos de estimulação.</dd>
+<dt>Método e referência</dt><dd>Itens no espírito do checklist de reporte para aDBS/sensing de Swinnen et&nbsp;al.<sup class="ref"><a href="#r28">[28]</a></sup>.</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f11">
+<h4><span class="fid">F11</span>Distribuição da potência e limiares de aDBS</h4>
+<dl>
+<dt>O que mostra</dt><dd>O histograma da potência crônica com os limiares configurados no aparelho e o percentual do tempo abaixo/entre/acima.</dd>
+<dt>Como usar</dt><dd>Primeiro diagnóstico de limiares mal posicionados: se o sinal quase nunca cruza um limiar, aquele limiar não está fazendo nada.</dd>
+<dt>Método e referência</dt><dd>Leitura dos <code>Thresholds</code>/eventos do aparelho<sup class="ref"><a href="#r1">[1]</a></sup>; prática de limiares percentílicos<sup class="ref"><a href="#r31">[31]</a></sup>.</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f23">
+<h4><span class="fid">F23</span>aDBS — elegibilidade e simulador de limiar</h4>
+<dl>
+<dt>O que mostra</dt><dd>Um checklist de elegibilidade para aDBS a partir do que o registro mostra (pico identificável, SNR, artefatos) e um simulador simples de limiar sobre o dado disponível.</dd>
+<dt>Como usar</dt><dd>É o documento que se leva para a consulta de programação — cada item diz o que foi verificado e o que não é verificável com este arquivo.</dd>
+<dt>Método e referência</dt><dd>Critérios de elegibilidade e prevalência conforme ADAPT-START<sup class="ref"><a href="#r32">[32]</a></sup>; checklist de reporte de Swinnen et&nbsp;al.<sup class="ref"><a href="#r28">[28]</a></sup>.</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f36">
+<h4><span class="fid">F36</span>Assistente de limiares de aDBS (TIDAL-DT)</h4>
+<dl>
+<dt>O que mostra</dt><dd>Proposta automatizada e auditável dos limiares inferior e superior para o modo <i>dual threshold</i>, derivada do Timeline crônico: limpeza robusta (Hampel, dias excluídos listados), vigília sem actigrafia (cosinor + change-point), mistura gaussiana com seleção por BIC e d de Ashman, e simulação do controlador com auto-ajuste.</dd>
+<dt>Como usar</dt><dd>Os limites de corrente (mA) são entrada obrigatória do clínico — decisão de segurança que o módulo não automatiza. Menos de 3 dias utilizáveis bloqueia a proposta. Há botão de <i>self-test</i> com dataset sintético e validação cruzada contra uma implementação independente em R (aceite &lt; 2%). <a href="../docs/tidal.md">Documentação técnica completa</a>.</dd>
+<dt>Método e referência</dt><dd>Percentis diurnos do Timeline como método de referência: Busch et&nbsp;al.<sup class="ref"><a href="#r31">[31]</a></sup>; exclusão do sono<sup class="ref"><a href="#r29">[29]</a>,<a href="#r30">[30]</a></sup>; exclusão de dias não representativos e mínimo de 3–5 dias: ADAPT-START<sup class="ref"><a href="#r32">[32]</a></sup>; dinâmica do controlador: Stanslaski et&nbsp;al.<sup class="ref"><a href="#r33">[33]</a></sup>.</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f33">
+<h4><span class="fid">F33</span>Agenda da próxima sessão</h4>
+<dl>
+<dt>O que mostra</dt><dd>O elo ascendente da hierarquia: cada anomalia que o crônico observou e não explica vira um protocolo agudo proposto, com “o que ficaria decidido” explícito.</dd>
+<dt>Como usar</dt><dd>Oito verificadores (assimetria, dose, circadiano, deriva, configuração, passaporte, cobertura, ritmo) geram itens priorizados. Nenhum item contém verbo de conduta clínica — a agenda propõe medições, não tratamentos.</dd>
+<dt>Método e referência</dt><dd>Desenho próprio do software, sobre a lógica agudo/crônico da literatura de sensing crônico<sup class="ref"><a href="#r29">[29]</a>,<a href="#r31">[31]</a></sup>.</dd>
+</dl>
+</div>
+
+<h2 id="qualidade">7 · Aba Qualidade — posso confiar neste sinal?</h2>
+
+<div class="figbox" id="f17">
+<h4><span class="fid">F17</span>Painel de controle de qualidade</h4>
+<dl>
+<dt>O que mostra</dt><dd>Um painel único com todos os itens de QC: perda de pacote, censura, artefato cardíaco, filtros efetivos, fs efetiva, impedâncias — cada um verde/amarelo/vermelho, e “não verificável” quando o arquivo não permite verificar.</dd>
+<dt>Como usar</dt><dd>Passe por aqui antes de qualquer conclusão. O alarme automático (ECG, passa-alta em 10 Hz, censura alta) também aparece nas próprias figuras afetadas.</dd>
+<dt>Método e referência</dt><dd>Limites de impedância e semântica de censura do fabricante<sup class="ref"><a href="#r1">[1]</a></sup>; detecção de ECG conforme a linha do perceive<sup class="ref"><a href="#r23">[23]</a>,<a href="#r25">[25]</a></sup>.</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f15">
+<h4><span class="fid">F15</span>Limpeza de artefato cardíaco — três métodos e validação</h4>
+<dl>
+<dt>O que mostra</dt><dd>Remoção do artefato de ECG por três métodos (template/QRS em duas passagens, SVD, interpolação), com comparação lado a lado e métricas de validação.</dd>
+<dt>Como usar</dt><dd>A literatura recomenda <b>prevenir</b> a contaminação (escolha de par bipolar) em vez de corrigi-la<sup class="ref"><a href="#r26">[26]</a></sup>; quando corrigir é inevitável, compare os métodos e exporte qual foi usado.</dd>
+<dt>Método e referência</dt><dd>Hammer et&nbsp;al.<sup class="ref"><a href="#r25">[25]</a></sup> (caracterização do artefato no Percept); comparação de métodos: Stam et&nbsp;al.<sup class="ref"><a href="#r26">[26]</a></sup>; SVD e picos R em duas passagens como no DBSsync<sup class="ref"><a href="#r27">[27]</a></sup>.</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f16">
+<h4><span class="fid">F16</span>QC — reprodutibilidade do pico entre registros</h4>
+<dl>
+<dt>O que mostra</dt><dd>A frequência e a potência do pico beta comparadas entre todos os registros carregados do mesmo paciente, com ICC.</dd>
+<dt>Como usar</dt><dd>Um biomarcador que muda de frequência a cada sessão não é um biomarcador. ICC interpretado pelas faixas convencionais.</dd>
+<dt>Método e referência</dt><dd>ICC de Shrout &amp; Fleiss<sup class="ref"><a href="#r13">[13]</a></sup>, faixas de Koo &amp; Li<sup class="ref"><a href="#r14">[14]</a></sup>.</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f3">
+<h4><span class="fid">F3</span>Integridade de eletrodos</h4>
+<dl>
+<dt>O que mostra</dt><dd>As impedâncias de todos os contatos, com os limites do fabricante (curto &lt;250 Ω no eletrodo 1×4, &lt;350 Ω no SenSight; aberto &gt;10 kΩ) e o esquema bilateral dos eletrodos.</dd>
+<dt>Como usar</dt><dd>Canal ausente do Survey costuma ser canal excluído por impedância — a figura explica a ausência em vez de deixá-la muda.</dd>
+<dt>Método e referência</dt><dd>Limites documentados pelo fabricante<sup class="ref"><a href="#r1">[1]</a></sup>; geometria dos manuais de implante<sup class="ref"><a href="#r2">[2]</a></sup>.</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f4">
+<h4><span class="fid">F4</span>Linha do tempo da sessão e parâmetros</h4>
+<dl>
+<dt>O que mostra</dt><dd>A sequência de eventos da sessão (grupos, mudanças de terapia, testes) e os parâmetros efetivos de cada gravação.</dd>
+<dt>Como usar</dt><dd>Responde “o que exatamente estava ligado quando este trecho foi gravado?” — pré-requisito de qualquer comparação dentro da sessão.</dd>
+<dt>Método e referência</dt><dd>EventLogs/GroupSettings conforme o fabricante<sup class="ref"><a href="#r1">[1]</a></sup>.</dd>
+</dl>
+</div>
+
+<h2 id="coorte">8 · Aba Coorte — vários registros</h2>
+
+<div class="figbox" id="f27">
+<h4><span class="fid">F27</span>Coorte — todos os registros lado a lado</h4>
+<dl>
+<dt>O que mostra</dt><dd>Todos os arquivos carregados (vários pacientes) lado a lado: espectros, métricas-chave e disponibilidade de modalidades.</dd>
+<dt>Como usar</dt><dd>Para análise de grupo, exporte o CSV de coorte e faça a estatística em R — o programa mostra o dado, não esconde a inferência dentro de um botão.</dd>
+<dt>Método e referência</dt><dd>Comparabilidade condicionada aos blocos de configuração (ver <a href="#f32">F32</a>).</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f26">
+<h4><span class="fid">F26</span>Longitudinal — impedância, confiabilidade e uso do aparelho</h4>
+<dl>
+<dt>O que mostra</dt><dd>A evolução das impedâncias, da bateria e do uso do sensing ao longo de sessões sucessivas do mesmo paciente.</dd>
+<dt>Como usar</dt><dd>Deriva de impedância explica parte da deriva de potência — olhe as duas juntas antes de atribuir mudança ao cérebro.</dd>
+<dt>Método e referência</dt><dd>Limites e semântica do fabricante<sup class="ref"><a href="#r1">[1]</a></sup>.</dd>
+</dl>
+</div>
+
+<h2 id="exportacoes">9 · Relatório, exportações e reprodutibilidade</h2>
+<ul>
+  <li><b>Relatório clínico em PDF</b> — uma página com as figuras essenciais, leitura em linguagem simples e glossário; gerado pelo próprio software, igual em qualquer navegador.</li>
+  <li><b>CSV para R</b> — métricas agudas e crônicas com <b>cabeçalhos em inglês</b> e, em cada linha, os parâmetros que produziram o número (janela, limiar, percentil, fuso). Blocos de metadados comentados com <code>#</code>.</li>
+  <li><b>Manifesto de proveniência</b> — todos os parâmetros efetivos da análise, com hash estável: a mesma análise produz o mesmo manifesto, e qualquer mudança de parâmetro muda o hash.</li>
+  <li><b>Checklist PERCEPT-REPORT</b> — os itens mínimos de reporte para um artigo com dados de Percept (inspirado no checklist de Swinnen et&nbsp;al.<sup class="ref"><a href="#r28">[28]</a></sup>), preenchidos automaticamente a partir da proveniência, em Markdown e DOCX.</li>
+  <li><b>Pacote completo (.zip)</b> — métricas, EDF, estrutura BIDS-like (na linha do perceive<sup class="ref"><a href="#r23">[23]</a></sup>), manifesto, checklist e todas as figuras em PNG.</li>
+  <li><b>Espelhos em R</b> — <code>R/percept_lfp.R</code> (leitura e circadiano) e <code>R/tidal_dt.R</code> (TIDAL-DT função a função, com validação cruzada automática no CI, aceite &lt; 2%).</li>
+</ul>
+
+<h2 id="privacidade">10 · Privacidade</h2>
+<p>Nenhum dado sai do navegador: não há servidor, telemetria, CDN ou fonte externa. Nome, data de nascimento, PatientId e número de série do neuroestimulador são descartados na borda do leitor — nenhuma exportação, log ou mensagem de erro contém identificador direto; todo o resto do programa vê apenas um <code>subject_id</code> pseudonimizado. As preferências locais (idioma, tema) ficam no armazenamento do navegador e nunca incluem dado de paciente.</p>
+
+<h2 id="limitacoes">11 · Limitações e avisos</h2>
+<div class="aviso"><b>Não é dispositivo médico.</b> O Percept LFP Studio é ferramenta de pesquisa e apoio à decisão. Nenhum número produzido aqui substitui o julgamento clínico nem o software regulado do fabricante. Propostas de limiares (F23, F36) exigem revisão do clínico, confirmação em consulta e refinamento iterativo pela resposta clínica.</div>
+<ul>
+  <li>A potência do Timeline não tem unidade física direta e sua escala não é comparável entre configurações de sensing diferentes<sup class="ref"><a href="#r1">[1]</a></sup>.</li>
+  <li>Os dois passa-baixas de 100 Hz do aparelho atenuam a banda gama de forma crescente — gama medida aqui é subestimada por projeto<sup class="ref"><a href="#r1">[1]</a></sup>.</li>
+  <li>Streaming de consultório não representa o beta de longo prazo — para limiares crônicos, use o Timeline<sup class="ref"><a href="#r31">[31]</a></sup>.</li>
+  <li>Sem sinal externo sincronizado, correlatos de tarefa/movimento dependem de declaração do analista (ver <a href="#f35">F35</a>).</li>
+</ul>
+
+<h2 id="referencias">12 · Referências</h2>
+<ol class="reflist">
+  <li id="r1">Medtronic. <i>Percept™ (PC and RC) Neurostimulators with BrainSense™ Technology — DBS Sensing White Paper.</i> UC202012929cEN, FY24. (Auditoria completa do software contra este documento em <a href="../docs/auditoria-whitepaper.md">docs/auditoria-whitepaper.md</a>.)</li>
+  <li id="r2">Medtronic. Manuais de implante dos eletrodos DBS 3387/3389 (2020) e SenSight™ B33005/B33015 (2021).</li>
+  <li id="r3">Welch PD. The use of fast Fourier transform for the estimation of power spectra. <i>IEEE Trans Audio Electroacoust</i> 1967;15:70–73. <a class="ext" href="https://doi.org/10.1109/TAU.1967.1161901">doi:10.1109/TAU.1967.1161901</a></li>
+  <li id="r4">Thomson DJ. Spectrum estimation and harmonic analysis. <i>Proc IEEE</i> 1982;70:1055–1096. <a class="ext" href="https://doi.org/10.1109/PROC.1982.12433">doi:10.1109/PROC.1982.12433</a></li>
+  <li id="r5">Donoghue T, et al. Parameterizing neural power spectra into periodic and aperiodic components. <i>Nat Neurosci</i> 2020;23:1655–1665. <a class="ext" href="https://doi.org/10.1038/s41593-020-00744-x">doi:10.1038/s41593-020-00744-x</a></li>
+  <li id="r6">Torrence C, Compo GP. A practical guide to wavelet analysis. <i>Bull Am Meteorol Soc</i> 1998;79:61–78.</li>
+  <li id="r7">Tinkhauser G, et al. Beta burst dynamics in Parkinson's disease OFF and ON dopaminergic medication. <i>Brain</i> 2017;140:2968–2981. <a class="ext" href="https://doi.org/10.1093/brain/awx252">doi:10.1093/brain/awx252</a></li>
+  <li id="r8">Tort ABL, et al. Measuring phase-amplitude coupling between neuronal oscillations. <i>J Neurophysiol</i> 2010;104:1195–1210. <a class="ext" href="https://doi.org/10.1152/jn.00106.2010">doi:10.1152/jn.00106.2010</a></li>
+  <li id="r9">Aru J, et al. Untangling cross-frequency coupling in neuroscience. <i>Curr Opin Neurobiol</i> 2015;31:51–61.</li>
+  <li id="r10">Maris E, Oostenveld R. Nonparametric statistical testing of EEG- and MEG-data. <i>J Neurosci Methods</i> 2007;164:177–190. <a class="ext" href="https://doi.org/10.1016/j.jneumeth.2007.03.024">doi:10.1016/j.jneumeth.2007.03.024</a></li>
+  <li id="r11">Nolte G, et al. Identifying true brain interaction from EEG data using the imaginary part of coherency. <i>Clin Neurophysiol</i> 2004;115:2292–2307. <a class="ext" href="https://doi.org/10.1016/j.clinph.2004.04.029">doi:10.1016/j.clinph.2004.04.029</a></li>
+  <li id="r12">Ernst MD. Permutation methods: a basis for exact inference. <i>Stat Sci</i> 2004;19:676–685.</li>
+  <li id="r13">Shrout PE, Fleiss JL. Intraclass correlations: uses in assessing rater reliability. <i>Psychol Bull</i> 1979;86:420–428.</li>
+  <li id="r14">Koo TK, Li MY. A guideline of selecting and reporting intraclass correlation coefficients. <i>J Chiropr Med</i> 2016;15:155–163.</li>
+  <li id="r15">Witting W, et al. Alterations in the circadian rest-activity rhythm in aging and Alzheimer's disease. <i>Biol Psychiatry</i> 1990;27:563–572.</li>
+  <li id="r16">Van Someren EJW, et al. Bright light therapy: improved sensitivity to its effects on rest-activity rhythms. <i>Chronobiol Int</i> 1999;16:505–518.</li>
+  <li id="r17">Cornelissen G. Cosinor-based rhythmometry. <i>Theor Biol Med Model</i> 2014;11:16. <a class="ext" href="https://doi.org/10.1186/1742-4682-11-16">doi:10.1186/1742-4682-11-16</a></li>
+  <li id="r18">Kühn AA, et al. Reduction in subthalamic 8–35 Hz oscillatory activity correlates with clinical improvement in Parkinson's disease. <i>Eur J Neurosci</i> 2006;23:1956–1960. <a class="ext" href="https://doi.org/10.1111/j.1460-9568.2006.04717.x">doi:10.1111/j.1460-9568.2006.04717.x</a></li>
+  <li id="r19">Swann NC, et al. Chronic multisite brain recordings from a totally implantable bidirectional neural interface. <i>J Neural Eng</i> 2018;15:046006 (gama entrained em f<sub>stim</sub>/2).</li>
+  <li id="r20">Wiest C, et al. Finely-tuned gamma oscillations in the subthalamic nucleus. <i>Neurobiol Dis</i> 2021;152:105280.</li>
+  <li id="r21">Olaru M, et al. Motor network gamma oscillations, dyskinesia and adaptive DBS. <i>eLife</i> 2024;13:e92135.</li>
+  <li id="r22">Mathiopoulou V, et al. <i>Nat Commun</i> 2025;16:2956 (gama finamente sintonizada em registro crônico).</li>
+  <li id="r23">Neumann WJ, et al. (grupo Charité) — toolbox <i>perceive</i> para o Percept: perda de pacote, interpolação de QRS, saída BIDS-like. <i>Brain Stimul</i> 2021. <a class="ext" href="https://github.com/neuromodulation/perceive">github.com/neuromodulation/perceive</a></li>
+  <li id="r24">Thenaisie Y, et al. Towards adaptive deep brain stimulation: clinical and technical notes on a novel commercial device for chronic brain sensing. <i>J Neural Eng</i> 2021;18:042002 (Percept Toolbox; <code>correct4MissingSamples</code>).</li>
+  <li id="r25">Hammer LH, et al. Artifact characterization of the Percept PC. <i>Stereotact Funct Neurosurg</i> 2022;100:168–183.</li>
+  <li id="r26">Stam MJ, et al. A comparison of methods to suppress electrocardiographic artifacts in local field potential recordings. <i>Clin Neurophysiol</i> 2023;146:147–161.</li>
+  <li id="r27">Vivien J, et al. DBSsync: sincronização por artefato de estimulação, picos R em duas passagens, SVD e fs efetiva no Percept. <i>npj Parkinsons Dis</i> 2026;12:151.</li>
+  <li id="r28">Swinnen BEKS, et al. Checklist de reporte para estudos de sensing/aDBS. <i>J Neural Eng</i> 2025;22:014001.</li>
+  <li id="r29">van Rheede JJ, et al. Diurnal modulation of subthalamic beta oscillatory power in Parkinson's disease patients during deep brain stimulation. <i>npj Parkinsons Dis</i> 2022;8:88. <a class="ext" href="https://doi.org/10.1038/s41531-022-00350-7">doi:10.1038/s41531-022-00350-7</a></li>
+  <li id="r30">Yin Z, et al. <i>Nat Commun</i> 2023 (queda do beta no sono em registro crônico). <a class="ext" href="https://doi.org/10.1038/s41467-023-41128-6">doi:10.1038/s41467-023-41128-6</a></li>
+  <li id="r31">Busch JL, et al. Percentis diurnos do Timeline como método de configuração de limiares de aDBS. <i>npj Parkinsons Dis</i> 2025;11:264. <a class="ext" href="https://doi.org/10.1038/s41531-025-01124-7">doi:10.1038/s41531-025-01124-7</a></li>
+  <li id="r32">Cascino et&nbsp;al. (ADAPT-START). Elegibilidade e configuração inicial de aDBS na prática. <i>npj Parkinsons Dis</i> 2026. <a class="ext" href="https://doi.org/10.1038/s41531-026-01269-z">doi:10.1038/s41531-026-01269-z</a></li>
+  <li id="r33">Stanslaski S, et al. Dinâmica do controlador de aDBS do Percept (disparo &gt;1,2 s; rampas ~2,5/5 min; passos 0,1/0,01 mA). <i>npj Parkinsons Dis</i> 2024. <a class="ext" href="https://doi.org/10.1038/s41531-024-00772-5">doi:10.1038/s41531-024-00772-5</a></li>
+  <li id="r34">Habets JGV, Merk T, Mathiopoulou V, et al. Movement dependent neural substates within levodopa-induced dyskinesia in Parkinson's disease. <i>Brain</i> 2026. <a class="ext" href="https://doi.org/10.1093/brain/awag256">doi:10.1093/brain/awag256</a></li>
+  <li id="r35">Alves ALM, et al. Transcutaneous spinal magnetic stimulation affects subthalamic activity in Parkinson's disease. <i>Mov Disord</i> 2025;40:2543–2545. <a class="ext" href="https://doi.org/10.1002/mds.70035">doi:10.1002/mds.70035</a></li>
+</ol>
+
+<h2 id="vertambem">13 · Ver também</h2>
+<ul>
+  <li><a href="../">O aplicativo</a> · <a href="../docs/arquitetura.md">arquitetura do código</a> · <a href="../docs/auditoria-whitepaper.md">auditoria contra o white paper</a> · <a href="../docs/odr.md">ODR</a> · <a href="../docs/mrds.md">MRDS</a> · <a href="../docs/tidal.md">TIDAL-DT</a></li>
+  <li>Toolboxes do ecossistema Percept (leitura de arquitetura, não dependência): <a class="ext" href="https://github.com/neuromodulation/perceive">perceive</a> · Percept Toolbox (Thenaisie) · DBScope · BRAVO (Fixel Institute) · <a class="ext" href="https://github.com/neuromodulation/py_neuromodulation">py_neuromodulation</a></li>
+</ul>
+
+<p class="topo"><a href="#top" onclick="window.scrollTo(0,0);return false">↑ voltar ao topo</a> · Esta página é gerada do repositório e publicada junto com o aplicativo no GitHub Pages. Ferramenta de pesquisa — não é dispositivo médico.</p>
+
+</div>
+</body>
+</html>
