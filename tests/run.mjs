@@ -4947,6 +4947,127 @@ sec('wiki: documentação publicada junto com o aplicativo');
   });
 }
 
+/* ========================================================================= */
+sec('sugestões clínicas: percentis de vigília, vídeo dos snapshots, Survey longitudinal');
+{
+  const txt = n => {
+    let s = (n.textContent || '') + ' ' + (n.innerHTML || '');
+    (n.children || []).forEach(c => { s += ' ' + txt(c); });
+    return s;
+  };
+  const arias = n => {
+    const out = [];
+    const varre = x => { out.push((x.attrs && x.attrs['aria-label']) || ''); (x.children || []).forEach(varre); };
+    varre(n); return out;
+  };
+
+  t('wakePercentiles: o agregado é exatamente o percentil do pool de vigília', () => {
+    const syn = C.TIDAL.syntheticTimeline({ days: 14 });
+    const rows = syn.rows.map(r => ({ t: r.t, lfp: r.lfp }));
+    const r = C.wakePercentiles(rows, 0, { lastDays: 0, kMad: 4 });
+    assert(r.ok, r.reason);
+    /* recomputa o pool independentemente, com a MESMA vigília detectada */
+    const kept = C.removeOutliersMAD(rows, 'lfp', 4).kept.filter(x => isFinite(x.lfp) && x.lfp >= 0);
+    const pool = kept.filter(x => C.TIDAL.inWake(C.localHour(x.t, 0), r.wake.wake)).map(x => x.lfp);
+    assert(Math.abs(r.aggregate.p25 - C.quantile(pool, .25)) < 0.06, `P25 ${r.aggregate.p25} ≠ ${C.quantile(pool, .25)}`);
+    assert(Math.abs(r.aggregate.p75 - C.quantile(pool, .75)) < 0.06, `P75 ${r.aggregate.p75} ≠ ${C.quantile(pool, .75)}`);
+    assert(r.aggregate.p25 < r.aggregate.p50 && r.aggregate.p50 < r.aggregate.p75, 'percentis fora de ordem');
+    assert(Math.abs(r.wake.wake[0] - 8) <= 1 && Math.abs(r.wake.wake[1] - 23) <= 1, `vigília ${r.wake.wake}`);
+    return `P25/P50/P75 = ${r.aggregate.p25}/${r.aggregate.p50}/${r.aggregate.p75} sobre ${r.aggregate.n} amostras de vigília`;
+  });
+
+  t('a janela de 7 dias usa os ÚLTIMOS 7, e a vigília fixa do usuário é respeitada', () => {
+    const syn = C.TIDAL.syntheticTimeline({ days: 14 });
+    const rows = syn.rows.map(r => ({ t: r.t, lfp: r.lfp }));
+    const r7 = C.wakePercentiles(rows, 0, { lastDays: 7 });
+    assert(r7.aggregate.nDays === 7, `janela de 7 veio com ${r7.aggregate.nDays} dias`);
+    const rTudo = C.wakePercentiles(rows, 0, { lastDays: 0 });
+    assert(r7.aggregate.from > rTudo.aggregate.from, 'a janela de 7 não pegou os últimos dias');
+    assert(r7.aggregate.to === rTudo.aggregate.to, 'a janela de 7 não termina no último dia');
+    const rFixa = C.wakePercentiles(rows, 0, { lastDays: 0, wake: [10, 20] });
+    assert(rFixa.wake.wake[0] === 10 && rFixa.wake.wake[1] === 20, 'a vigília fixa foi ignorada');
+    assert(/user-set/.test(rFixa.wake.method), 'a origem da vigília fixa não foi declarada');
+    /* registro curto demais: recusa com motivo, não número frágil */
+    const curto = rows.filter(r2 => r2.t < rows[0].t + 864e5);
+    const rc = C.wakePercentiles(curto, 0, {});
+    assert(!rc.ok && /dia/.test(rc.reason), 'registro de 1 dia não foi recusado');
+    return `últimos 7: ${r7.aggregate.from} → ${r7.aggregate.to} · vigília fixa 10–20 h respeitada · 1 dia recusado`;
+  });
+
+  t('F37 mostra as linhas agregadas P25/P75, a estabilidade e a fonte do método', () => {
+    const d = H.ds();
+    const fig = H.FIGURES.find(x => x.id === 'F37');
+    assert(fig && fig.has(d), 'F37 sem dados no exemplo');
+    H.S.opts.F37 = {};
+    const n = document.createElement('div');
+    fig.render(n, d);
+    const s = txt(n);
+    assert(/P25 \(vigília\)/.test(s) && /P75 \(vigília\)/.test(s), 'os agregados não aparecem na tabela');
+    assert(/estabilidade dia a dia/.test(s), 'a estabilidade não é exposta');
+    assert(/10\.1038\/s41531-025-01124-7/.test(s), 'a fonte do método manual (Busch 2025) não está citada');
+    assert(/MESMA do\s+TIDAL-DT|MESMA do TIDAL-DT/.test(s.replace(/\s+/g, ' ')), 'não declara que a vigília é compartilhada com o TIDAL-DT');
+    assert(/unidades LFP nativas/.test(s), 'não declara a unidade dos percentis');
+    return 'agregados, estabilidade, fonte e unidade declarados';
+  });
+
+  t('F12 ganha o espectro acumulado e a fita cronológica — o vídeo dos snapshots', () => {
+    const d = H.ds();
+    const fig = H.FIGURES.find(x => x.id === 'F12');
+    assert(fig && fig.has(d), 'F12 sem dados');
+    H.S.opts.F12 = {};
+    const n = document.createElement('div');
+    fig.render(n, d);
+    const s = txt(n);
+    const aa = arias(n);
+    assert(aa.some(x => /espectro acumulado de TODOS os snapshots/.test(x)) || /O acumulado e o vídeo/.test(s),
+      'sem o espectro acumulado');
+    const nSnaps = d.snapshots.filter(x => x.hemi[Object.keys(d.snapshots[0].hemi)[0]]).length;
+    assert(/min de sensing/.test(s), 'o tempo total de sensing acumulado não é mostrado');
+    const fita = arias(n).find(a => /fita cronológica/.test(a));
+    assert(fita, 'a fita cronológica não tem canvas com aria-label');
+    assert(/ordenados no tempo/.test(fita), 'a fita não declara a ordenação temporal');
+    assert(/30 s\s+POSTERIORES|30 s <i>depois<\/i>|posteriores/i.test(s), 'a semântica [0,+30 s] sumiu');
+    return `acumulado + fita presentes (${nSnaps} snapshots no hemisfério testado)`;
+  });
+
+  t('F38: com uma sessão orienta; com duas traça a trajetória; com dois pacientes avisa', () => {
+    const d = H.ds();
+    const fig = H.FIGURES.find(x => x.id === 'F38');
+    assert(fig && fig.has(d), 'F38 sem dados');
+    /* uma sessão só: orientação, não gráfico */
+    const n1 = document.createElement('div');
+    fig.render(n1, d);
+    assert(/sessões diferentes/.test(txt(n1)), 'com 1 sessão deveria orientar a carregar mais');
+
+    /* duas sessões do mesmo paciente: clona o parsed mudando a data e a magnitude */
+    const p1 = d.all[0];
+    const p2 = {
+      patient: p1.patient,
+      meta: { sessionStart: '2025-03-15T10:00:00Z' },
+      montage: p1.montage.map(m => Object.assign({}, m, { mag: m.mag.map(v => v * 1.15) }))
+    };
+    const d2 = { montage: d.montage, all: [p1, p2], trend: {}, snapshots: [] };
+    H.S.opts.F38 = {};
+    const n2 = document.createElement('div');
+    fig.render(n2, d2);
+    const s2 = txt(n2);
+    assert(arias(n2).some(x => /da mais antiga \(clara\) à mais recente \(escura\)/.test(x)),
+      'os espectros sobrepostos não aparecem');
+    assert(/Dispersão da frequência de pico/.test(s2), 'a dispersão do pico não é reportada');
+    assert(/mesma configuração de sensing|MESMA configuração/i.test(s2), 'não avisa sobre comparabilidade de magnitude entre configurações');
+    assert(!/pacientes diferentes/.test(s2), 'avisou de pacientes diferentes com o mesmo idHash');
+
+    /* pacientes misturados: o aviso tem de vir */
+    const p3 = Object.assign({}, p2, { patient: { idHash: 'sub-OUTRO' } });
+    const d3 = { montage: d.montage, all: [p1, p3], trend: {}, snapshots: [] };
+    const n3 = document.createElement('div');
+    fig.render(n3, d3);
+    assert(/pacientes diferentes/.test(txt(n3)), 'misturar pacientes não gerou aviso');
+    H.S.opts.F38 = {};
+    return '1 sessão → orientação · 2 sessões → trajetória com dispersão · 2 pacientes → aviso';
+  });
+}
+
 /* ------------------------------------------------------------- resultado -- */
 console.log(`\n${'='.repeat(58)}`);
 console.log(`  ${ok} passaram   ${falhas} falharam   ${pulados} sem dados`);

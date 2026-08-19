@@ -10,7 +10,7 @@
 
 ## What it is
 
-A **single-file** web application (`index.html`, 1441 KB) that reads the JSON *Session Reports* exported from the Medtronic Percept™ clinician programmer and produces **35 interactive figures** organised into seven tabs, quantitative metrics, a clinical PDF report and statistics-ready exports.
+A **single-file** web application (`index.html`, 1465 KB) that reads the JSON *Session Reports* exported from the Medtronic Percept™ clinician programmer and produces **37 interactive figures** organised into seven tabs, quantitative metrics, a clinical PDF report and statistics-ready exports.
 
 Opens by **double-click**. Nothing to install, no server required, and it never issues a single network request.
 
@@ -155,6 +155,7 @@ for that too.
 |---|---|---|---|
 | **F8** | Chronic Timeline — multi-day series **or one panel per calendar day** | `LFPTrendLogs` | How the marker behaves over weeks, and what each day looks like inside |
 | **F9** | **Circadian rhythm** — day × hour heatmap, polar, cosinor | `LFPTrendLogs` (≥ 2 days) | Whether a 24 h rhythm exists, its amplitude and acrophase — with CI by whole-day block bootstrap |
+| **F37** | Wake-time percentiles — 7–14 days at scale | `LFPTrendLogs` | The awake P25/P75 — the manual threshold method's numbers, made visible |
 | **F10** | Event-aligned response | Timeline + marked events | What happens to the marker around what the patient recorded |
 | **F12** | Spectra by event type | `LfpFrequencySnapshotEvents` | Whether OFF, dyskinesia and "took medication" have distinct spectra |
 | **F13** | ON/OFF states from beta amplitude | Timeline or streaming | Whether beta separates two states, and how well (Sarle's bimodality, separation in SD) |
@@ -197,6 +198,7 @@ Eight automatic checks feed the agenda: emerging interhemispheric asymmetry, los
 |---|---|---|---|
 | **F24** | External signal — IMU, EMG, ECG: alignment and **coherence** | raw signal + external CSV/TSV | Whether the LFP oscillation is the brain's or the movement itself entering through the electrode |
 | **F26** | Longitudinal — impedance, **ICC**, device usage | ≥ 2 sessions | Whether what changed between visits was the brain or the measurement |
+| **F38** | Longitudinal Survey — the same pair across sessions | `LFPMontage` ×N sessions | Peak stability and spectral drift across visits (research-grade data) |
 | **F27** | **Cohort** — all records side by side | ≥ 1 record | Peak prevalence with Wilson CI, per-subject table, group statistics |
 
 Every figure exports a PNG and the underlying data as CSV.
@@ -335,7 +337,7 @@ The density scaling is checked against exact identities rather than against anot
 
 ### Regression suite
 
-`node tests/run.mjs` — **349 tests**, including all 35 figure renderers exercised against a minimal simulated DOM. No existing test may be removed or weakened to make new code pass.
+`node tests/run.mjs` — **349 tests**, including all 37 figure renderers exercised against a minimal simulated DOM. No existing test may be removed or weakened to make new code pass.
 
 ---
 

@@ -5,6 +5,7 @@ import { cosinor, diurnalProfile, rayleigh, varianceByHour } from '../stats/circ
 import { detectStates } from '../stats/states.js';
 import { localDayKey, localHour } from '../io/parse.js';
 import { median, quantile, removeOutliersMAD, rnd } from '../stats/descriptive.js';
+import { detectWakeWindow, inWake } from './tidal.js';
 
 export function thresholdSummary(vals, lower, upper) {
   const v = vals.filter(isFinite);
@@ -277,4 +278,89 @@ export function dayRangeOf(seriesList, offMin) {
     if (hi === null || k > hi) hi = k;
   }));
   return { fromDay: lo, toDay: hi };
+}
+
+/* ------------------------------------------------------------------------ */
+/*  Percentis de vigília em escala clínica (7–14 dias)                      */
+/* ------------------------------------------------------------------------ */
+
+/* wakePercentiles(rows, offMin, opts)
+   O QUE CALCULA. Os percentis 25/50/75 da potência do Timeline DURANTE A
+   VIGÍLIA, dia a dia e agregados sobre uma janela de escala clínica (últimos
+   7, 14 dias, ou o registro inteiro). É a leitura visual do método manual de
+   configuração de limiares de aDBS — percentis 25/75 do beta diurno
+   (Busch et al., npj Parkinsons Dis 2025;11:264, doi:10.1038/s41531-025-01124-7)
+   — que o programador do fabricante não mostra: lá se vê cada dia, não a
+   distribuição acumulada da vigília.
+
+   A vigília vem do MESMO detector do TIDAL-DT (cosinor 24+12 h + change-point,
+   com fallback declarado 08:00–22:00), porque dois módulos com duas definições
+   de vigília produziriam dois pares de percentis para o mesmo paciente. A
+   exclusão do sono é obrigatória: a hora do dia explica grande parte da
+   variância do beta crônico (van Rheede 2022; Yin 2023).
+
+   ENTRADA. rows: [{t, lfp}] em unidades nativas (censura já como NaN);
+   offMin: fuso local em minutos. Opções: {kMad=4, lastDays=14 (0 = tudo),
+   wake: null (auto) | [iniH, fimH] fixo}.
+   SAÍDA. {ok, days:[{dayKey, p25, p50, p75, n}], aggregate:{p25,p50,p75,n,
+   nDays, from, to}, wake:{window, method, r2}, stability, params}. Percentis
+   em unidades LFP nativas — a unidade em que os limiares são digitados.     */
+export function wakePercentiles(rows, offMin, opts) {
+  const o = opts || {};
+  const kMad = isFinite(o.kMad) && o.kMad > 0 ? o.kMad : 4;
+  const lastDays = isFinite(o.lastDays) ? Math.max(0, Math.round(o.lastDays)) : 14;
+
+  const limpos = removeOutliersMAD((rows || []).filter(r => r && isFinite(r.t)), 'lfp', kMad).kept
+    .filter(r => isFinite(r.lfp) && r.lfp >= 0)
+    .sort((a, b) => a.t - b.t);
+  if (limpos.length < 50) return { ok: false, reason: `apenas ${limpos.length} amostras válidas após a limpeza` };
+
+  /* vigília: o mesmo detector do TIDAL-DT, sobre log10(lfp+1) */
+  let wake;
+  if (Array.isArray(o.wake) && o.wake.length === 2 && isFinite(o.wake[0]) && isFinite(o.wake[1])) {
+    wake = { wake: [o.wake[0], o.wake[1]], method: 'fixed window (user-set)', r2: NaN };
+  } else {
+    wake = detectWakeWindow(limpos.map(r => ({ t: r.t, x: Math.log10(r.lfp + 1) })), offMin, {});
+  }
+
+  const porDia = new Map();
+  limpos.forEach(r => {
+    if (!inWake(localHour(r.t, offMin), wake.wake)) return;
+    const dk = localDayKey(r.t, offMin);
+    if (!porDia.has(dk)) porDia.set(dk, []);
+    porDia.get(dk).push(r.lfp);
+  });
+  let chaves = Array.from(porDia.keys()).sort();
+  if (lastDays > 0 && chaves.length > lastDays) chaves = chaves.slice(-lastDays);
+  if (chaves.length < 2) return { ok: false, reason: `apenas ${chaves.length} dia(s) com amostras de vigília na janela`, wake };
+
+  const days = chaves.map(dk => {
+    const v = porDia.get(dk);
+    return {
+      dayKey: dk, n: v.length,
+      p25: rnd(quantile(v, .25), 1), p50: rnd(quantile(v, .5), 1), p75: rnd(quantile(v, .75), 1)
+    };
+  });
+  const pool = chaves.flatMap(dk => porDia.get(dk));
+  const aggregate = {
+    p25: rnd(quantile(pool, .25), 1), p50: rnd(quantile(pool, .5), 1), p75: rnd(quantile(pool, .75), 1),
+    n: pool.length, nDays: chaves.length, from: chaves[0], to: chaves[chaves.length - 1]
+  };
+
+  /* estabilidade: quanto os percentis diários oscilam em torno do agregado.
+     Percentis instáveis dia a dia avisam que um limiar fixado neles vai
+     ocupar zonas diferentes conforme o dia — informação que decide se vale
+     esperar mais dias antes de configurar. */
+  const desvio = (arr, ref) => ref > 0 ? rnd(100 * Math.sqrt(arr.reduce((a, v) => a + (v - ref) * (v - ref), 0) / arr.length) / ref, 1) : NaN;
+  const stability = {
+    p25CvPct: desvio(days.map(d => d.p25), aggregate.p25),
+    p75CvPct: desvio(days.map(d => d.p75), aggregate.p75),
+    note: 'desvio dos percentis diários em torno do agregado, em % do agregado — instabilidade alta sugere esperar mais dias antes de fixar limiares'
+  };
+
+  return {
+    ok: true, days, aggregate, wake, stability,
+    params: { kMad, lastDays: lastDays || 'all', wakeSource: wake.method, offMin },
+    source: 'Busch et al., npj Parkinsons Dis 2025;11:264 (percentis 25/75 do beta diurno como método manual de limiares)'
+  };
 }

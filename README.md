@@ -8,7 +8,7 @@
 
 ## O que é
 
-Um aplicativo web de **arquivo único** (`index.html`, 1441 KB) que lê os *Session Reports* em JSON exportados do programador do neuroestimulador Medtronic Percept™ e produz **35 figuras interativas** organizadas em sete abas, métricas quantitativas, relatório clínico em PDF e exportações prontas para estatística.
+Um aplicativo web de **arquivo único** (`index.html`, 1465 KB) que lê os *Session Reports* em JSON exportados do programador do neuroestimulador Medtronic Percept™ e produz **37 figuras interativas** organizadas em sete abas, métricas quantitativas, relatório clínico em PDF e exportações prontas para estatística.
 
 Abre com **duplo clique**. Não instala nada, não precisa de servidor, não faz uma única requisição de rede.
 
@@ -74,7 +74,7 @@ Cada aba abre com um cabeçalho de orientação que declara **a camada de infer�
 | Modo | Para quê | O que mostra |
 |---|---|---|
 | **Clínico** | Consulta, decisão de programação | O subconjunto de figuras que responde às perguntas de consultório, escolhido pelo perfil de doença, mais leituras em linguagem simples |
-| **Pesquisa** | Análise, publicação | Todas as 35 figuras, todos os controles de parâmetro, todas as exportações |
+| **Pesquisa** | Análise, publicação | Todas as 37 figuras, todos os controles de parâmetro, todas as exportações |
 
 Os mesmos números, as mesmas ressalvas e os mesmos parâmetros declarados nos dois modos — o modo clínico esconde figuras, nunca esconde incerteza. A preferência fica no `localStorage` (apenas a preferência de interface; nenhum dado de paciente é gravado).
 
@@ -137,7 +137,7 @@ Cada funcionalidade explicada para pesquisadores e neurologistas, com a referên
 científica de cada método: **[wiki de documentação](wiki/index.html)** — publicada
 junto com o aplicativo no GitHub Pages (`/wiki/`).
 
-## As 35 figuras
+## As 37 figuras
 
 ### Sinal agudo — espectro e domínio do tempo
 
@@ -162,6 +162,7 @@ junto com o aplicativo no GitHub Pages (`/wiki/`).
 |---|---|---|---|
 | **F8** | Timeline crônico — série multi-dia **ou um painel por dia civil** | `LFPTrendLogs` | Como o marcador se comporta ao longo de semanas, e como é cada dia por dentro |
 | **F9** | **Ritmo circadiano** — heatmap dia × hora, polar, cosinor | `LFPTrendLogs` (≥ 2 dias) | Se há ritmo de 24 h, qual a amplitude, a que horas é o pico — com IC por bootstrap de dias inteiros |
+| **F37** | Percentis de vigília — 7–14 dias em escala | `LFPTrendLogs` | Os P25/P75 do beta acordado — os números do método manual de limiares, visíveis |
 | **F10** | Resposta alinhada a evento | Timeline + eventos marcados | O que acontece com o marcador em torno do que o paciente registrou |
 | **F12** | Espectros por tipo de evento | `LfpFrequencySnapshotEvents` | Se OFF, discinesia e "tomou medicação" têm espectros distintos |
 | **F13** | Estados ON/OFF pela amplitude do beta | Timeline ou streaming | Se o beta separa dois estados, e quão bem (bimodalidade de Sarle, separação em DP) |
@@ -205,6 +206,7 @@ Oito checagens automáticas alimentam a agenda: assimetria interhemisférica eme
 | **F24** | Sinal externo — IMU, EMG, ECG: alinhamento e **coerência** | sinal bruto + CSV/TSV externo | Se a oscilação do LFP é do cérebro ou é o próprio movimento entrando pelo eletrodo |
 | **F26** | Longitudinal — impedância, **ICC**, uso do aparelho | ≥ 2 sessões | Se o que mudou entre visitas foi o cérebro ou a medida |
 | **F27** | **Coorte** — todos os registros lado a lado | ≥ 1 registro | Prevalência de pico com IC de Wilson, tabela por sujeito, estatísticas de grupo |
+| **F38** | Survey longitudinal — o mesmo par através das sessões | `LFPMontage` ×N sessões | Estabilidade do pico e deriva do espectro entre visitas (dado de estudo) |
 
 Cada figura exporta PNG e os dados subjacentes em CSV.
 
@@ -342,7 +344,7 @@ A escala de densidade é conferida contra identidades exatas, não contra outra 
 
 ### Suíte de regressão
 
-`node tests/run.mjs` — **349 testes**, incluindo os 35 renderizadores de figura exercitados sobre um DOM mínimo simulado. Nenhum teste pode ser removido ou afrouxado para fazer código novo passar.
+`node tests/run.mjs` — **349 testes**, incluindo os 37 renderizadores de figura exercitados sobre um DOM mínimo simulado. Nenhum teste pode ser removido ou afrouxado para fazer código novo passar.
 
 ---
 

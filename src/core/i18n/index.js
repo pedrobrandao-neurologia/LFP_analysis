@@ -75,6 +75,8 @@ const DIC = {
     'Blocos de configuração e pontos de mudança': 'Configuration blocks and change points',
     'Agenda da próxima sessão': 'Agenda for the next session',
     'Assistente de limiares de aDBS (TIDAL-DT)': 'aDBS Threshold Advisor (TIDAL-DT)',
+    'Percentis de vigília — 7–14 dias em escala': 'Wake-time percentiles — 7–14 days at scale',
+    'Survey longitudinal — o mesmo par através das sessões': 'Longitudinal Survey — the same pair across sessions',
     'ODR e features por janela — dinâmica multi-banda do registro agudo':
       'ODR and windowed features — multi-band dynamics of the acute recording',
     'Início': 'Home', 'Agudo': 'Acute', 'Crônico': 'Chronic', 'Ponte': 'Bridge',
