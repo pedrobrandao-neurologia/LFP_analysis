@@ -2499,9 +2499,191 @@ const FIGURES = [
           '[Medtronic UC202012929cEN FY24, p. 8]'
       }));
       }
+      /* ---- o acumulado e o "vídeo" dos snapshots -------------------------
+         O programador mostra cada snapshot isolado — a foto. Aqui entram as
+         duas leituras que faltam lá: o ESPECTRO ACUMULADO de todas as janelas
+         de 30 s (com o tempo total de sensing que elas somam) e a FITA
+         CRONOLÓGICA — cada snapshot vira uma coluna, ordenada no tempo, e a
+         sequência de fotos vira o vídeo. Sugestão clínica de Rubens Cury.   */
+      {
+        const todosH = d.snapshots.filter(s => s.hemi[h] && s.hemi[h].f.length)
+          .slice().sort((a, b) => a.t - b.t);
+        if (todosH.length >= 2) {
+          const f0 = todosH[0].hemi[h].f;
+          const nb = Math.min.apply(null, todosH.map(s => s.hemi[h].p.length).concat([f0.length]));
+          const idxMax = f0.findIndex(x => x > fmax) === -1 ? nb : Math.min(nb, f0.findIndex(x => x > fmax));
+          /* (a) espectro acumulado: média e IQR bin a bin sobre TODAS as janelas */
+          const med2 = [], q1 = [], q3 = [];
+          for (let k = 0; k < idxMax; k++) {
+            const vs = todosH.map(s => s.hemi[h].p[k]).filter(isFinite);
+            med2.push(C.median(vs)); q1.push(C.quantile(vs, .25)); q3.push(C.quantile(vs, .75));
+          }
+          const minutos = todosH.length * 30 / 60;
+          const boxA = plotBox(node, 210);
+          const chA = new P.Chart(boxA.canvas, {
+            width: boxA.width, height: boxA.height, xlim: [0, fmax],
+            ylim: [0, Math.max.apply(null, q3.filter(isFinite)) * 1.15 || 1],
+            xlabel: 'frequência (Hz)', ylabel: 'magnitude (µVp)',
+            title: `espectro acumulado de TODOS os snapshots — STN ${hname(h)} · n=${todosH.length} janelas ≈ ${f(minutos, 0)} min de sensing`,
+            pad: { l: 62, r: 14, t: 24, b: 40 }
+          });
+          chA.axes();
+          chA.area(f0.slice(0, idxMax), q1, q3, { color: hcol(h), alpha: .18 });
+          chA.line(f0.slice(0, idxMax), med2, { color: hcol(h), width: 2, label: `mediana das ${todosH.length} janelas` });
+          chA.legend({ x: chA.x1 - 190, y: chA.y1 + 6 });
+
+          /* (b) a fita cronológica: snapshot × frequência, ordenado no tempo */
+          const alt = 190;
+          const boxF = plotBox(node, alt);
+          const cv = boxF.canvas;
+          cv.width = boxF.width; cv.height = alt; cv.style.height = alt + 'px';
+          const ctx = cv.getContext('2d');
+          ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, alt);
+          const mL = 46, mT = 14, mB = 30, wPlot = cv.width - mL - 8, hPlot = alt - mT - mB;
+          const todosVals = todosH.flatMap(s => s.hemi[h].p.slice(0, idxMax)).filter(isFinite);
+          const vlo = C.quantile(todosVals, .02), vhi = C.quantile(todosVals, .98);
+          const wCol = wPlot / todosH.length;
+          const corDe = {}; groups.forEach(g => corDe[g.name] = g.color);
+          todosH.forEach((s, i) => {
+            const x0 = mL + i * wCol;
+            for (let k = 0; k < idxMax; k++) {
+              const v = s.hemi[h].p[k];
+              if (!isFinite(v)) { ctx.fillStyle = '#EEF1F4'; }
+              else {
+                const fr = Math.max(0, Math.min(1, (v - vlo) / (vhi - vlo || 1)));
+                const c = Math.round(235 - fr * 200);
+                ctx.fillStyle = `rgb(${c},${Math.round(c * 1.02)},${Math.min(255, c + 42)})`;
+              }
+              const y0 = mT + hPlot - (k + 1) / idxMax * hPlot;
+              ctx.fillRect(x0, y0, Math.ceil(wCol), Math.ceil(hPlot / idxMax) + 1);
+            }
+            /* fita do tipo de evento no topo — a legenda das cores é a da figura */
+            ctx.fillStyle = corDe[s.name] || '#888';
+            ctx.fillRect(x0, 2, Math.ceil(wCol), 8);
+          });
+          /* eixo y (Hz) e datas no eixo x */
+          ctx.fillStyle = '#5C7284'; ctx.font = '9px ui-monospace,monospace';
+          ctx.textAlign = 'right';
+          [0, 15, 30, 45].forEach(hz => {
+            if (hz > fmax) return;
+            const y = mT + hPlot - hz / fmax * hPlot;
+            ctx.fillText(hz + ' Hz', mL - 4, y + 3);
+          });
+          ctx.textAlign = 'center';
+          const passoRotulo = Math.max(1, Math.ceil(todosH.length / 8));
+          todosH.forEach((s, i) => {
+            if (i % passoRotulo) return;
+            ctx.fillText(new Date(s.t + offMin() * 60000).toISOString().slice(5, 10), mL + (i + .5) * wCol, alt - 16);
+          });
+          ctx.fillStyle = '#0E1A24'; ctx.textAlign = 'left'; ctx.font = '10px ui-monospace,monospace';
+          ctx.fillText(`fita cronológica: cada coluna é um snapshot de 30 s (a faixa no topo é o tipo de evento) — a sequência de fotos vista como vídeo`, mL, alt - 4);
+          try {
+            cv.setAttribute('role', 'img');
+            cv.setAttribute('aria-label', `fita cronológica dos ${todosH.length} snapshots de 30 segundos do hemisfério ${hname(h)}, ordenados no tempo`);
+          } catch (e) { }
+          node.appendChild(el('div', {
+            class: 'note', html: `<b>O acumulado e o vídeo.</b> O programador mostra cada snapshot isolado — a foto. ` +
+              `Acima, as duas leituras que faltam lá: o <b>espectro acumulado</b> das ${todosH.length} janelas de 30 s ` +
+              `(≈ ${f(minutos, 0)} min de sensing somado, mediana e IQR bin a bin) e a <b>fita cronológica</b>, em que a ` +
+              `sequência vira um vídeo: mudanças do espectro ao longo de dias ficam visíveis como mudança de textura da fita. ` +
+              `Cada janela cobre os 30 s <b>posteriores</b> ao botão [Medtronic UC202012929cEN FY24, p. 8].`
+          }));
+        }
+      }
       node.appendChild(exportRow([
         { label: '⤓ PNG', fn: () => P.downloadCanvas(box.canvas, 'F12_espectros_evento') },
         { label: '⤓ CSV', fn: () => P.downloadText(P.toCSV(d.snapshots.flatMap(s => Object.keys(s.hemi).flatMap(hh => s.hemi[hh].f.map((x, k) => ({ utc: new Date(s.t).toISOString(), evento: s.name, hemisferio: hh, f_Hz: x, magnitude: s.hemi[hh].p[k] }))))), 'F12_snapshots.csv', 'text/csv') }
+      ]));
+    }
+  },
+
+  /* ----------------------------------------------------------------- F37 */
+  /* Percentis de vigília em escala clínica (7–14 dias). Sugestão de Rubens
+     Cury: o método manual de limiares usa os percentis 25/75 do beta diurno
+     (Busch 2025), mas visualmente esse dado não existe no programador — cada
+     dia aparece isolado. Aqui a distribuição da vigília vira figura: banda
+     P25–P75 dia a dia, e as linhas agregadas da janela escolhida, que são os
+     números que o método manual usaria. O núcleo vive em metrics/chronic.js
+     (wakePercentiles) e usa o MESMO detector de vigília do TIDAL-DT.        */
+  {
+    id: 'F37', title: 'Percentis de vigília — 7–14 dias em escala',
+    sub: 'banda P25–P75 do beta acordado, dia a dia · os agregados da janela são os números do método manual de limiares',
+    has: d => Object.keys(d.trend).length,
+    render(node, d) {
+      const hemis = Object.keys(d.trend);
+      const janela = opt('F37', 'win', 14);
+      const kMad = opt('F37', 'mad', 4);
+      const modoVigilia = opt('F37', 'vigilia', 'auto');
+      const vIni = opt('F37', 'vini', 8), vFim = opt('F37', 'vfim', 22);
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('janela', [{ value: 7, label: 'últimos 7 dias' }, { value: 14, label: 'últimos 14 dias' }, { value: 0, label: 'registro inteiro' }],
+          janela, v => setOpt('F37', 'win', +v)),
+        ctrlSelect('vigília', [{ value: 'auto', label: 'automática (cosinor + change-point)' }, { value: 'fixa', label: 'janela fixa (horas abaixo)' }],
+          modoVigilia, v => setOpt('F37', 'vigilia', v)),
+        modoVigilia === 'fixa' ? ctrlNumber('início (h)', vIni, 0, 23, 1, v => setOpt('F37', 'vini', v)) : el('span'),
+        modoVigilia === 'fixa' ? ctrlNumber('fim (h)', vFim, 1, 24, 1, v => setOpt('F37', 'vfim', v)) : el('span'),
+        ctrlNumber('outliers: k×MAD', kMad, 2, 10, .5, v => setOpt('F37', 'mad', v))
+      ]));
+
+      const csvRows = [];
+      hemis.forEach(h => {
+        const r = C.wakePercentiles(d.trend[h], offMin(), {
+          kMad, lastDays: janela,
+          wake: modoVigilia === 'fixa' ? [vIni, vFim] : null
+        });
+        node.appendChild(el('h3', { class: 'qc-title', html: `<span class="hemi-${h[0]}">STN ${hname(h)}</span> — percentis da vigília` }));
+        if (!r.ok) {
+          node.appendChild(el('div', { class: 'warnbox', html: `<b>Não calculável.</b> ${r.reason}` }));
+          return;
+        }
+        const box = plotBox(node, 230);
+        {
+          const xs = r.days.map((_, i) => i);
+          const ymax = Math.max.apply(null, r.days.map(x => x.p75)) * 1.18;
+          const ch = new P.Chart(box.canvas, {
+            width: box.width, height: box.height, xlim: [-0.5, r.days.length - 0.5], ylim: [0, ymax],
+            xlabel: 'dia', ylabel: 'potência LFP (u.a.)',
+            title: `vigília ${r.wake.wake[0]}–${r.wake.wake[1]} h · banda P25–P75 por dia e agregado de ${r.aggregate.nDays} dias`,
+            pad: { l: 62, r: 88, t: 24, b: 46 }
+          });
+          const passo = Math.max(1, Math.ceil(r.days.length / 9));
+          ch.axes({ xticks: xs.filter(i => i % passo === 0), xfmt: v => (r.days[Math.round(v)] || { dayKey: '' }).dayKey.slice(5) });
+          ch.area(xs, r.days.map(x => x.p25), r.days.map(x => x.p75), { color: hcol(h), alpha: .2 });
+          ch.line(xs, r.days.map(x => x.p50), { color: hcol(h), width: 1.8, label: 'mediana diária (vigília)' });
+          /* as duas linhas que o método manual usaria como limiares iniciais */
+          ch.hline(r.aggregate.p25, { color: COL.ok, width: 1.5, dash: [6, 3] });
+          ch.hline(r.aggregate.p75, { color: COL.Right, width: 1.5, dash: [6, 3] });
+          ch.text(ch.x1 + 5, ch.Y(r.aggregate.p25) + 3, `P25 = ${r.aggregate.p25}`, { color: COL.ok });
+          ch.text(ch.x1 + 5, ch.Y(r.aggregate.p75) + 3, `P75 = ${r.aggregate.p75}`, { color: COL.Right });
+          ch.legend({ x: ch.x0 + 8, y: ch.y1 + 6 });
+        }
+        node.appendChild(table(['agregado da janela', 'valor (LFP nativo)'], [
+          ['P25 (vigília)', r.aggregate.p25], ['P50 (vigília)', r.aggregate.p50], ['P75 (vigília)', r.aggregate.p75],
+          ['n de amostras · dias', `${r.aggregate.n} · ${r.aggregate.nDays} (${r.aggregate.from} → ${r.aggregate.to})`],
+          ['estabilidade dia a dia (CV%)', `P25: ${r.stability.p25CvPct}% · P75: ${r.stability.p75CvPct}%`],
+          ['vigília', `${r.wake.wake[0]}–${r.wake.wake[1]} h — ${r.wake.method}`]
+        ]));
+        r.days.forEach(dd => csvRows.push({
+          hemisphere: h, day_local: dd.dayKey, n_wake_samples: dd.n,
+          p25_lfp: dd.p25, p50_lfp: dd.p50, p75_lfp: dd.p75,
+          aggregate_p25: r.aggregate.p25, aggregate_p50: r.aggregate.p50, aggregate_p75: r.aggregate.p75,
+          window_days: r.params.lastDays, wake_window: `${r.wake.wake[0]}-${r.wake.wake[1]}`,
+          wake_method: r.wake.method, outlier_k_mad: kMad, utc_offset_min: offMin()
+        }));
+      });
+
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Para que servem estas linhas.</b> Os percentis 25/75 do beta <b>diurno</b> são o ` +
+          `método manual de escolha inicial dos limiares de aDBS [Busch et al., npj Parkinsons Dis 2025;11:264, ` +
+          `doi:10.1038/s41531-025-01124-7] — e o programador não mostra essa distribuição. A vigília é obrigatória: ` +
+          `a hora do dia explica grande parte da variância do beta crônico, e incluir o sono puxa o P25 para baixo ` +
+          `[doi:10.1038/s41531-022-00350-7; doi:10.1038/s41467-023-41128-6]. A detecção de vigília é a MESMA do ` +
+          `TIDAL-DT (F36) — um único par de percentis por paciente, não um por módulo. A estabilidade dia a dia diz ` +
+          `se vale esperar mais dias antes de fixar limiares. Os valores estão em unidades LFP nativas, as mesmas ` +
+          `digitadas no programador.`
+      }));
+      if (csvRows.length) node.appendChild(exportRow([
+        { label: '⤓ CSV (R-compatible)', fn: () => P.downloadText(P.toCSV(csvRows), 'F37_wake_percentiles.csv', 'text/csv') }
       ]));
     }
   },
@@ -4019,6 +4201,135 @@ const FIGURES = [
           `registrada; troca de contato de sensing muda o que se mede; versões de firmware mudam a escala do Timeline. ` +
           `E antes de tudo isso: se a métrica não for reprodutível, a diferença observada pode ser só ruído de medida.`
       }));
+    }
+  },
+
+  /* ----------------------------------------------------------------- F38 */
+  /* Survey longitudinal. Sugestão de Rubens Cury: acompanhar o espectro do
+     MESMO par bipolar através de Surveys de sessões sucessivas — pouco útil
+     na decisão do dia, valioso como dado de estudo (estabilidade do pico,
+     deriva de magnitude, evolução pós-implante). Exige ≥2 Session Reports do
+     mesmo paciente carregados juntos.                                       */
+  {
+    id: 'F38', title: 'Survey longitudinal — o mesmo par através das sessões',
+    sub: 'espectros sobrepostos por data · trajetória do pico e da magnitude · exige ≥2 Session Reports do mesmo paciente',
+    has: d => d.montage.length > 0,
+    render(node, d) {
+      /* uma linha por (arquivo, montagem), com a data da sessão */
+      const regs = d.all.flatMap(p => (p.montage || []).map(m => ({
+        idHash: (p.patient || {}).idHash || '?',
+        date: String((p.meta || {}).sessionStart || '').slice(0, 10) || p.fileName,
+        hemisphere: m.hemisphere, channel: m.label, f: m.f, mag: m.mag,
+        peakF: m.peakF, peakMag: m.peakMag, artifact: m.artifact
+      })));
+      const datas = Array.from(new Set(regs.map(r => r.date))).sort();
+      if (datas.length < 2) {
+        return node.appendChild(el('div', {
+          class: 'empty', html: 'Esta figura compara Surveys de <b>sessões diferentes</b> do mesmo paciente. ' +
+            `Há ${datas.length} sessão carregada — arraste os Session Reports das outras visitas (JSON) para ativá-la.`
+        }));
+      }
+      /* pacientes misturados: comparação inválida, e o aviso vem antes do gráfico */
+      const hashes = Array.from(new Set(regs.map(r => r.idHash)));
+      if (hashes.length > 1) node.appendChild(el('div', {
+        class: 'warnbox', html: `<b>Atenção: ${hashes.length} pacientes diferentes entre os arquivos carregados.</b> ` +
+          'Survey longitudinal só faz sentido dentro do mesmo paciente — as curvas abaixo misturam indivíduos ' +
+          'e não devem ser lidas como evolução temporal.'
+      }));
+
+      const hemis = Array.from(new Set(regs.map(r => r.hemisphere)));
+      const h = opt('F38', 'hemi', hemis[0]);
+      /* canal padrão: o que aparece em mais sessões (empate: maior pico) */
+      const canais = Array.from(new Set(regs.filter(r => r.hemisphere === h).map(r => r.channel)));
+      const contagem = c => new Set(regs.filter(r => r.hemisphere === h && r.channel === c).map(r => r.date)).size;
+      const canalPadrao = canais.slice().sort((a, b) => contagem(b) - contagem(a))[0];
+      const canal = opt('F38', 'ch', canalPadrao);
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: 'STN ' + hname(x) })), h, v => setOpt('F38', 'hemi', v)),
+        ctrlSelect('par bipolar', canais.map(c => ({ value: c, label: `${c} (${contagem(c)} sessões)` })), canal, v => setOpt('F38', 'ch', v))
+      ]));
+
+      const serie = regs.filter(r => r.hemisphere === h && r.channel === canal)
+        .sort((a, b) => a.date < b.date ? -1 : 1);
+      if (serie.length < 2) return node.appendChild(el('div', { class: 'empty', text: `O par ${canal} aparece em só ${serie.length} sessão.` }));
+
+      const pb = activeProfile().primaryBand;
+      /* pico COMPUTADO na banda primária — o mesmo critério em toda sessão,
+         em vez do pico reportado pelo aparelho (que muda de regra com o fw) */
+      const linhas = serie.map(r => {
+        let pf = NaN, pv = -Infinity;
+        r.f.forEach((x, k) => { if (x >= pb.lo && x <= pb.hi && r.mag[k] > pv) { pv = r.mag[k]; pf = x; } });
+        const area = C.bandPower(r.f, r.mag, pb.lo, pb.hi);
+        return { date: r.date, peakHz: pf, peakMag: pv, bandArea: area, deviceHz: r.peakF, artifact: r.artifact };
+      });
+
+      /* (a) espectros sobrepostos, do mais antigo (claro) ao mais recente (escuro) */
+      const box = plotBox(node, 250);
+      {
+        const fmax = 60;
+        const ymax = Math.max.apply(null, serie.flatMap(r => r.mag.filter((_, k) => r.f[k] <= fmax))) * 1.12;
+        const ch = new P.Chart(box.canvas, {
+          width: box.width, height: box.height, xlim: [0, fmax], ylim: [0, ymax],
+          xlabel: 'frequência (Hz)', ylabel: 'magnitude (µVp)',
+          title: `Survey de ${canal} — ${serie.length} sessões, da mais antiga (clara) à mais recente (escura)`,
+          pad: { l: 62, r: 14, t: 24, b: 42 }
+        });
+        ch.axes();
+        ch.span(pb.lo, pb.hi, { color: CORBETA, alpha: .08, label: pb.label });
+        serie.forEach((r, i) => {
+          const t01 = serie.length > 1 ? i / (serie.length - 1) : 1;
+          const base = h === 'Left' ? [27, 74, 114] : [156, 48, 80];
+          const cor = `rgb(${base.map(c => Math.round(235 - (235 - c) * (0.35 + 0.65 * t01))).join(',')})`;
+          ch.line(r.f, r.mag, { color: cor, width: 1 + t01, label: r.date });
+        });
+        ch.legend({ x: ch.x1 - 118, y: ch.y1 + 6 });
+      }
+
+      /* (b) trajetória do pico: frequência e magnitude por sessão */
+      const boxT = plotBox(node, 190);
+      {
+        const xs = linhas.map((_, i) => i);
+        const ch = new P.Chart(boxT.canvas, {
+          width: boxT.width, height: boxT.height, xlim: [-0.5, linhas.length - 0.5], ylim: [pb.lo - 2, pb.hi + 2],
+          xlabel: 'sessão', ylabel: `pico em ${pb.label} (Hz)`,
+          title: 'trajetória do pico — a estabilidade é a informação', pad: { l: 62, r: 54, t: 24, b: 46 }
+        });
+        ch.axes({ xticks: xs, xfmt: v => (linhas[Math.round(v)] || { date: '' }).date.slice(5) });
+        ch.line(xs, linhas.map(x => x.peakHz), { color: hcol(h), width: 1.6 });
+        linhas.forEach((x, i) => ch.marker(i, x.peakHz, { color: hcol(h), size: 4.5 }));
+        /* magnitude normalizada no eixo direito (escala relativa, declarada) */
+        const mmax = Math.max.apply(null, linhas.map(x => x.peakMag));
+        ch.line(xs, linhas.map(x => pb.lo - 2 + (x.peakMag / mmax) * (pb.hi - pb.lo + 4) * .3), { color: COL.accent, width: 1, dash: [3, 2], label: 'magnitude (escala relativa)' });
+        ch.legend({ x: ch.x0 + 8, y: ch.y1 + 6 });
+      }
+
+      node.appendChild(table(['sessão', `pico ${pb.label} (Hz)`, 'magnitude (µVp)', `área ${pb.label}`, 'pico do aparelho (Hz)', 'artefato'],
+        linhas.map(x => [x.date, x.peakHz, x.peakMag, x.bandArea, isFinite(x.deviceHz) ? x.deviceHz : '—', x.artifact || '—'])));
+
+      {
+        const freqs = linhas.map(x => x.peakHz).filter(isFinite);
+        const spread = freqs.length > 1 ? Math.max.apply(null, freqs) - Math.min.apply(null, freqs) : NaN;
+        node.appendChild(el('div', {
+          class: 'note', html: `<b>Leitura.</b> Dispersão da frequência de pico entre sessões: <b>${f(spread, 1)} Hz</b>. ` +
+            `Pico estável (≲1–2 Hz) sustenta tratar a frequência como traço do paciente — condição para fixar a banda de ` +
+            `sensing e comparar potências ao longo do tempo; o veredito formal por ICC está na F16. Utilidade clínica ` +
+            `imediata é limitada (a decisão do dia usa o Survey do dia); o valor é de <b>estudo</b>: estabilidade do ` +
+            `biomarcador, deriva pós-implante e efeito de reprogramações sobre o espectro. Magnitudes entre sessões só ` +
+            `são comparáveis sob a MESMA configuração de sensing — confira os blocos na F32. ` +
+            `[Survey: ~20 s por par, bins de 0,98 Hz — Medtronic UC202012929cEN FY24, p. 4]`
+        }));
+      }
+      node.appendChild(exportRow([
+        { label: '⤓ PNG', fn: () => P.downloadCanvas(box.canvas, 'F38_survey_longitudinal') },
+        {
+          label: '⤓ CSV (R-compatible)', fn: () => P.downloadText(P.toCSV(linhas.map(x => ({
+            session_date: x.date, hemisphere: h, channel: canal,
+            peak_hz: x.peakHz, peak_uvp: x.peakMag, band_area: x.bandArea,
+            band_lo_hz: pb.lo, band_hi_hz: pb.hi,
+            device_peak_hz: isFinite(x.deviceHz) ? x.deviceHz : '', artifact: x.artifact || ''
+          }))), 'F38_survey_longitudinal.csv', 'text/csv')
+        }
+      ]));
     }
   },
 
@@ -6536,7 +6847,7 @@ const ABAS = [
   },
   {
     id: 'cronico', label: 'Crônico', sub: 'dias · vida real', camada: 'cronico',
-    figuras: ['F8', 'F32', 'F9', 'F13', 'F10', 'F25', 'F28', 'F29'],
+    figuras: ['F8', 'F32', 'F9', 'F37', 'F13', 'F10', 'F25', 'F28', 'F29'],
     orient: {
       titulo: 'Registro crônico — vida real, sem supervisão',
       camada: 'crônico · observacional',
@@ -6594,7 +6905,7 @@ const ABAS = [
   },
   {
     id: 'coorte', label: 'Coorte', sub: 'n pacientes', camada: null,
-    figuras: ['F27', 'F26'],
+    figuras: ['F27', 'F38', 'F26'],
     orient: {
       titulo: 'Muitos registros, inferência de grupo',
       texto: [

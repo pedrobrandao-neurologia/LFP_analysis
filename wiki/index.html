@@ -73,10 +73,10 @@ th{background:var(--box)}
   <tr><td class="cap" colspan="2">Percept LFP Studio</td></tr>
   <tr><th>Tipo</th><td>Aplicativo web de arquivo único (PWA), 100% local</td></tr>
   <tr><th>Entrada</th><td>Session Report em JSON do programador Medtronic Percept™ PC/RC</td></tr>
-  <tr><th>Figuras</th><td>35 figuras interativas em 7 abas</td></tr>
+  <tr><th>Figuras</th><td>37 figuras interativas em 7 abas</td></tr>
   <tr><th>Dependências</th><td>Nenhuma — FFT, filtros, estatística e gráficos escritos no próprio repositório</td></tr>
   <tr><th>Rede</th><td>Zero: nenhum dado sai do navegador</td></tr>
-  <tr><th>Validação</th><td>349 testes automatizados; espelho em R para validação cruzada</td></tr>
+  <tr><th>Validação</th><td>361 testes automatizados; espelho em R para validação cruzada</td></tr>
   <tr><th>Aplicativo</th><td><a href="../">abrir o Percept LFP Studio</a></td></tr>
   <tr><th>Código</th><td><a class="ext" href="https://github.com/pedrobrandao-neurologia/LFP_analysis">github.com/pedrobrandao-neurologia/LFP_analysis</a></td></tr>
   <tr><th>Status</th><td>Ferramenta de pesquisa e apoio à decisão. <b>Não é dispositivo médico.</b></td></tr>
@@ -195,7 +195,7 @@ th{background:var(--box)}
 <h4><span class="fid">F12</span>Espectros por tipo de evento</h4>
 <dl>
 <dt>O que mostra</dt><dd>Os espectros dos <i>snapshots</i> (LfpFrequencySnapshotEvents) agrupados pelo tipo de evento marcado pelo paciente.</dd>
-<dt>Como usar</dt><dd>Compare “sintoma X” contra “bem” do mesmo hemisfério. Lembre: o snapshot cobre os 30 s <i>depois</i> do botão, e não guarda o domínio do tempo<sup class="ref"><a href="#r1">[1]</a></sup>.</dd>
+<dt>Como usar</dt><dd>Compare “sintoma X” contra “bem” do mesmo hemisfério. Abaixo dos espectros por tipo, a figura mostra o <b>espectro acumulado</b> de todas as janelas de 30 s (com o tempo total de sensing somado) e a <b>fita cronológica</b> — cada snapshot vira uma coluna ordenada no tempo, transformando a sequência de “fotos” do programador no “vídeo” que ele não mostra. Lembre: o snapshot cobre os 30 s <i>depois</i> do botão, e não guarda o domínio do tempo<sup class="ref"><a href="#r1">[1]</a></sup>.</dd>
 <dt>Para que isso serve?</dt><dd>Testar se os momentos que o paciente marcou (tremor, discinesia, “bem”) têm assinatura espectral própria.</dd>
 <dt>Aplicabilidade clínica e em pesquisa</dt><dd><b>Clínica:</b> validar o botão do paciente antes de confiar nele para decisões de programação. <b>Pesquisa:</b> rotulagem ecológica de estados sem observador. <i>Exemplo:</i> snapshots “tremor” com beta mais alto que “bem” no mesmo hemisfério sustentam usar esse marcador para aDBS; snapshots indistinguíveis sustentam o contrário.</dd>
 <dt>Método e referência</dt><dd>Espectros por evento conforme a estrutura documentada pelo fabricante<sup class="ref"><a href="#r1">[1]</a></sup>.</dd>
@@ -333,6 +333,17 @@ th{background:var(--box)}
 <dt>Para que isso serve?</dt><dd>Impedir a comparação de trechos gravados sob configurações diferentes, e detectar mudanças de nível reais dentro de cada bloco.</dd>
 <dt>Aplicabilidade clínica e em pesquisa</dt><dd><b>Clínica:</b> saber se a “melhora do beta” veio do cérebro ou da troca do par de sensing. <b>Pesquisa:</b> pré-requisito de qualquer análise longitudinal com Percept. <i>Exemplo:</i> troca de par no meio do mês cria dois blocos; o programa se recusa a traçar uma linha única atravessando a fronteira — porque a diferença ali é de instrumentação.</dd>
 <dt>Método e referência</dt><dd>Inferência por permutação<sup class="ref"><a href="#r12">[12]</a></sup> adaptada a séries autocorrelacionadas; metadados de configuração do fabricante<sup class="ref"><a href="#r1">[1]</a></sup>.</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f37">
+<h4><span class="fid">F37</span>Percentis de vigília — 7–14 dias em escala</h4>
+<dl>
+<dt>O que mostra</dt><dd>A banda P25–P75 da potência do Timeline <b>durante a vigília</b>, dia a dia, com as linhas agregadas da janela escolhida (últimos 7, 14 dias ou o registro inteiro) — a distribuição que o programador não mostra.</dd>
+<dt>Como usar</dt><dd>Escolha a janela e confira a estabilidade dia a dia (CV%): percentis instáveis sugerem esperar mais dias antes de fixar limiares. A vigília é detectada pelo mesmo cosinor + change-point do TIDAL-DT (F36), ou fixada manualmente. Valores em unidades LFP nativas — as mesmas digitadas no programador.</dd>
+<dt>Para que isso serve?</dt><dd>Dar forma visual ao método manual de escolha de limiares de aDBS: os percentis 25/75 do beta diurno, que hoje o clínico estima de cabeça olhando dias isolados.</dd>
+<dt>Aplicabilidade clínica e em pesquisa</dt><dd><b>Clínica:</b> os agregados P25/P75 da janela são os valores iniciais do método manual de dual threshold — prontos para digitar e refinar em consulta. <b>Pesquisa:</b> a estabilidade dos percentis entre dias é ela própria um dado (quantos dias bastam para limiares estáveis?). <i>Exemplo:</i> P25=27 e P75=54 estáveis (CV&lt;5%) ao longo de 14 dias sustentam configurar; CV de 25% no P75 sustenta esperar mais uma semana.</dd>
+<dt>Método e referência</dt><dd>Percentis 25/75 do beta diurno como método manual: Busch et&nbsp;al.<sup class="ref"><a href="#r31">[31]</a></sup>; exclusão do sono obrigatória<sup class="ref"><a href="#r29">[29]</a>,<a href="#r30">[30]</a></sup>; detector de vigília compartilhado com o TIDAL-DT (<a href="#f36">F36</a>).</dd>
 </dl>
 </div>
 
@@ -515,6 +526,17 @@ th{background:var(--box)}
 <dt>Para que isso serve?</dt><dd>Ver vários registros ou pacientes lado a lado, com as mesmas régua e métricas.</dd>
 <dt>Aplicabilidade clínica e em pesquisa</dt><dd><b>Pesquisa:</b> triagem de coorte e exportação para estatística em R. <b>Clínica:</b> visão do ambulatório — quem tem marcador utilizável, quem não tem. <i>Exemplo:</i> de 10 pacientes, identificar os 6 com pico beta bilateral elegíveis para um protocolo de aDBS.</dd>
 <dt>Método e referência</dt><dd>Comparabilidade condicionada aos blocos de configuração (ver <a href="#f32">F32</a>).</dd>
+</dl>
+</div>
+
+<div class="figbox" id="f38">
+<h4><span class="fid">F38</span>Survey longitudinal — o mesmo par através das sessões</h4>
+<dl>
+<dt>O que mostra</dt><dd>Os espectros do mesmo par bipolar em Surveys de sessões sucessivas, sobrepostos da mais antiga (clara) à mais recente (escura), e a trajetória da frequência e da magnitude do pico.</dd>
+<dt>Como usar</dt><dd>Carregue ≥2 Session Reports do mesmo paciente; escolha hemisfério e par. Se os arquivos misturarem pacientes diferentes, a figura avisa antes do gráfico. Magnitudes só se comparam sob a mesma configuração de sensing — confira os blocos na <a href="#f32">F32</a>.</dd>
+<dt>Para que isso serve?</dt><dd>Ver a evolução do espectro entre visitas — estabilidade do pico, deriva de magnitude, efeito de reprogramações — que nenhuma sessão isolada revela.</dd>
+<dt>Aplicabilidade clínica e em pesquisa</dt><dd><b>Clínica:</b> utilidade imediata limitada (a decisão do dia usa o Survey do dia); serve como pano de fundo da consulta. <b>Pesquisa:</b> é onde a figura rende — estabilidade do biomarcador ao longo de meses, deriva pós-implante, resposta espectral a mudanças de terapia. <i>Exemplo:</i> pico em 17–18 Hz em quatro visitas ao longo de um ano (dispersão 1 Hz) documenta a frequência como traço do paciente — dado de artigo, confirmável por ICC na <a href="#f16">F16</a>.</dd>
+<dt>Método e referência</dt><dd>Parâmetros do Survey (~20 s por par, bins de 0,98 Hz) do fabricante<sup class="ref"><a href="#r1">[1]</a></sup>; o veredito formal de reprodutibilidade usa ICC<sup class="ref"><a href="#r13">[13]</a>,<a href="#r14">[14]</a></sup> na <a href="#f16">F16</a>.</dd>
 </dl>
 </div>
 
