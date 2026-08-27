@@ -3,7 +3,7 @@
    do refactor modular (Prompt 0.1), para que app.js e a suíte de testes não mudem.
    Ver docs/arquitetura.md para o mapa de módulos e a regra de dependência. */
 
-import { parsePercept, parsePerceptText, MODALITIES, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId, HARDWARE_FILTERS, hardwareFilterDescription, IMPEDANCE_LIMITS, shortThresholdOhms } from './io/parse.js';
+import { parsePercept, parsePerceptText, salvageJson, MODALITIES, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId, HARDWARE_FILTERS, hardwareFilterDescription, IMPEDANCE_LIMITS, shortThresholdOhms } from './io/parse.js';
 import { parseIntList, unwrapCounter, unwrapTicks, analyzePackets, insertNaNGaps, effectiveFs, stitchStreams, sequenceCapForModel, TICKS_ROLLOVER_MS, INTERLEAVED_STREAMS } from './io/packets.js';
 import { nanStats, segmentsWithoutNan, interpolateForFilter, detrendLinearNaN } from './dsp/nan.js';
 import { fft, nextPow2 } from './dsp/fft.js';
@@ -88,7 +88,7 @@ import {
 } from './leads/index.js';
 
 const API = {
-  parsePercept, parsePerceptText, MODALITIES, BANDS, HARDWARE_FILTERS, hardwareFilterDescription, IMPEDANCE_LIMITS, shortThresholdOhms, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId,
+  parsePercept, parsePerceptText, salvageJson, MODALITIES, BANDS, HARDWARE_FILTERS, hardwareFilterDescription, IMPEDANCE_LIMITS, shortThresholdOhms, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId,
   fft, nextPow2, welchPSD, spectrogram, bandpassFFT, hilbertEnvelope, detectBursts, fitAperiodic,
   ecgTemplateSubtract, bandPower, bandTable, bandOf,
   mean, median, sd, variance, quantile, mad, removeOutliersMAD, linreg, pearson,

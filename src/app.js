@@ -540,6 +540,10 @@ function dsCompute() {
        aqui nenhuma figura o expunha, e é justamente a modalidade que casa com
        protocolos de estimulação desligada. */
     indefiniteStreaming: cat('indefiniteStreaming'),
+    /* Electrode Identifier (DataVersion 1.3): gravação REFERENCIADA a um
+       eletrodo do outro hemisfério — não é par bipolar, e por isso viaja em
+       lista própria até a figura, que declara a referência. */
+    electrodeIdentifier: cat('electrodeIdentifier'),
     bsTimeDomain: cat('bsTimeDomain'), bsLfp: cat('bsLfp'),
     snapshots: cat('snapshots'), signalCheck: cat('signalCheck'), sensingSetup: cat('sensingSetup'),
     eventLogs: cat('eventLogs'),
@@ -1619,14 +1623,27 @@ const FIGURES = [
   {
     id: 'F6', title: 'Domínio do tempo — traçado, espectrograma e bursts',
     sub: 'BrainSense Streaming / Survey a 250 Hz',
-    has: d => d.bsTimeDomain.length || d.montageTD.length,
+    has: d => d.bsTimeDomain.length || d.montageTD.length || (d.electrodeIdentifier || []).length || (d.indefiniteStreaming || []).length,
     render(node, d) {
       const src = [].concat(
         d.bsTimeDomain.map((t, i) => ({ value: 'bs' + i, label: `Streaming ${t.label} (${(t.data.length / t.fs).toFixed(0)} s)`, td: t })),
-        d.montageTD.map((t, i) => ({ value: 'mt' + i, label: `Survey ${t.hemisphere[0]}·${t.label} (${(t.data.length / t.fs).toFixed(0)} s)`, td: t })));
+        d.montageTD.map((t, i) => ({ value: 'mt' + i, label: `Survey ${t.hemisphere[0]}·${t.label} (${(t.data.length / t.fs).toFixed(0)} s)`, td: t })),
+        (d.indefiniteStreaming || []).map((t, i) => ({ value: 'is' + i, label: `Record ${t.hemisphere[0]}·${t.label} (${(t.data.length / t.fs).toFixed(0)} s)`, td: t })),
+        (d.electrodeIdentifier || []).map((t, i) => ({ value: 'ei' + i, label: `Identifier ${t.hemisphere[0]}·${t.label} → ref ${t.referenceElectrode || '?'} (${(t.data.length / t.fs).toFixed(0)} s)`, td: t })));
       if (!src.length) return node.appendChild(el('div', { class: 'empty', text: 'Nenhum sinal bruto disponível.' }));
       const cur = src.find(s => s.value === opt('F6', 'src', src[0].value)) || src[0];
       const td = cur.td;
+      /* Gravação referenciada não é par bipolar: a amplitude depende do
+         eletrodo de referência, no OUTRO hemisfério, e a topografia não se lê
+         como a de um par local. Dizer isso antes do traçado evita a leitura
+         errada mais provável desta modalidade. */
+      if (td.referenced) node.appendChild(el('div', {
+        class: 'warnbox', html: `<b>Gravação referenciada, não bipolar.</b> Este registro do modo ` +
+          `<i>Electrode Identifier</i> mede ${td.channel} contra <b>${td.referenceElectrode || '?'}</b> do hemisfério ` +
+          `${hname(td.referenceHemisphere || '?')}` + (isFinite(td.tipOffset) ? ` (TipOffset ${td.tipOffset})` : '') +
+          `. A amplitude depende do eletrodo de referência e a topografia não se lê como a de um par bipolar local — ` +
+          `use para identificar o eletrodo, não para comparar potência com os pares do Survey.`
+      }));
       const doEcg = opt('F6', 'ecg', false);
       const blo = opt('F6', 'blo', 13), bhi = opt('F6', 'bhi', 20);
       const pct = opt('F6', 'pct', 75), minMs = opt('F6', 'minms', 100);
@@ -2774,11 +2791,13 @@ const FIGURES = [
   {
     id: 'F15', title: 'Limpeza de artefato cardíaco — três métodos e validação',
     sub: 'detecção de picos R em duas passagens · interpolação, template e SVD',
-    has: d => d.bsTimeDomain.length || d.montageTD.length,
+    has: d => d.bsTimeDomain.length || d.montageTD.length || (d.electrodeIdentifier || []).length || (d.indefiniteStreaming || []).length,
     render(node, d) {
       const src = [].concat(
         d.bsTimeDomain.map((t, i) => ({ value: 'bs' + i, label: `Streaming ${t.label} (${(t.data.length / t.fs).toFixed(0)} s)`, td: t })),
-        d.montageTD.map((t, i) => ({ value: 'mt' + i, label: `Survey ${t.hemisphere[0]}·${t.label} (${(t.data.length / t.fs).toFixed(0)} s)`, td: t })));
+        d.montageTD.map((t, i) => ({ value: 'mt' + i, label: `Survey ${t.hemisphere[0]}·${t.label} (${(t.data.length / t.fs).toFixed(0)} s)`, td: t })),
+        (d.indefiniteStreaming || []).map((t, i) => ({ value: 'is' + i, label: `Record ${t.hemisphere[0]}·${t.label} (${(t.data.length / t.fs).toFixed(0)} s)`, td: t })),
+        (d.electrodeIdentifier || []).map((t, i) => ({ value: 'ei' + i, label: `Identifier ${t.hemisphere[0]}·${t.label} → ref ${t.referenceElectrode || '?'} (${(t.data.length / t.fs).toFixed(0)} s)`, td: t })));
       if (!src.length) return node.appendChild(el('div', { class: 'empty', text: 'Nenhum sinal bruto disponível.' }));
       const cur = src.find(s => s.value === opt('F15', 'src', src[0].value)) || src[0];
       const td = cur.td, fs = td.fsEff || td.fs;
@@ -6550,11 +6569,20 @@ function renderRail() {
     S.files.forEach((fl, i) => {
       const p = fl.parsed;
       const n = Object.values(p.availability).filter(v => v > 0).length;
-      ul.appendChild(el('li', {}, [
-        el('div', { class: 'meta' }, [
-          el('b', { text: fl.name.replace(/^Report_Json_Session_Report_/, '').replace(/\.json$/, '') }),
-          el('span', { text: `${p.patient.idHash} · ${n} modalidades` })
-        ]),
+      /* arquivo recuperado de exportação interrompida: o aviso mora ao lado do
+         nome do arquivo, porque é dele que a ressalva é — não da análise */
+      const tr = p.truncated;
+      const meta = [
+        el('b', { text: fl.name.replace(/^Report_Json_Session_Report_/, '').replace(/\.json$/, '') }),
+        el('span', { text: `${p.patient.idHash} · ${n} modalidades` })
+      ];
+      if (tr) meta.push(el('span', {
+        class: 'trunc-tag',
+        title: `${tr.reason}. ${tr.rule}. ${tr.advice}`,
+        text: `⚠ recuperado — ${f(tr.pctLost, 2)}% do arquivo perdido no fim`
+      }));
+      ul.appendChild(el('li', { class: tr ? 'truncado' : '' }, [
+        el('div', { class: 'meta' }, meta),
         el('button', { class: 'x', title: 'remover', text: '×', onclick: () => { S.files.splice(i, 1); invalidarDs(); renderAll('Removendo arquivo'); } })
       ]));
     });
@@ -7133,11 +7161,31 @@ function painelTriagem(main, d) {
   const cabec = cabecalhoOrientacao(abaPorId('inicio'));
   if (cabec) main.appendChild(cabec);
 
+  /* Arquivo recuperado de exportação interrompida: o aviso vem ANTES de
+     qualquer pergunta, porque muda a leitura de tudo o que vem depois — uma
+     modalidade pode estar ausente por não ter sido gravada ou por ter ficado
+     do lado perdido do corte, e essas duas coisas não são a mesma. */
+  (d.all || []).filter(p2 => p2 && p2.truncated).forEach(p2 => {
+    const t = p2.truncated;
+    main.appendChild(el('div', {
+      class: 'warnbox', html: `<b>Arquivo recuperado: a exportação foi interrompida.</b> ` +
+        `<code>${p2.fileName}</code> termina no meio de um valor — provavelmente a transferência ou a ` +
+        `exportação no programador foi cortada. O aplicativo aproveitou o prefixo íntegro: ` +
+        `<b>${f(100 - t.pctLost, 2)}% do arquivo</b> foi lido (${(t.bytesLost / 1024).toFixed(0)} kB perdidos no fim). ` +
+        (t.droppedIncompleteRecord
+          ? `A gravação que estava sendo escrita no instante do corte foi <b>descartada</b> — meia gravação ` +
+            `pareceria uma gravação curta legítima e entraria nas análises como se fosse completa. `
+          : '') +
+        `<b>Uma modalidade ausente aqui pode ter ficado do lado perdido do corte</b>, e não significa que ela ` +
+        `não foi registrada. Reexporte o Session Report no programador para ter o arquivo completo.`
+    }));
+  });
+
   /* inventário do que veio no arquivo — antes das perguntas, porque é o que
      explica por que algumas delas estão desativadas */
   const mods = [
     ['Survey / espectro', d.montage.length + d.sensingSetup.length + d.signalCheck.length],
-    ['sinal bruto no tempo', d.bsTimeDomain.length + d.montageTD.length],
+    ['sinal bruto no tempo', d.bsTimeDomain.length + d.montageTD.length + (d.electrodeIdentifier || []).length + (d.indefiniteStreaming || []).length],
     ['streaming com estimulação', d.bsLfp.length],
     ['Timeline crônico', Object.keys(d.trend).length],
     ['eventos marcados', d.snapshots.length],

@@ -667,3 +667,8 @@ nav.tabs .sep{flex:0 0 1px;background:var(--rule);margin:9px 6px}
 .dia-cel .plotbox{margin:0}
 .dia-legenda{font:10px/1.5 var(--mono);color:var(--ink-3);margin:4px 2px 6px}
 .btn.mini{padding:2px 8px;font-size:10px}
+
+/* arquivo recuperado de exportação interrompida — a marca fica junto do nome
+   do arquivo, porque a ressalva é dele, não da análise */
+.filelist li.truncado{border-color:var(--brd-warn);background:var(--bg-warn)}
+.trunc-tag{display:block;margin-top:3px;color:var(--warn);font-weight:600}
