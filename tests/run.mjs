@@ -5068,6 +5068,137 @@ sec('sugestões clínicas: percentis de vigília, vídeo dos snapshots, Survey l
   });
 }
 
+/* ========================================================================= */
+sec('exportação interrompida: salvamento do prefixo e layout de Survey 1.3');
+{
+  const base = fs.readFileSync(path.join(PASTA, fs.readdirSync(PASTA).filter(x => /\.json$/i.test(x))[0]), 'utf8');
+
+  t('JSON truncado no meio de um número é recuperado, e a perda é contabilizada', () => {
+    const cortado = base.slice(0, Math.floor(base.length * 0.6));
+    const r = C.salvageJson(cortado);
+    assert(r.ok, 'não recuperou: ' + r.reason);
+    assert(r.report.salvaged && r.report.bytesLost > 0, 'não contabilizou a perda');
+    assert(r.report.bytesKept + r.report.bytesLost === cortado.length, 'a contabilidade de bytes não fecha');
+    assert(r.report.pctLost > 0 && r.report.pctLost < 100, `pctLost fora de faixa: ${r.report.pctLost}`);
+    JSON.parse(r.text);                       /* precisa ser JSON válido */
+    return `de ${(cortado.length / 1024).toFixed(0)} kB cortados, ${r.report.pctLost}% perdidos no fim`;
+  });
+
+  t('o registro que estava sendo escrito no corte é DESCARTADO, não entregue pela metade', () => {
+    /* array de registros com um data array cortado no meio */
+    const txt = '{"A":[{"Channel":"X","TimeDomainData":[1,2,3]},{"Channel":"Y","TimeDomainData":[9,8,7';
+    const r = C.salvageJson(txt);
+    assert(r.ok, 'não recuperou');
+    assert(r.value.A.length === 1, `esperava 1 registro completo, veio ${r.value.A.length}`);
+    assert(r.value.A[0].Channel === 'X', 'guardou o registro errado');
+    assert(r.report.droppedIncompleteRecord === true, 'não declarou o descarte do registro parcial');
+    /* o perigo que a regra evita: 3 amostras de uma gravação de 250 passariam
+       por gravação curta legítima */
+    return 'registro parcial descartado e declarado';
+  });
+
+  t('array de escalares cortado mantém os completos e larga o número ambíguo do fim', () => {
+    /* "30" no fim do arquivo pode ser o começo de "3000": sem o delimitador,
+       o número NÃO está completo, e entregá-lo seria inventar um valor. Só os
+       elementos delimitados sobrevivem. */
+    const r = C.salvageJson('{"a":1,"b":[10,20,30');
+    assert(r.ok, 'não recuperou');
+    assert(r.value.a === 1, 'perdeu o campo anterior');
+    assert(r.value.b.length === 2 && r.value.b[1] === 20,
+      `esperava [10,20] — o 30 do fim é ambíguo —, veio ${JSON.stringify(r.value.b)}`);
+    /* com o delimitador presente, o mesmo número entra */
+    const r2 = C.salvageJson('{"a":1,"b":[10,20,30,');
+    assert(r2.value.b.length === 3 && r2.value.b[2] === 30, 'o número delimitado deveria entrar');
+    return '[10,20] sem vírgula final · [10,20,30] com ela';
+  });
+
+  t('chave de objeto sem valor não vira ponto seguro', () => {
+    const r = C.salvageJson('{"a":1,"b":2,"c"');
+    assert(r.ok, 'não recuperou');
+    assert(r.value.a === 1 && r.value.b === 2, 'perdeu campos completos');
+    assert(!('c' in r.value), 'entregou a chave "c" sem valor');
+    const r2 = C.salvageJson('{"a":1,"b":"texto incomple');
+    assert(r2.ok && r2.value.a === 1 && !('b' in r2.value), 'string cortada virou valor');
+    return 'chave sem valor e string cortada descartadas';
+  });
+
+  t('JSON íntegro ou lixo não passam pelo salvamento', () => {
+    const ok = C.salvageJson('{"a":1}');
+    assert(!ok.ok && /fechado/.test(ok.reason), 'salvou um JSON que não estava truncado');
+    ['', 'isto não é json', '<html>'].forEach(x => assert(!C.salvageJson(x).ok, `salvou lixo: ${x}`));
+    return 'JSON completo e conteúdo não-JSON recusados';
+  });
+
+  t('parsePerceptText lê o arquivo truncado e marca a perda no registro', () => {
+    const cortado = base.slice(0, Math.floor(base.length * 0.7));
+    let p;
+    try { p = C.parsePerceptText(cortado, 'cortado.json'); }
+    catch (e) { assert(false, 'recusou o arquivo truncado: ' + e.message); }
+    assert(p.truncated && p.truncated.salvaged, 'leu sem marcar o truncamento');
+    assert(p.meta.truncated, 'a marca não chegou a meta');
+    assert(p.patient && p.patient.idHash, 'não pseudonimizou o registro recuperado');
+    assert(/reexporte/i.test(p.truncated.advice), 'não orienta reexportar');
+    /* e um arquivo íntegro continua sem a marca */
+    const inteiro = C.parsePerceptText(base, 'inteiro.json');
+    assert(!inteiro.truncated, 'marcou truncamento num arquivo íntegro');
+    return `${p.truncated.pctLost}% perdidos · íntegro segue sem marca`;
+  });
+
+  t('Survey do DataVersion 1.3: apelidos de campo e modos separados', () => {
+    /* o bloco novo usa TimeDomainDatainMicroVolts e TicksInMs; o mesmo arquivo
+       mantém TimeDomainData/TicksInMses nos blocos antigos */
+    const j = {
+      DataVersion: '1.3',
+      BrainSenseSurveysTimeDomain: [
+        {
+          SurveyMode: 'ElectrodeSurvey',
+          ElectrodeSurvey: [
+            { Hemisphere: 'Left', Channel: 'ZERO_AND_THREE_LEFT_RING', SampleRateInHz: 250, Gain: 228,
+              TicksInMs: '', GlobalSequences: '[]', GlobalPacketSizes: '[]',
+              TimeDomainDatainMicroVolts: Array.from({ length: 500 }, (_, i) => Math.sin(i / 5)) },
+            { Hemisphere: 'Right', Channel: 'ZERO_AND_THREE_RIGHT_RING', SampleRateInHz: 250,
+              TimeDomainDatainMicroVolts: [] }        /* canal listado, sem sinal */
+          ]
+        },
+        {
+          SurveyMode: 'ElectrodeIdentifier',
+          ElectrodeIdentifier: [
+            { Hemisphere: 'Left', Channel: 'ELECTRODE_ZERO_RING', SampleRateInHz: 250, Gain: 228,
+              ReferenceHemisphere: 'Right', ReferenceElectrode: 'ELECTRODE_THREE_RING', TipOffset: 0,
+              TimeDomainDatainMicroVolts: Array.from({ length: 400 }, (_, i) => Math.cos(i / 7)) }
+          ]
+        }
+      ]
+    };
+    const p = C.parsePercept(j, 'v13.json');
+    assert(p.montageTD.length === 1, `Survey deveria render 1 gravação com sinal, veio ${p.montageTD.length}`);
+    assert(p.montageTD[0].data.length === 500, 'não leu TimeDomainDatainMicroVolts');
+    assert(p.montageTD[0].hemisphere === 'Left', 'não usou o campo Hemisphere explícito');
+    /* o referenciado NÃO se mistura ao Survey bipolar */
+    assert(p.electrodeIdentifier.length === 1, 'não separou o ElectrodeIdentifier');
+    assert(p.electrodeIdentifier[0].referenced === true, 'não marcou como referenciado');
+    assert(p.electrodeIdentifier[0].referenceElectrode === 'ELECTRODE_THREE_RING', 'perdeu a referência');
+    /* canais sem sinal são contados, não somem */
+    const modos = p.surveyModes;
+    assert(modos.length === 2, `esperava 2 modos, veio ${modos.length}`);
+    const es = modos.find(m => /ElectrodeSurvey/.test(m.mode));
+    assert(es.nChannels === 2 && es.nWithData === 1, `contagem errada: ${JSON.stringify(es)}`);
+    /* e a modalidade está declarada no inventário */
+    assert(C.MODALITIES.some(m => m[0] === 'electrodeIdentifier'), 'modalidade não declarada em MODALITIES');
+    return `Survey 1.3: ${es.nWithData}/${es.nChannels} canais com sinal · identifier separado e referenciado`;
+  });
+
+  t('o layout antigo continua sendo lido igual — nenhuma regressão', () => {
+    const j = {
+      LfpMontageTimeDomain: [{ Channel: 'ZERO_THREE_LEFT', SampleRateInHz: 250, TicksInMses: '',
+        TimeDomainData: Array.from({ length: 300 }, (_, i) => i % 7) }]
+    };
+    const p = C.parsePercept(j, 'v12.json');
+    assert(p.montageTD.length === 1 && p.montageTD[0].data.length === 300, 'quebrou o formato antigo');
+    return 'TimeDomainData/TicksInMses seguem funcionando';
+  });
+}
+
 /* ------------------------------------------------------------- resultado -- */
 console.log(`\n${'='.repeat(58)}`);
 console.log(`  ${ok} passaram   ${falhas} falharam   ${pulados} sem dados`);

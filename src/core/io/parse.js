@@ -41,6 +41,7 @@ export const MODALITIES = [
   ['montage',       'BrainSense Survey — espectros (LFPMontage)'],
   ['montageTD',     'BrainSense Survey — sinal bruto (LfpMontageTimeDomain)'],
   ['indefiniteStreaming', 'Record Streaming — sinal bruto sem estimulação (IndefiniteStreaming)'],
+  ['electrodeIdentifier', 'Electrode Identifier — gravação referenciada ao outro hemisfério'],
   ['bsTimeDomain',  'BrainSense Streaming — sinal bruto'],
   ['bsLfp',         'BrainSense Streaming — potência + estimulação'],
   ['thresholdRuns',  'Captura de limiares — domínio de potência (Thresholds)'],
@@ -59,7 +60,120 @@ export const MODALITIES = [
    custa uma clonagem estruturada de milhões de nós. Com esta função, tanto o
    JSON.parse quanto a extração saem da thread principal. */
 export function parsePerceptText(texto, nomeArquivo) {
-  return parsePercept(JSON.parse(texto), nomeArquivo);
+  try {
+    return parsePercept(JSON.parse(texto), nomeArquivo);
+  } catch (e) {
+    /* JSON inválido: antes de recusar, tenta SALVAR o prefixo íntegro. Uma
+       exportação interrompida no tablet perde o fim do arquivo, e o resto —
+       que costuma ser quase tudo — continua sendo dado bom. Ver salvageJson. */
+    const s = salvageJson(texto);
+    if (!s.ok) throw e;
+    const out = parsePercept(s.value, nomeArquivo);
+    out.truncated = s.report;
+    out.meta.truncated = s.report;
+    return out;
+  }
+}
+
+/* ------------------------------------------------------------------------ */
+/*  Salvamento de JSON truncado                                             */
+/* ------------------------------------------------------------------------ */
+
+/* salvageJson(texto) — recupera o maior prefixo VÁLIDO de um JSON cortado.
+
+   POR QUE EXISTE. Um Session Report interrompido (transferência cortada,
+   exportação abortada no tablet) termina no meio de um número e o
+   `JSON.parse` recusa o arquivo inteiro. Mas um arquivo de 1,8 MB cortado no
+   último registro ainda contém dezenas de gravações completas: recusar tudo
+   por causa do fim é jogar fora dado bom.
+
+   A REGRA QUE TORNA ISSO HONESTO, e não um remendo: só sobrevive o que foi
+   ESCRITO POR INTEIRO. O registro que estava sendo escrito no instante do
+   corte é DESCARTADO, mesmo que já tivesse milhares de amostras — meia
+   gravação com metade das amostras parece uma gravação curta legítima, e
+   entraria em toda análise como se fosse. Preferimos perder o registro
+   incompleto a deixá-lo passar disfarçado de completo.
+
+   Implementação: uma varredura registra, para cada contêiner aberto, a posição
+   logo após o último FILHO COMPLETO. O corte acontece no array que contém o
+   objeto incompleto (regra `[` seguido de `{` mais profunda), descartando esse
+   objeto; sem esse padrão, corta no contêiner mais profundo com filho
+   completo. Depois fecha os contêineres restantes.
+
+   Devolve {ok, value, text, report}. `report` traz a contabilidade que a
+   interface precisa mostrar: bytes perdidos, percentual e o que foi
+   descartado.                                                              */
+export function salvageJson(texto) {
+  const txt = typeof texto === 'string' ? texto : String(texto == null ? '' : texto);
+  const falha = motivo => ({ ok: false, reason: motivo });
+  if (txt.trim().charAt(0) !== '{' && txt.trim().charAt(0) !== '[') return falha('não começa como objeto ou lista JSON');
+
+  const pilha = [];             /* {ch, safe, esperaChave} */
+  let emString = false, escape = false, numIni = -1;
+  const fecharValor = fim => {
+    const topo = pilha[pilha.length - 1];
+    if (!topo) return;
+    /* numa string de OBJETO, só um valor move o ponto seguro — a chave não */
+    if (topo.ch === '{' && topo.esperaChave) return;
+    topo.safe = fim;
+    if (topo.ch === '{') topo.esperaChave = true;
+  };
+  const fimDoNumero = (ini, fim) => { let j = fim; while (j > ini && !/[0-9]/.test(txt[j - 1])) j--; return j; };
+
+  for (let i = 0; i < txt.length; i++) {
+    const c = txt[i];
+    if (escape) { escape = false; continue; }
+    if (emString) {
+      if (c === '\\') escape = true;
+      else if (c === '"') { emString = false; fecharValor(i + 1); }
+      continue;
+    }
+    if (numIni >= 0 && !/[0-9eE+\-.]/.test(c)) { fecharValor(fimDoNumero(numIni, i)); numIni = -1; }
+    if (c === '"') { emString = true; continue; }
+    if (c === ':') { const t = pilha[pilha.length - 1]; if (t && t.ch === '{') t.esperaChave = false; continue; }
+    if (c === '{' || c === '[') { pilha.push({ ch: c, safe: -1, esperaChave: c === '{' }); continue; }
+    if (c === '}' || c === ']') { pilha.pop(); fecharValor(i + 1); continue; }
+    if (/[-0-9]/.test(c) && numIni < 0) { numIni = i; continue; }
+    if (c === 't' || c === 'f' || c === 'n') {
+      const m = /^(true|false|null)/.exec(txt.slice(i, i + 5));
+      if (m) { i += m[1].length - 1; fecharValor(i + 1); }
+    }
+  }
+  if (!pilha.length) return falha('o JSON está fechado — o erro não é de truncamento');
+
+  /* onde cortar: o array que segura o objeto incompleto */
+  let k = -1;
+  for (let i = pilha.length - 2; i >= 0; i--) {
+    if (pilha[i].ch === '[' && pilha[i + 1].ch === '{') { k = i; break; }
+  }
+  if (k < 0) { k = pilha.length - 1; while (k >= 0 && pilha[k].safe < 0) k--; }
+  if (k < 0 || pilha[k].safe < 0) return falha('nenhum elemento completo antes do corte');
+
+  const corte = pilha[k].safe;
+  const fechos = pilha.slice(0, k + 1).map(p => (p.ch === '{' ? '}' : ']')).reverse().join('');
+  const recuperado = txt.slice(0, corte) + fechos;
+  let value;
+  try { value = JSON.parse(recuperado); }
+  catch (e) { return falha('o prefixo recuperado ainda não é JSON válido: ' + e.message); }
+
+  const perdidos = txt.length - corte;
+  const registroDescartado = pilha.length > k + 1 && pilha[k + 1].ch === '{';
+  return {
+    ok: true, value, text: recuperado,
+    report: {
+      salvaged: true,
+      bytesTotal: txt.length, bytesKept: corte, bytesLost: perdidos,
+      pctLost: +(100 * perdidos / txt.length).toFixed(3),
+      depthAtCut: pilha.length,
+      droppedIncompleteRecord: registroDescartado,
+      topLevelKeys: value && typeof value === 'object' && !Array.isArray(value) ? Object.keys(value).length : null,
+      reason: 'o arquivo termina no meio de um valor — a exportação foi interrompida',
+      rule: 'só sobreviveu o que foi escrito por inteiro' +
+        (registroDescartado ? '; o registro que estava sendo gravado no instante do corte foi DESCARTADO' : ''),
+      advice: 'reexporte o Session Report no programador para obter o arquivo completo; ' +
+        'o que está aqui é o prefixo íntegro e pode ser analisado, com a perda declarada em toda exportação'
+    }
+  };
 }
 
 /* Cadeia de filtros de hardware do Percept, DOCUMENTADA.
@@ -307,15 +421,26 @@ export function parsePercept(json, fileName) {
   })).filter(m => m.f.length);
 
   /* --- séries no domínio do tempo -------------------------------------- */
-  const td = (arr, dst, streamName) => (isArr(arr) ? arr : []).forEach(r => {
-    if (!isArr(r.TimeDomainData) || !r.TimeDomainData.length) return;
+  /* Apelidos de campo do DataVersion 1.3. O bloco novo de Survey grava
+     `TimeDomainDatainMicroVolts` e `TicksInMs`, enquanto SenseChannelTests e
+     CalibrationTests, NO MESMO ARQUIVO, seguem com `TimeDomainData` e
+     `TicksInMses`. Ler só os nomes antigos faz um Survey inteiro sumir sem
+     erro nenhum — a modalidade aparece como ausente, que é o pior modo de
+     falhar. Aceitar os dois nomes é o conserto. */
+  const amostrasDe = r => (isArr(r.TimeDomainData) ? r.TimeDomainData
+    : isArr(r.TimeDomainDatainMicroVolts) ? r.TimeDomainDatainMicroVolts : null);
+  const ticksDe = r => (r.TicksInMses !== undefined ? r.TicksInMses : r.TicksInMs);
+
+  const td = (arr, dst, streamName, extra) => (isArr(arr) ? arr : []).forEach(r => {
+    const amostras = amostrasDe(r);
+    if (!amostras || !amostras.length) return;
     const fs = num(r.SampleRateInHz) || 250;
     /* campos de sequência: até aqui eram ignorados, e sem eles a perda de
        pacotes passa silenciosamente (ver io/packets.js) */
     const packetSizes = parseIntList(r.GlobalPacketSizes);
-    const ticksMs = parseIntList(r.TicksInMses);
+    const ticksMs = parseIntList(ticksDe(r));
     const sequences = parseIntList(r.GlobalSequences);
-    const bruto = Float64Array.from(r.TimeDomainData, num);
+    const bruto = Float64Array.from(amostras, num);
     /* `stream` e `deviceModel` decidem se as sequências são utilizáveis e com
        que cap — ver io/packets.js e docs/auditoria-whitepaper.md (A2, A3) */
     const packets = analyzePackets({
@@ -327,16 +452,19 @@ export function parsePercept(json, fileName) {
       ? insertNaNGaps(bruto, packets.gaps)
       : { data: bruto, missingMask: new Uint8Array(bruto.length) };
     const timing = effectiveFs({ ticksMs, nSamples: packets.nExpected, nominalFs: fs, packetSizes });
-    dst.push({
+    dst.push(Object.assign({
       pass: r.Pass || '', channel: tail(r.Channel), label: prettyChannel(tail(r.Channel)),
-      hemisphere: /LEFT|_L$/i.test(String(r.Channel)) ? 'Left' : (/RIGHT|_R$/i.test(String(r.Channel)) ? 'Right' : '?'),
+      /* o bloco novo de Survey traz `Hemisphere` explícito; o antigo só deixa
+         o lado no nome do canal */
+      hemisphere: r.Hemisphere ? tail(r.Hemisphere)
+        : (/LEFT|_L$/i.test(String(r.Channel)) ? 'Left' : (/RIGHT|_R$/i.test(String(r.Channel)) ? 'Right' : '?')),
       fs, gain: num(r.Gain),
       /* fs efetiva medida pelos ticks; cai para a nominal quando não verificável */
       fsEff: isFinite(timing.fsEff) ? timing.fsEff : fs,
       t0: r.FirstPacketDateTime || null,
       data: preenchido.data, missingMask: preenchido.missingMask,
       packets, timing
-    });
+    }, extra ? extra(r) : null));
   });
   td(d.LfpMontageTimeDomain, out.montageTD, 'LfpMontageTimeDomain');
   td(d.BrainSenseTimeDomain, out.bsTimeDomain, 'BrainSenseTimeDomain');
@@ -346,6 +474,46 @@ export function parsePercept(json, fileName) {
      longo. É o único modo que dá minutos de sinal sem estimulação e com três
      canais simultâneos por hemisfério (UC202012929cEN FY24, p. 16 e 23). */
   td(d.IndefiniteStreaming, out.indefiniteStreaming = [], 'IndefiniteStreaming');
+
+  /* --- BrainSenseSurveysTimeDomain (DataVersion 1.3) --------------------
+     O Survey deixou de ser uma lista plana e passou a ser uma lista de grupos
+     por MODO. Dois modos aparecem:
+
+       ElectrodeSurvey     — a varredura bipolar de sempre, que alimenta as
+                             mesmas figuras do LfpMontageTimeDomain.
+       ElectrodeIdentifier — gravação REFERENCIADA a um eletrodo do outro
+                             hemisfério (ReferenceHemisphere/ReferenceElectrode
+                             e TipOffset). NÃO é um par bipolar comum, e por
+                             isso entra numa lista própria em vez de se
+                             misturar ao Survey: tratar o canal referenciado
+                             como bipolar produziria amplitude e topografia
+                             sem sentido.
+
+     Canais listados com zero amostras existem no arquivo (o modo foi
+     configurado) mas não trazem sinal — são contados e declarados em vez de
+     sumirem em silêncio.                                                   */
+  out.electrodeIdentifier = [];
+  out.surveyModes = [];
+  if (isArr(d.BrainSenseSurveysTimeDomain)) d.BrainSenseSurveysTimeDomain.forEach(g => {
+    if (!g || typeof g !== 'object') return;
+    const modo = tail(g.SurveyMode) || '';
+    const lista = isArr(g.ElectrodeSurvey) ? g.ElectrodeSurvey
+      : isArr(g.ElectrodeIdentifier) ? g.ElectrodeIdentifier
+        : (isArr(g.Records) ? g.Records : []);
+    const comDados = lista.filter(r => { const a = amostrasDe(r); return a && a.length; }).length;
+    out.surveyModes.push({ mode: modo || '(sem modo declarado)', nChannels: lista.length, nWithData: comDados });
+    if (/ElectrodeIdentifier/i.test(modo)) {
+      td(lista, out.electrodeIdentifier, 'BrainSenseSurveysTimeDomain', r => ({
+        surveyMode: modo,
+        referenceHemisphere: tail(r.ReferenceHemisphere) || null,
+        referenceElectrode: tail(r.ReferenceElectrode) || null,
+        tipOffset: num(r.TipOffset),
+        referenced: true
+      }));
+    } else {
+      td(lista, out.montageTD, 'BrainSenseSurveysTimeDomain', r => ({ surveyMode: modo || 'ElectrodeSurvey' }));
+    }
+  });
 
   /* --- streaming de potência ------------------------------------------- */
   if (isArr(d.BrainSenseLfp)) out.bsLfp = d.BrainSenseLfp.map(r => {
