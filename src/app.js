@@ -2913,6 +2913,196 @@ const FIGURES = [
     }
   },
 
+  /* ----------------------------------------------------------------- F40 */
+  /* Pipeline de referência do cronotipo (van Rheede 2022) — a resposta padrão
+     da área para "existe ritmo diurno?" com VE, permutação circular por dia,
+     VE dia/noite, flag de bimodalidade (discinesia) e especificidade de
+     banda. O núcleo vive em core/metrics/chronotype.js (C.CHRONOTYPE).      */
+  {
+    id: 'F40', title: 'Cronotipo do marcador — pipeline de van Rheede',
+    sub: 'variância explicada pela hora do dia · permutação circular por dia · bimodalidade como alarme de discinesia',
+    has: d => Object.keys(d.trend).length,
+    render(node, d) {
+      const CT = C.CHRONOTYPE;
+      const hemis = Object.keys(d.trend);
+      const nPerm = opt('F40', 'nperm', 1000);
+      const binMin = opt('F40', 'bin', 30);
+      const zThr = opt('F40', 'z', 6);
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlNumber('permutações', nPerm, 100, 2000, 100, v => setOpt('F40', 'nperm', v)),
+        ctrlNumber('bin (min)', binMin, 10, 120, 10, v => setOpt('F40', 'bin', v)),
+        ctrlNumber('outlier |z| >', zThr, 3, 10, 0.5, v => setOpt('F40', 'z', v))
+      ]));
+
+      const resultados = {};
+      const csvRows = [];
+      hemis.forEach(h => {
+        const r = CT.chronotypePipeline(d.trend[h], offMin(), { nPermutations: nPerm, binMinutes: binMin, zThreshold: zThr });
+        resultados[h] = r;
+        node.appendChild(el('h3', { class: 'qc-title', html: `<span class="hemi-${h[0]}">${rotuloLado(h)}</span> — cronotipo` }));
+        if (!r.ok) {
+          node.appendChild(el('div', { class: 'warnbox', html: `<b>Não calculável.</b> ${r.reason}` }));
+          return;
+        }
+        /* (a) perfil por bin de 30 min, na escala destendida (mediana diária = 1) */
+        const box = plotBox(node, 210);
+        {
+          const vs = r.profile.values.filter(isFinite);
+          const ch = new P.Chart(box.canvas, {
+            width: box.width, height: box.height, xlim: [0, 24],
+            ylim: [Math.min.apply(null, vs) * 0.95, Math.max.apply(null, vs) * 1.08],
+            xlabel: 'hora local', ylabel: 'potência ÷ mediana do dia',
+            title: `perfil médio por bin de ${r.profile.binMinutes} min · VE = ${(100 * r.ve).toFixed(1)}% · p(permutação) = ${r.permutation.p}`,
+            pad: { l: 62, r: 14, t: 24, b: 40 }
+          });
+          ch.axes({ nx: 8 });
+          ch.hline(1, { color: '#9AA7B4', width: 1, dash: [4, 3] });
+          ch.line(r.profile.hours, r.profile.values, { color: hcol(h), width: 2 });
+        }
+        /* (b) números do pipeline */
+        node.appendChild(table(['métrica', 'este registro', 'publicado (van Rheede 2022, n=6)'], [
+          ['variância explicada pela hora do dia', `${(100 * r.ve).toFixed(1)}% (p = ${r.permutation.p}, ${r.permutation.nPermutations} permutações circulares)`, '41 ± 9% (p<0,001 em todos)'],
+          ['VE dentro da vigília (08–20 h)', isFinite(r.veDay.ve) ? (100 * r.veDay.ve).toFixed(1) + '%' : '—', '13 ± 11%'],
+          ['VE dentro do sono (00–06 h)', isFinite(r.veNight.ve) ? (100 * r.veNight.ve).toFixed(1) + '%' : '—', '14 ± 13%'],
+          ['limiar do nulo (95º percentil)', (100 * r.permutation.null95).toFixed(1) + '%', '—'],
+          ['outliers |z|>' + r.params.zThreshold + ' substituídos', `${r.outliers.nReplaced} (${r.outliers.iterations} iteração(ões)) — interpolação do método publicado, contada`, '18 ± 23 por série'],
+          ['dias · amostras', `${r.nDays} · ${r.nSamples}`, '34 ± 13 dias']
+        ]));
+        /* (c) bimodalidade diurna — o alarme de discinesia */
+        if (r.bimodality.ok) node.appendChild(el('div', {
+          class: r.bimodality.flag ? 'warnbox' : 'note',
+          html: `<b>Distribuição diurna${r.bimodality.flag ? ' — BIMODAL' : ''}.</b> BC de Sarle = ${r.bimodality.sarleBC} ` +
+            `(limiar 0,555) · d de Ashman = ${r.bimodality.ashmanD} (limiar 2). ${r.bimodality.reading}.`
+        }));
+        r.profile.hours.forEach((hh, i) => csvRows.push({
+          hemisphere: h, bin_center_hour: hh, mean_detrended: r.profile.values[i], n_samples: r.profile.counts[i],
+          ve: r.ve, ve_p: r.permutation.p, ve_day: r.veDay.ve, ve_night: r.veNight.ve,
+          n_outliers_replaced: r.outliers.nReplaced, bimodality_flag: r.bimodality.ok && r.bimodality.flag ? 1 : 0,
+          n_permutations: r.permutation.nPermutations, bin_minutes: r.profile.binMinutes,
+          z_threshold: r.params.zThreshold, utc_offset_min: offMin()
+        }));
+      });
+
+      /* (d) especificidade: correlação entre os dois hemisférios destendidos */
+      if (hemis.length === 2 && resultados[hemis[0]].ok && resultados[hemis[1]].ok) {
+        const [hA, hB] = hemis;
+        const rA = resultados[hA], rB = resultados[hB];
+        const spec = CT.bandSpecificityCheck(d.trend[hA], rA.detrended, d.trend[hB], rB.detrended, {});
+        node.appendChild(el('div', {
+          class: spec.ok && spec.suspicious ? 'warnbox' : 'note',
+          html: `<b>Especificidade de banda (passo 8)${spec.ok && spec.suspicious ? ' — SUSPEITA DE ARTEFATO COMUM' : ''}.</b> ` +
+            (spec.ok
+              ? `Correlação entre as séries destendidas dos dois hemisférios: r = ${spec.r} (n = ${spec.n}). ${spec.reading}. ` +
+                `Faixa publicada: ${spec.published}.`
+              : `Não verificável: ${spec.reason}.`)
+        }));
+      }
+
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Método.</b> Reprodução passo a passo do pipeline de van Rheede et al. ` +
+          `[doi:10.1038/s41531-022-00350-7; toolbox original Circa Diem, doi:10.5281/zenodo.5961105]: outliers |z|>6 ` +
+          `interpolados iterativamente (contagem exportada), detrending pela mediana diária, ajuste por bins de 30 min, ` +
+          `VE e permutação circular por dia (preserva a autocorrelação intradiária, destrói só o alinhamento entre dias; ` +
+          `semente fixa). O confundimento central está declarado no artigo: ritmo circadiano fisiológico e ritmo dos ` +
+          `artefatos (ECG, movimento) são temporalmente sincronizados pela atividade — um perfil diurno pode ser ` +
+          `fisiologia, artefato, ou os dois. A bimodalidade diurna e a correlação inter-hemisférica são os dois ` +
+          `indicadores indiretos que o próprio artigo recomenda inspecionar. No GPi o cronotipo difere ` +
+          `(beta sustentado no sono — Yin 2023) e a comparação com os números publicados (STN) não se transfere.`
+      }));
+      if (csvRows.length) node.appendChild(exportRow([
+        { label: '⤓ CSV (R-compatible)', fn: () => P.downloadText(P.toCSV(csvRows), 'F40_chronotype_vanrheede.csv', 'text/csv') }
+      ]));
+    }
+  },
+
+  /* ----------------------------------------------------------------- F41 */
+  /* Janela de estabilização pós-operatória (stun effect): change-point da
+     mediana diária (de Neeling 2026) + taxa de variação e RQA (Feldmann
+     2025). O núcleo vive em core/metrics/stun.js (C.STUN).                  */
+  {
+    id: 'F41', title: 'Estabilização pós-operatória — stun effect',
+    sub: 'change-point da mediana diária · 22–40 dias é a janela publicada · não fixe limiares antes de ~1 mês',
+    has: d => Object.keys(d.trend).length,
+    render(node, d) {
+      const ST = C.STUN;
+      const hemis = Object.keys(d.trend);
+      const implantAuto = (d.all[0] && d.all[0].device && d.all[0].device.implantDate) ? String(d.all[0].device.implantDate).slice(0, 10) : '';
+      const implantUser = opt('F41', 'implant', '');
+      const implante = implantUser || implantAuto;
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlText('data de implante (AAAA-MM-DD)', implantUser || implantAuto, implantAuto ? implantAuto + ' (do arquivo)' : 'não consta do arquivo — informe',
+          v => setOpt('F41', 'implant', v))
+      ]));
+
+      const csvRows = [];
+      hemis.forEach(h => {
+        const r = ST.stunAnalysis(d.trend[h], offMin(), { implantDate: implante || null });
+        node.appendChild(el('h3', { class: 'qc-title', html: `<span class="hemi-${h[0]}">${rotuloLado(h)}</span> — mediana diária e mudança de regime` }));
+        if (!r.ok) {
+          node.appendChild(el('div', { class: 'warnbox', html: `<b>Não calculável.</b> ${r.reason}` }));
+          return;
+        }
+        /* (a) mediana diária com os change-points */
+        const box = plotBox(node, 210);
+        {
+          const xs = r.days.map((_, i) => i);
+          const vs = r.dailyMedians.filter(isFinite);
+          const ch = new P.Chart(box.canvas, {
+            width: box.width, height: box.height, xlim: [-0.5, r.nDays - 0.5],
+            ylim: [Math.min.apply(null, vs) * 0.9, Math.max.apply(null, vs) * 1.1],
+            xlabel: isFinite(r.implant.startPostOpDay) ? 'dia pós-implante' : 'dia do registro',
+            ylabel: 'mediana diária (LFP nativo)',
+            title: `veredito: ${r.verdict}` + (r.changePoints.length ? ` · ${r.changePoints.length} change-point(s)` : ''),
+            pad: { l: 66, r: 14, t: 24, b: 40 }
+          });
+          const rotX = i => isFinite(r.implant.startPostOpDay) ? String(r.implant.startPostOpDay + Math.round(i)) : r.days[Math.round(i)].slice(5);
+          const passo = Math.max(1, Math.ceil(r.nDays / 9));
+          ch.axes({ xticks: xs.filter(i => i % passo === 0), xfmt: rotX });
+          ch.line(xs, r.dailyMedians, { color: hcol(h), width: 1.8 });
+          r.changePoints.forEach(pt => {
+            const x = pt.index + 0.5;
+            ch.ctx.strokeStyle = '#B0433C'; ch.ctx.lineWidth = 1.5; ch.ctx.setLineDash([5, 3]);
+            ch.ctx.beginPath(); ch.ctx.moveTo(ch.X(x), ch.y0); ch.ctx.lineTo(ch.X(x), ch.y1); ch.ctx.stroke();
+            ch.ctx.setLineDash([]);
+          });
+        }
+        /* (b) tabela de change-points e métricas convergentes */
+        if (r.changePoints.length) node.appendChild(table(
+          ['change-point (dia local)', 'dia pós-implante', 'p (permutação)', 'nível antes → depois'],
+          r.changePoints.map(pt => [pt.dayKey, isFinite(pt.postOpDay) ? pt.postOpDay : '—', pt.p, `${pt.levelBefore} → ${pt.levelAfter}`])));
+        node.appendChild(table(['métrica convergente', 'primeira metade', 'segunda metade'], [
+          ['taxa de variação diária (fração da mediana global)', f(100 * r.rate.earlyMean, 1) + '%', f(100 * r.rate.lateMean, 1) + '%'],
+          ['RQA — taxa de recorrência', r.rqa.early.ok ? r.rqa.early.recurrenceRate : '—', r.rqa.late.ok ? r.rqa.late.recurrenceRate : '—'],
+          ['RQA — laminaridade', r.rqa.early.ok ? r.rqa.early.laminarity : '—', r.rqa.late.ok ? r.rqa.late.laminarity : '—'],
+          ['RQA — determinismo', r.rqa.early.ok ? r.rqa.early.determinism : '—', r.rqa.late.ok ? r.rqa.late.determinism : '—']
+        ]));
+        r.warnings.forEach(w => node.appendChild(el('div', { class: 'warnbox', html: `<b>Atenção.</b> ${w}.` })));
+        node.appendChild(el('div', { class: 'note', html: `<b>Ambiguidade declarada.</b> ${r.aperiodicCaveat}.` }));
+        r.days.forEach((dk, i) => csvRows.push({
+          hemisphere: h, day_local: dk,
+          post_op_day: isFinite(r.implant.startPostOpDay) ? r.implant.startPostOpDay + i : NaN,
+          daily_median_lfp: r.dailyMedians[i], daily_rate_of_change: r.rate.series[i],
+          is_change_point: r.changePoints.some(pt => pt.dayKey === dk) ? 1 : 0,
+          verdict: r.verdict, implant_date: r.implant.date || '', utc_offset_min: offMin()
+        }));
+      });
+
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Método e por que importa.</b> Duas metodologias independentes convergem: change-point da ` +
+          `mediana diária de beta muda de regime em <b>24–40 dias</b> pós-implante (de Neeling et al., Mov Disord 2026, n=32 ` +
+          `[doi:10.1002/mds.70042]) e taxa de variação + quantificação de recorrência estabilizam em <b>22–29 dias</b> ` +
+          `(Feldmann et al., Brain Stimul 2025, n=14 [doi:10.1016/j.brs.2025.08.002]). A implicação prática: seleção de ` +
+          `contato e limiares de aDBS baseados em eletrofisiologia antes de ~1 mês pós-implante são pouco confiáveis. ` +
+          `O beta NÃO cai com a ativação da DBS nesse período — continua subindo (efeito da microlesão se dissipando). ` +
+          `Este painel posiciona o SEU registro nessa janela; o TIDAL-DT (F36) e o assistente de contato devem ler o ` +
+          `veredito antes de propor números.`
+      }));
+      if (csvRows.length) node.appendChild(exportRow([
+        { label: '⤓ CSV (R-compatible)', fn: () => P.downloadText(P.toCSV(csvRows), 'F41_stun_effect.csv', 'text/csv') }
+      ]));
+    }
+  },
+
   /* ----------------------------------------------------------------- F13 */
   {
     id: 'F13', title: 'Estados ON/OFF pela amplitude do beta',
@@ -4411,6 +4601,14 @@ const FIGURES = [
             (isFinite(ub.batteryDropPctPerMonth) ? ` Bateria caindo ${f(ub.batteryDropPctPerMonth, 1)} pontos percentuais por mês.` : '') +
             ` ${ub.caveat}`
         }));
+        /* custo de bateria do streaming: ~1 dia de longevidade por hora no PC */
+        {
+          const segStream = d.bsTimeDomain.reduce((a, t2) => a + (t2.data ? t2.data.length / (t2.fsEff || t2.fs || 250) : 0), 0);
+          if (segStream > 0) {
+            const bc = C.PRACTICE.streamingBatteryCost(segStream, (d.all[0].device || {}).model || '');
+            node.appendChild(el('div', { class: 'note', html: `<b>Custo do streaming.</b> ${bc.reading} [doi:10.1080/17582024.2024.2404386].` }));
+          }
+        }
       }
 
       node.appendChild(exportRow([
@@ -5535,6 +5733,58 @@ const FIGURES = [
             class: 'exphint', text: `auto-tuned: ${tuned.lower}/${tuned.upper} (cost ${f(tuned.cost, 1)} vs ${f(tuned.baseCost, 1)} at proposal)`
           }));
           node.appendChild(linhaTune);
+        }
+
+        /* (d2) armadilhas da prática real (ADAPT-START / van Rheede) — camada
+           de leitura clínica FORA do espelho JS↔R do TIDAL (C.PRACTICE)     */
+        {
+          const PR2 = C.PRACTICE;
+          /* meta de janela de amplitude ≥ 0,7 mA */
+          const wc = PR2.amplitudeWindowCheck(iMin, iMax);
+          if (wc.ok && !wc.meetsTarget) node.appendChild(el('div', {
+            class: 'warnbox', html: `<b>Amplitude window below target.</b> ${wc.widthMa} mA between current limits — ` +
+              `ADAPT-START's empirical target is ≥${wc.targetMa} mA of working range (ceiling 1.5 mA in that study). ` +
+              `A narrow window gives the controller little room to modulate.`
+          }));
+          /* congelamento entre limiares + cDBS de dois níveis */
+          if (s.hasCurrent && s.trajectory) {
+            const trap = PR2.dualThresholdTrap(s.trajectory, {
+              iMin, iMax, dayKeys: res.wakeRows.map(r => C.localDayKey(r.t, offMin()))
+            });
+            if (trap.ok) node.appendChild(el('div', {
+              class: trap.functionallyCdbs ? 'warnbox' : 'note',
+              html: `<b>Dual-threshold behavior check${trap.functionallyCdbs ? ' — TWO-LEVEL cDBS PATTERN' : ''}.</b> ` +
+                `Simulated current pinned at the limits ${f(trap.pctPinnedHigh + trap.pctPinnedLow, 0)}% of the time ` +
+                `(${f(trap.pctPinnedHigh, 0)}% ceiling / ${f(trap.pctPinnedLow, 0)}% floor), ${trap.fullSwingsPerDay} full ` +
+                `limit-to-limit crossings per day. ` +
+                (trap.functionallyCdbs
+                  ? `This is the pattern ADAPT-START described as functionally a two-level cDBS, not an aDBS. `
+                  : ``) +
+                `Freeze caveat: between the thresholds the amplitude HOLDS its last value — a signal that retreats to the ` +
+                `intermediate band without crossing the lower threshold leaves stimulation stuck at the ceiling [Cascino 2026].`
+            }));
+          }
+          /* deriva de distribuição — vigilância pós-configuração */
+          const dr = PR2.distributionDrift(res.wakeRows.map(r => ({ t: r.t, x: r.x })), offMin(), {});
+          node.appendChild(el('div', {
+            class: dr.ok && dr.drift ? 'warnbox' : 'note',
+            html: `<b>Distribution drift check${dr.ok ? (dr.drift ? ' — DRIFT' : ' — stable') : ''}.</b> ` +
+              (dr.ok
+                ? `Last ${dr.recent.nDays} days vs reference (${dr.reference.nDays} days), wake log-power percentiles: ` +
+                  `P25 ${dr.shiftPct.p25 > 0 ? '+' : ''}${dr.shiftPct.p25}% · P50 ${dr.shiftPct.p50 > 0 ? '+' : ''}${dr.shiftPct.p50}% · ` +
+                  `P75 ${dr.shiftPct.p75 > 0 ? '+' : ''}${dr.shiftPct.p75}% (warn at ±${dr.params.warnPct}%). ` +
+                  (dr.drift ? `Thresholds derived from the reference window may occupy a different zone today — re-check before ` +
+                    `interpreting adaptation; chronic artifact above threshold reproduces cDBS at the ceiling [van Rheede 2022]. ` +
+                    `Cascino: the stimulation-amplitude trace over time is a more reliable indicator than 10-min averages.` : ``)
+                : `Not verifiable: ${dr.reason}.`)
+          }));
+          /* limite informacional do controlador só-beta */
+          node.appendChild(el('div', {
+            class: 'note', html: `<b>Single-biomarker ceiling.</b> Beta bursts alone explained 16% of hemibody impairment ` +
+              `variance; a model with ALL spectral states (theta, alpha, low/high-beta) explained 50% [Khawaldeh 2022, ` +
+              `doi:10.1093/brain/awab264]. A beta-only controller discards most of the information in the signal — a limit ` +
+              `of the commercial mode itself, stated here so the proposal is read at its true size.`
+          }));
         }
 
         /* (e) medication-cycle check */
@@ -7089,7 +7339,7 @@ const ABAS = [
   },
   {
     id: 'cronico', label: 'Crônico', sub: 'dias · vida real', camada: 'cronico',
-    figuras: ['F8', 'F32', 'F9', 'F37', 'F39', 'F13', 'F10', 'F25', 'F28', 'F29'],
+    figuras: ['F8', 'F32', 'F9', 'F40', 'F37', 'F39', 'F41', 'F13', 'F10', 'F25', 'F28', 'F29'],
     orient: {
       titulo: 'Registro crônico — vida real, sem supervisão',
       camada: 'crônico · observacional',

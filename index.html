@@ -6250,6 +6250,894 @@ const SLEEP = {
   selfTest: selfTestSleep
 };
 
+/* ---------- core/metrics/chronotype.js ---------- */
+/* metrics/chronotype.js — o pipeline de referência do cronotipo do beta (metrics)
+
+   Implementação passo a passo do procedimento de van Rheede et al., npj
+   Parkinsons Dis 2022;8:88 (doi:10.1038/s41531-022-00350-7) — o padrão
+   informal da área para responder "existe ritmo diurno do biomarcador sob DBS
+   contínua?" com o Timeline crônico. A toolbox original é a Circa Diem
+   (MATLAB, doi:10.5281/zenodo.5961105); aqui os mesmos passos rodam no
+   navegador, sem dependências, com semente determinística.
+
+   Os passos (numeração do artigo):
+     3. Outliers: |z| > 6 substituídos por interpolação linear entre vizinhos,
+        ITERATIVAMENTE, até nenhum exceder. A interpolação é do método
+        publicado; a contagem e as posições são exportadas — nada é silencioso.
+     4. Detrending: cada valor dividido pela MEDIANA do próprio dia (mediana
+        diária vira 1). Remove deriva de semanas, preserva o padrão intradiário.
+     5. Ajuste por hora do dia: bins de 30 min; média por bin; valores entre
+        centros por interpolação linear circular.
+     6. Variância explicada: VE = (VarTot − VarResid)/VarTot.
+     7. Permutação circular por dia (1000×): cada dia recebe um deslocamento
+        circular aleatório de 0–24 h — preserva a autocorrelação intradiária,
+        destrói só o alinhamento entre dias. p = (1+#nulos≥obs)/(1+n).
+     8. Especificidade de banda: correlação entre as séries destendidas dos
+        dois hemisférios — correlação alta sugere artefato de banda larga
+        comum (no artigo original: −0,24 a 0,61, média 0,18 ± 0,36).
+     9. VE dentro da vigília (08–20 h) e dentro do sono (00–06 h), separadas
+        (no artigo: 0,13 ± 0,11 e 0,14 ± 0,13).
+
+   Extensão recomendada pelo próprio artigo (§4.2 da revisão): inspecionar a
+   DISTRIBUIÇÃO diurna — bimodalidade forte é assinatura de contaminação por
+   discinesia (movimento sustentado dentro da janela de 10 min).
+
+   Unidades: entrada em potência LFP nativa; saída em frações (VE 0–1) e na
+   escala destendida (mediana diária = 1).                                   */
+
+
+
+const CHRONOTYPE_VERSION = '1.0';
+
+const CHRONOTYPE_REFS = [
+  { key: 'vanrheede2022', doi: '10.1038/s41531-022-00350-7', note: 'pipeline-fonte: VE da hora do dia 41±9%; permutação circular por dia; especificidade beta vs teta; alerta de bimodalidade por discinesia' },
+  { key: 'circadiem', doi: '10.5281/zenodo.5961105', note: 'Circa Diem — toolbox MATLAB original do pipeline' },
+  { key: 'yin2023', doi: '10.1038/s41467-023-41128-6', note: 'no GPi o beta se sustenta no sono — o cronotipo é dependente de alvo' }
+];
+
+const CHRONOTYPE_DEFAULTS = {
+  zThreshold: 6,        /* |z| do passo 3 */
+  maxIterations: 20,    /* trava do laço iterativo */
+  binMinutes: 30,       /* passo 5 */
+  nPermutations: 1000,  /* passo 7 */
+  seed: 42,
+  wakeWindow: [8, 20],  /* passo 9 — as janelas do artigo */
+  sleepWindow: [0, 6],
+  highCorrWarn: 0.7     /* passo 8: acima disso, suspeita de artefato comum */
+};
+
+/* iterativeOutlierClean(values, opts) — passo 3.
+   Substitui |z|>6 por interpolação linear entre os vizinhos FINITOS mais
+   próximos e repete até estabilizar. NaN pré-existente (perda/censura) NÃO é
+   tocado — perda continua perda. Devolve contagem, posições e iterações.    */
+function iterativeOutlierClean(values, opts) {
+  const o = opts || {};
+  const zThr = isFinite(o.zThreshold) ? o.zThreshold : CHRONOTYPE_DEFAULTS.zThreshold;
+  const maxIt = isFinite(o.maxIterations) ? o.maxIterations : CHRONOTYPE_DEFAULTS.maxIterations;
+  const x = Array.from(values, v => isFinite(v) ? v : NaN);
+  const replaced = new Set();
+  let iterations = 0;
+  for (let it = 0; it < maxIt; it++) {
+    iterations = it;
+    const fin = x.filter(isFinite);
+    if (fin.length < 4) break;
+    const mu = mean(fin);
+    const sd = Math.sqrt(variance(fin));
+    if (!(sd > 0)) break;
+    const maus = [];
+    x.forEach((v, i) => { if (isFinite(v) && Math.abs((v - mu) / sd) > zThr) maus.push(i); });
+    if (!maus.length) break;
+    maus.forEach(i => {
+      let a = i - 1; while (a >= 0 && (!isFinite(x[a]) || maus.indexOf(a) >= 0)) a--;
+      let b = i + 1; while (b < x.length && (!isFinite(x[b]) || maus.indexOf(b) >= 0)) b++;
+      const va = a >= 0 ? x[a] : NaN, vb = b < x.length ? x[b] : NaN;
+      x[i] = isFinite(va) && isFinite(vb) ? va + (vb - va) * (i - a) / (b - a)
+        : isFinite(va) ? va : isFinite(vb) ? vb : NaN;
+      replaced.add(i);
+    });
+    iterations = it + 1;
+  }
+  return {
+    x, nReplaced: replaced.size, positions: Array.from(replaced).sort((a, b) => a - b),
+    iterations, params: { zThreshold: zThr, method: 'van Rheede 2022 step 3 — iterative |z|>6 with linear interpolation (published method; count exported)' }
+  };
+}
+
+/* detrendDailyMedian(rows, x, offMin) — passo 4. */
+function detrendDailyMedian(rows, x, offMin) {
+  const porDia = new Map();
+  rows.forEach((r, i) => {
+    if (!isFinite(x[i])) return;
+    const dk = localDayKey(r.t, offMin);
+    if (!porDia.has(dk)) porDia.set(dk, []);
+    porDia.get(dk).push(x[i]);
+  });
+  const medDia = new Map();
+  porDia.forEach((vs, dk) => medDia.set(dk, median(vs)));
+  const det = rows.map((r, i) => {
+    if (!isFinite(x[i])) return NaN;
+    const m = medDia.get(localDayKey(r.t, offMin));
+    return m > 0 ? x[i] / m : NaN;
+  });
+  return { x: det, dayMedians: medDia, nDays: medDia.size };
+}
+
+/* binProfile(hours, x, binMin) — passo 5: média por bin de 30 min + ajuste
+   por interpolação linear circular entre centros de bins.                   */
+function binProfile(hours, x, binMin) {
+  const bm = isFinite(binMin) && binMin > 0 ? binMin : CHRONOTYPE_DEFAULTS.binMinutes;
+  const nb = Math.round(1440 / bm);
+  const soma = new Float64Array(nb), cont = new Float64Array(nb);
+  hours.forEach((h, i) => {
+    if (!isFinite(x[i]) || !isFinite(h)) return;
+    const b = Math.min(nb - 1, Math.floor(((h % 24) + 24) % 24 * 60 / bm));
+    soma[b] += x[i]; cont[b]++;
+  });
+  const prof = Array.from(soma, (v, b) => cont[b] ? v / cont[b] : NaN);
+  const centro = b => (b + 0.5) * bm / 60;
+  const at = h => {
+    const hh = ((h % 24) + 24) % 24;
+    let b0 = Math.floor(hh * 60 / bm - 0.5);
+    const b1 = ((b0 + 1) % nb + nb) % nb;
+    b0 = ((b0 % nb) + nb) % nb;
+    const p0 = prof[b0], p1 = prof[b1];
+    if (!isFinite(p0) && !isFinite(p1)) return NaN;
+    if (!isFinite(p0)) return p1;
+    if (!isFinite(p1)) return p0;
+    let c0 = centro(b0);
+    let frac = (hh - c0) / (bm / 60);
+    frac = ((frac % 1) + 1) % 1;
+    return p0 + (p1 - p0) * frac;
+  };
+  return { profile: prof, counts: Array.from(cont), binMinutes: bm, nBins: nb, at };
+}
+
+/* varianceExplained(x, adj) — passo 6. */
+function varianceExplained(x, adj) {
+  const pares = [];
+  for (let i = 0; i < x.length; i++) if (isFinite(x[i]) && isFinite(adj[i])) pares.push(i);
+  if (pares.length < 10) return { ok: false, reason: `apenas ${pares.length} pares válidos` };
+  const xv = pares.map(i => x[i]);
+  const res = pares.map(i => x[i] - adj[i]);
+  const vt = variance(xv), vr = variance(res);
+  return { ok: true, ve: vt > 0 ? (vt - vr) / vt : NaN, varTotal: vt, varResidual: vr, n: pares.length };
+}
+
+const veDe = (hours, x, binMin) => {
+  const bp = binProfile(hours, x, binMin);
+  const adj = hours.map(h => bp.at(h));
+  return varianceExplained(x, adj);
+};
+
+/* circularShuffleTest(hours, dayKeys, x, opts) — passo 7. */
+function circularShuffleTest(hours, dayKeys, x, opts) {
+  const o = opts || {};
+  const nPerm = isFinite(o.nPermutations) ? Math.max(10, Math.round(o.nPermutations)) : CHRONOTYPE_DEFAULTS.nPermutations;
+  const binMin = o.binMinutes || CHRONOTYPE_DEFAULTS.binMinutes;
+  const rng = tidalRng(isFinite(o.seed) ? o.seed : CHRONOTYPE_DEFAULTS.seed);
+  const obs = veDe(hours, x, binMin);
+  if (!obs.ok) return { ok: false, reason: obs.reason };
+  const dias = Array.from(new Set(dayKeys));
+  let maiores = 0;
+  const nulos = [];
+  for (let p = 0; p < nPerm; p++) {
+    const desloc = new Map();
+    dias.forEach(d => desloc.set(d, rng.next() * 24));
+    const hp = hours.map((h, i) => (h + desloc.get(dayKeys[i])) % 24);
+    const nu = veDe(hp, x, binMin);
+    const v = nu.ok ? nu.ve : 0;
+    nulos.push(v);
+    if (v >= obs.ve) maiores++;
+  }
+  return {
+    ok: true, ve: +obs.ve.toFixed(4), p: +((1 + maiores) / (1 + nPerm)).toFixed(4),
+    nPermutations: nPerm, nullMean: +mean(nulos).toFixed(4),
+    null95: +nulos.slice().sort((a, b) => a - b)[Math.floor(0.95 * nulos.length)].toFixed(4),
+    method: 'circular per-day shift, 0–24 h uniform (van Rheede 2022 step 7); deterministic seed'
+  };
+}
+
+/* diurnalBimodalityFlag(hours, x, wakeWindow) — a inspeção de distribuição
+   que o artigo recomenda: bimodalidade forte da distribuição de VIGÍLIA é a
+   assinatura da contaminação por discinesia (movimento sustentado dentro da
+   janela de 10 min). Critério: BC de Sarle > 0,555 E d de Ashman > 2 no GMM
+   de 2 componentes — os dois limiares canônicos, declarados.                */
+function diurnalBimodalityFlag(hours, x, wakeWindow) {
+  const w = wakeWindow || CHRONOTYPE_DEFAULTS.wakeWindow;
+  const dia = [];
+  hours.forEach((h, i) => { if (isFinite(x[i]) && h >= w[0] && h < w[1]) dia.push(x[i]); });
+  if (dia.length < 50) return { ok: false, reason: `apenas ${dia.length} amostras de vigília` };
+  const bc = bimodalityCoefficient(dia);
+  const g = fitGMM1D(dia, 2);
+  const d = ashmanD(g);
+  const flag = isFinite(bc) && bc > 0.555 && isFinite(d) && d > 2;
+  return {
+    ok: true, flag, sarleBC: +bc.toFixed(3), ashmanD: isFinite(d) ? +d.toFixed(2) : NaN,
+    n: dia.length, wakeWindow: w.slice(),
+    reading: flag
+      ? 'distribuição diurna FORTEMENTE BIMODAL — assinatura de contaminação por movimento sustentado ' +
+        '(discinesia) dentro das janelas de 10 min (van Rheede 2022): o valor medido em consultório pode ficar ' +
+        'abaixo da maioria dos valores domiciliares, e limiares de aDBS fixados nesta distribuição são suspeitos'
+      : 'sem bimodalidade forte na distribuição diurna — sem assinatura de contaminação sustentada por movimento'
+  };
+}
+
+/* bandSpecificityCheck(rowsA, xA, rowsB, xB) — passo 8: correlação das duas
+   séries destendidas em timestamps coincidentes. Correlação alta sugere fonte
+   comum de banda larga (artefato); no artigo original, série beta × teta
+   contralateral correlacionou −0,24 a 0,61 (média 0,18 ± 0,36).             */
+function bandSpecificityCheck(rowsA, xA, rowsB, xB, opts) {
+  const o = opts || {};
+  const warn = isFinite(o.highCorrWarn) ? o.highCorrWarn : CHRONOTYPE_DEFAULTS.highCorrWarn;
+  const porT = new Map();
+  rowsB.forEach((r, i) => { if (isFinite(xB[i])) porT.set(Math.round(r.t / 60000), xB[i]); });
+  const a = [], b = [];
+  rowsA.forEach((r, i) => {
+    if (!isFinite(xA[i])) return;
+    const v = porT.get(Math.round(r.t / 60000));
+    if (v !== undefined) { a.push(xA[i]); b.push(v); }
+  });
+  if (a.length < 50) return { ok: false, reason: `apenas ${a.length} timestamps coincidentes` };
+  const r = pearson(a, b);
+  return {
+    ok: true, r: +r.toFixed(3), n: a.length, suspicious: isFinite(r) && Math.abs(r) > warn,
+    published: 'van Rheede 2022: −0,24 a 0,61 (média 0,18 ± 0,36) entre beta e teta contralateral',
+    reading: Math.abs(r) > warn
+      ? `correlação inter-hemisférica |r| = ${Math.abs(r).toFixed(2)} > ${warn} — as duas séries sobem e descem juntas, ` +
+        'o que sugere fonte comum de banda larga (movimento/ECG) em vez de fisiologia específica da banda'
+      : 'correlação inter-hemisférica dentro da faixa publicada — compatível com origem fisiológica específica da banda'
+  };
+}
+
+/* chronotypePipeline(rows, offMin, opts) — o orquestrador dos passos 3–9.
+   rows: [{t, lfp}] nativos (censura/perda já NaN).                          */
+function chronotypePipeline(rows, offMin, opts) {
+  const o = Object.assign({}, CHRONOTYPE_DEFAULTS, opts || {});
+  const src = (rows || []).filter(r => r && isFinite(r.t)).slice().sort((a, b) => a.t - b.t);
+  if (src.length < 144) return { ok: false, reason: `apenas ${src.length} amostras — menos de um dia de Timeline` };
+  const bruto = src.map(r => isFinite(r.lfp) && r.lfp >= 0 ? r.lfp : NaN);
+
+  const cl = iterativeOutlierClean(bruto, o);                       /* passo 3 */
+  const dt = detrendDailyMedian(src, cl.x, offMin);                 /* passo 4 */
+  if (dt.nDays < 3) return { ok: false, reason: `apenas ${dt.nDays} dia(s) — o padrão intradiário exige ≥3` };
+  const hours = src.map(r => localHour(r.t, offMin));
+  const dayKeys = src.map(r => localDayKey(r.t, offMin));
+
+  const bp = binProfile(hours, dt.x, o.binMinutes);                 /* passo 5 */
+  const adj = hours.map(h => bp.at(h));
+  const veTot = varianceExplained(dt.x, adj);                       /* passo 6 */
+  const perm = circularShuffleTest(hours, dayKeys, dt.x, o);        /* passo 7 */
+
+  const subVE = (win) => {                                          /* passo 9 */
+    const hs = [], xs = [];
+    hours.forEach((h, i) => { if (h >= win[0] && h < win[1]) { hs.push(h); xs.push(dt.x[i]); } });
+    const r = veDe(hs, xs, o.binMinutes);
+    return r.ok ? { ve: +r.ve.toFixed(4), n: r.n, window: win.slice() } : { ve: NaN, n: hs.length, window: win.slice(), reason: r.reason };
+  };
+  const veDia = subVE(o.wakeWindow);
+  const veNoite = subVE(o.sleepWindow);
+
+  const bimod = diurnalBimodalityFlag(hours, dt.x, o.wakeWindow);
+
+  return {
+    ok: true,
+    outliers: { nReplaced: cl.nReplaced, iterations: cl.iterations, positions: cl.positions, params: cl.params },
+    nDays: dt.nDays, nSamples: src.length,
+    profile: { hours: Array.from({ length: bp.nBins }, (_, b) => +((b + 0.5) * bp.binMinutes / 60).toFixed(3)), values: bp.profile.map(v => isFinite(v) ? +v.toFixed(4) : NaN), counts: bp.counts, binMinutes: bp.binMinutes },
+    ve: veTot.ok ? +veTot.ve.toFixed(4) : NaN,
+    permutation: perm,
+    veDay: veDia, veNight: veNoite,
+    bimodality: bimod,
+    detrended: dt.x, hours, dayKeys,
+    published: 'van Rheede 2022 (n=6 bilateral): VE 41 ± 9% (p<0,001 em todos); VE só-dia 0,13 ± 0,11; só-noite 0,14 ± 0,13',
+    params: {
+      zThreshold: o.zThreshold, binMinutes: o.binMinutes, nPermutations: o.nPermutations,
+      seed: o.seed, wakeWindow: o.wakeWindow.slice(), sleepWindow: o.sleepWindow.slice(), offMin
+    },
+    version: CHRONOTYPE_VERSION, refs: CHRONOTYPE_REFS
+  };
+}
+
+const CHRONOTYPE = {
+  VERSION: CHRONOTYPE_VERSION, REFS: CHRONOTYPE_REFS, DEFAULTS: CHRONOTYPE_DEFAULTS,
+  iterativeOutlierClean, detrendDailyMedian, binProfile, varianceExplained,
+  circularShuffleTest, diurnalBimodalityFlag, bandSpecificityCheck, chronotypePipeline
+};
+
+/* ---------- core/stats/changepoint.js ---------- */
+/* stats/changepoint.js — pontos de mudança na série crônica.
+
+   POR QUE ESTE MÓDULO EXISTE. Olhar um Timeline de seis semanas e dizer "o beta
+   caiu" é, na maior parte das vezes, descrever ruído. A pergunta correta não é
+   se a média do fim é menor que a do começo — é se houve uma MUDANÇA DE NÍVEL
+   num instante identificável. É essa distinção que separa evento clínico (troca
+   de medicação, reprogramação, intercorrência) de deriva lenta, e as duas coisas
+   pedem condutas diferentes.
+
+   O QUE TORNA ISSO DIFÍCIL AQUI. A série de dez minutos do Timeline é
+   fortemente autocorrelacionada: valores vizinhos se parecem porque o processo
+   é lento, não porque haja estrutura. Um teste de mudança de média aplicado
+   ingenuamente a ruído AR(1) puro encontra pontos de mudança com facilidade
+   embaraçosa — e eles não existem. Por isso:
+
+     · a permutação padrão em `changePointsInTime` é POR BLOCOS, que preserva a
+       autocorrelação dentro do bloco e só destrói a posição dele na série;
+     · a agregação padrão é por dia, o que reduz a autocorrelação de dez minutos
+       a uma escala em que ela é fraca;
+     · a permutação simples continua disponível, e a saída declara qual foi
+       usada e por quê ela é anticonservadora.
+
+   O QUE O MÓDULO NÃO FAZ. Não estabelece causa. Um ponto de mudança que cai no
+   mesmo dia de uma reprogramação é compatível com a reprogramação tê-lo causado,
+   com ela ter sido feita POR CAUSA de uma piora já em curso, e com coincidência.
+   `annotateChangePoints` associa e diz exatamente isso.
+
+   Unidades: entrada na unidade de potência do arquivo; `t` em epoch ms;
+   `delta` na unidade de entrada; `pctChange` em porcento.
+
+   Referências:
+     Page ES. Continuous inspection schemes. Biometrika 1954;41:100-15 (CUSUM).
+     Killick R, Fearnhead P, Eckley IA. Optimal detection of changepoints with a
+       linear computational cost. J Am Stat Assoc 2012;107:1590-8 (PELT, e a
+       discussão de penalização que a segmentação binária aqui aproxima).      */
+
+
+/* Estatística de mudança de média no ponto k: diferença padronizada entre os
+   dois lados, ponderada pelos tamanhos. É a forma do CUSUM de duas amostras. */
+function cpEstatistica(v, a, b) {
+  const n = b - a;
+  if (n < 4) return { k: -1, stat: 0 };
+  let melhor = -1, melhorStat = 0;
+  const total = v.slice(a, b).reduce((x, y) => x + y, 0);
+  let esq = 0;
+  for (let k = a; k < b - 1; k++) {
+    esq += v[k];
+    const nE = k - a + 1, nD = b - (k + 1);
+    if (nE < 2 || nD < 2) continue;
+    const mE = esq / nE, mD = (total - esq) / nD;
+    /* variância combinada dos dois lados, para não premiar o corte que cai num
+       trecho quieto só porque ali a escala é menor */
+    let sE = 0, sD = 0;
+    for (let i = a; i <= k; i++) sE += (v[i] - mE) * (v[i] - mE);
+    for (let i = k + 1; i < b; i++) sD += (v[i] - mD) * (v[i] - mD);
+    const pooled = Math.sqrt((sE + sD) / Math.max(1, n - 2));
+    if (!(pooled > 0)) continue;
+    const stat = Math.abs(mE - mD) / (pooled * Math.sqrt(1 / nE + 1 / nD));
+    if (stat > melhorStat) { melhorStat = stat; melhor = k; }
+  }
+  return { k: melhor, stat: melhorStat };
+}
+
+const cpPrng = semente => {
+  let s = (isFinite(semente) ? semente : 20240517) >>> 0;
+  return () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
+};
+
+/* Embaralha a série. `tamBloco > 1` embaralha BLOCOS contíguos, o que preserva
+   a autocorrelação dentro do bloco — é o nulo correto para série suave. */
+function cpEmbaralha(v, prox, tamBloco) {
+  if (!(tamBloco > 1)) {
+    const s = v.slice();
+    for (let i = s.length - 1; i > 0; i--) { const j = (prox() * (i + 1)) | 0; const tmp = s[i]; s[i] = s[j]; s[j] = tmp; }
+    return s;
+  }
+  const blocos = [];
+  for (let i = 0; i < v.length; i += tamBloco) blocos.push(v.slice(i, i + tamBloco));
+  for (let i = blocos.length - 1; i > 0; i--) { const j = (prox() * (i + 1)) | 0; const t = blocos[i]; blocos[i] = blocos[j]; blocos[j] = t; }
+  return blocos.flat();
+}
+
+/* changePoints(y, opts) — segmentação binária recursiva com significância por
+   permutação. Devolve os pontos em ordem de posição.                         */
+function changePoints(y, opts) {
+  opts = opts || {};
+  const minSeg = isFinite(opts.minSegment) ? opts.minSegment : 5;
+  const nPerm = isFinite(opts.nPermutations) ? opts.nPermutations : 500;
+  const alfa = isFinite(opts.alpha) ? opts.alpha : 0.05;
+  const semente = isFinite(opts.seed) ? (opts.seed >>> 0) : 20240517;
+  const tamBloco = isFinite(opts.blockPermutation) ? opts.blockPermutation : 0;
+  const maxPontos = isFinite(opts.maxPoints) ? opts.maxPoints : 8;
+
+  const bruto = Array.from(y || []);
+  const idx = [], v = [];
+  bruto.forEach((x, i) => { if (isFinite(x)) { idx.push(i); v.push(x); } });
+  const nNaN = bruto.length - v.length;
+  const base = {
+    penalty: null, minSegment: minSeg, method: 'segmentação binária + CUSUM de duas amostras',
+    nPermutations: nPerm, seed: semente, alpha: alfa,
+    blockPermutation: tamBloco || null, nValid: v.length, nNaN
+  };
+  if (v.length < 2 * minSeg + 2) return Object.assign({
+    ok: false, points: [], nPoints: 0,
+    reason: `só ${v.length} ponto(s) finito(s) — são necessários ao menos ${2 * minSeg + 2} para procurar mudança de nível`
+  }, base);
+
+  const prox = cpPrng(semente);
+  const pontos = [];
+  const fila = [[0, v.length]];
+  while (fila.length && pontos.length < maxPontos) {
+    const [a, b] = fila.shift();
+    if (b - a < 2 * minSeg) continue;
+    const { k, stat } = cpEstatistica(v, a, b);
+    if (k < 0 || k - a + 1 < minSeg || b - (k + 1) < minSeg) continue;
+    /* nulo: a MESMA janela embaralhada, para que o teste responda "este corte é
+       melhor do que o melhor corte que o acaso produziria NESTE trecho" */
+    const janela = v.slice(a, b);
+    let piores = 0;
+    for (let p = 0; p < nPerm; p++) {
+      const s = cpEmbaralha(janela, prox, tamBloco);
+      if (cpEstatistica(s, 0, s.length).stat >= stat) piores++;
+    }
+    const pval = (piores + 1) / (nPerm + 1);
+    if (pval > alfa) continue;
+    const mE = mean(v.slice(a, k + 1)), mD = mean(v.slice(k + 1, b));
+    pontos.push({
+      index: idx[k], indexValid: k, statistic: +stat.toFixed(4), p: +pval.toFixed(4),
+      meanBefore: +mE.toFixed(4), meanAfter: +mD.toFixed(4), delta: +(mD - mE).toFixed(4),
+      pctChange: mE !== 0 ? +(100 * (mD - mE) / Math.abs(mE)).toFixed(2) : NaN,
+      nBefore: k - a + 1, nAfter: b - (k + 1)
+    });
+    fila.push([a, k + 1]); fila.push([k + 1, b]);
+  }
+  pontos.sort((x, z) => x.index - z.index);
+  return Object.assign({
+    ok: true, points: pontos, nPoints: pontos.length, reason: '',
+    caveat: tamBloco > 1
+      ? `a permutação embaralha blocos de ${tamBloco} pontos, o que preserva a autocorrelação dentro do bloco — é o nulo ` +
+        'apropriado para série suave'
+      : 'a permutação simples destrói a autocorrelação da série, e por isso é ANTICONSERVADORA em dado suave como o ' +
+        'Timeline: ela acha ponto de mudança em ruído AR(1) puro. Use permutação em blocos quando a série não for agregada por dia'
+  }, base);
+}
+
+/* changePointsInTime(rows, opts) — envelope que agrega o Timeline por dia antes
+   de procurar mudança. Agregar reduz a autocorrelação de dez minutos a uma
+   escala em que ela é fraca, e é por isso que este é o caminho recomendado.  */
+function changePointsInTime(rows, opts) {
+  opts = opts || {};
+  const offMin = isFinite(opts.offMin) ? opts.offMin : 0;
+  const agregacao = opts.aggregation === 'mean' ? 'mean' : 'median';
+  const porDia = {};
+  (rows || []).forEach(r => {
+    if (!r || !isFinite(r.t) || !isFinite(r.lfp)) return;
+    const d = localDayKey(r.t, offMin);
+    (porDia[d] = porDia[d] || []).push(r);
+  });
+  const dias = Object.keys(porDia).sort();
+  if (dias.length < 6) return {
+    ok: false, points: [], nPoints: 0, aggregation: agregacao,
+    reason: `só ${dias.length} dia(s) de registro — procurar mudança de nível em menos de 6 dias produz achado que não se sustenta`
+  };
+  const serie = dias.map(d => {
+    const v = porDia[d].map(r => r.lfp);
+    return agregacao === 'mean' ? mean(v) : median(v);
+  });
+  const cp = changePoints(serie, Object.assign({ blockPermutation: 0 }, opts, { minSegment: opts.minSegment || 3 }));
+  if (!cp.ok) return Object.assign({}, cp, { aggregation: agregacao, days: dias });
+  const pontos = cp.points.map(p => {
+    /* o ponto de mudança fica ENTRE o dia p.index e o seguinte; o instante
+       reportado é o início do dia seguinte, que é onde o nível novo começa */
+    const diaDepois = dias[Math.min(dias.length - 1, p.index + 1)];
+    const t = porDia[diaDepois][0].t;
+    return Object.assign({}, p, { t, dayKey: diaDepois, dayBefore: dias[p.index] });
+  });
+  return Object.assign({}, cp, {
+    points: pontos, aggregation: agregacao, days: dias, nDays: dias.length,
+    dailyValues: serie.map(x => +x.toFixed(4)),
+    binPerDay: dias.map(d => porDia[d].length),
+    note: `um valor por dia (${agregacao === 'mean' ? 'média' : 'mediana'} dos pontos do dia); a agregação é declarada porque ` +
+      'ela muda o resultado — a mediana resiste a outlier de movimento, a média não'
+  });
+}
+
+/* annotateChangePoints(points, marcos, opts) — associa cada ponto ao marco
+   conhecido mais próximo. Coincidência temporal NÃO estabelece causa, e a
+   leitura devolvida diz isso com todas as letras.                           */
+function annotateChangePoints(points, marcos, opts) {
+  opts = opts || {};
+  const tolDias = isFinite(opts.toleranceDays) ? opts.toleranceDays : 2;
+  const tolMs = tolDias * 86400000;
+  const lista = (marcos || []).filter(m => m && isFinite(m.t));
+  const anotados = (points || []).map(p => {
+    let perto = null, dt = Infinity;
+    lista.forEach(m => { const d = Math.abs(m.t - p.t); if (d < dt) { dt = d; perto = m; } });
+    const explicado = !!perto && dt <= tolMs;
+    return Object.assign({}, p, {
+      nearestMarker: perto ? perto.label : null,
+      nearestMarkerT: perto ? perto.t : NaN,
+      deltaDays: perto ? +(( p.t - perto.t) / 86400000).toFixed(2) : NaN,
+      explained: explicado
+    });
+  });
+  const nExp = anotados.filter(a => a.explained).length;
+  return {
+    ok: true, annotated: anotados, nExplained: nExp, nUnexplained: anotados.length - nExp,
+    toleranceDays: tolDias, nMarkers: lista.length,
+    reading: !anotados.length ? 'nenhuma mudança de nível detectada no período'
+      : `${nExp} de ${anotados.length} mudança(s) coincidem, dentro de ${tolDias} dia(s), com um marco conhecido. ` +
+        (anotados.length - nExp > 0
+          ? `As outras ${anotados.length - nExp} não têm marco correspondente e são as que merecem investigação.`
+          : 'Nenhuma ficou sem marco correspondente.'),
+    caveat: 'coincidência temporal não estabelece causa. Uma mudança que cai no dia de uma reprogramação é igualmente ' +
+      'compatível com a reprogramação tê-la causado, com a reprogramação ter sido feita POR CAUSA de uma piora já em ' +
+      'curso, e com acaso — e a ordem dos dois primeiros não é recuperável a partir desta série'
+  };
+}
+
+/* ---------- core/metrics/stun.js ---------- */
+/* metrics/stun.js — janela de estabilização pós-operatória (stun effect)
+
+   Pergunta clínica: A PARTIR DE QUANDO o registro crônico é confiável para
+   decisões de programação (seleção de contato, limiares de aDBS)?
+
+   Duas metodologias independentes convergem para ~1 mês:
+   • de Neeling et al., Mov Disord 2026;41:222–227 (doi:10.1002/mds.70042):
+     análise de change-point sobre a MEDIANA DIÁRIA de potência beta em 32
+     pacientes → mudança de regime em 24–40 dias; o beta não cai com a
+     ativação da DBS, continua subindo.
+   • Feldmann et al., Brain Stimul 2025;18:1579–1586
+     (doi:10.1016/j.brs.2025.08.002): taxa de variação diária + quantificação
+     de recorrência (RQA: estados de recorrência e laminaridade) em 14
+     pacientes → estabilização em 22–29 dias.
+
+   Nuance de interpretação (Darmani et al., Mov Disord 2023;38:232–243,
+   doi:10.1002/mds.29276): parte do "aumento de beta" pós-implante pode ser
+   deslocamento do componente aperiódico (1/f), não oscilação — e o Timeline,
+   que entrega potência em banda de 5 Hz sem espectro, não permite separar os
+   dois. A leitura declara essa ambiguidade.
+
+   O que este módulo faz: change-point sobre medianas diárias (reutiliza
+   stats/changepoint.js, permutação embutida), taxa de variação diária
+   normalizada, RQA simples e determinística sobre a série diária
+   (taxa de recorrência, determinismo, laminaridade; ε = 0,2·DP, linha mínima
+   2 — parâmetros declarados), e um VEREDITO com data de implante quando
+   disponível no JSON (DeviceInformation.ImplantDate).                       */
+
+
+
+const STUN_VERSION = '1.0';
+
+const STUN_REFS = [
+  { key: 'deneeling2026', doi: '10.1002/mds.70042', note: 'change-point da mediana diária: regime muda em 24–40 dias pós-implante (n=32)' },
+  { key: 'feldmann2025', doi: '10.1016/j.brs.2025.08.002', note: 'taxa de variação + RQA: estabilização em 22–29 dias (n=14)' },
+  { key: 'darmani2023', doi: '10.1002/mds.29276', note: 'expoente e offset aperiódicos sobem após o implante — parte do "aumento de beta" pode ser 1/f' }
+];
+
+const STUN_DEFAULTS = {
+  literatureWindow: [22, 40],   /* união das duas janelas publicadas, em dias */
+  safeDay: 42,                  /* ~6 semanas: fora de ambas as janelas com margem */
+  rqaEpsilonSd: 0.2,            /* ε da matriz de recorrência, em DP da série */
+  rqaMinLine: 2
+};
+
+/* rqa(series, opts) — quantificação de recorrência determinística sobre uma
+   série curta (dias). Recorrência: |z_i − z_j| < ε (série normalizada).
+   Métricas: recurrenceRate (fração de pares recorrentes), determinism
+   (fração dos pontos recorrentes em diagonais ≥ minLine) e laminarity
+   (idem em linhas verticais ≥ minLine — tendência a PERMANECER em estados). */
+function rqa(series, opts) {
+  const o = opts || {};
+  const eps = isFinite(o.epsilonSd) ? o.epsilonSd : STUN_DEFAULTS.rqaEpsilonSd;
+  const minL = isFinite(o.minLine) ? o.minLine : STUN_DEFAULTS.rqaMinLine;
+  const v = Array.from(series).filter(isFinite);
+  const n = v.length;
+  if (n < 8) return { ok: false, reason: `apenas ${n} pontos — RQA exige ≥8` };
+  const mu = mean(v);
+  const sd = Math.sqrt(v.reduce((a, x) => a + (x - mu) * (x - mu), 0) / n);
+  if (!(sd > 0)) return { ok: false, reason: 'série constante' };
+  const z = v.map(x => (x - mu) / sd);
+  const R = [];
+  for (let i = 0; i < n; i++) { R.push(new Uint8Array(n)); }
+  let nRec = 0;
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+    if (i === j) continue;
+    if (Math.abs(z[i] - z[j]) < eps) { R[i][j] = 1; nRec++; }
+  }
+  if (!nRec) return { ok: true, recurrenceRate: 0, determinism: NaN, laminarity: NaN, n, params: { epsilonSd: eps, minLine: minL } };
+  /* diagonais (determinismo) */
+  let recDiag = 0;
+  for (let d = 1; d < n; d++) {
+    let run = 0;
+    for (let i = 0; i + d < n; i++) {
+      if (R[i][i + d]) run++;
+      else { if (run >= minL) recDiag += 2 * run; run = 0; }
+    }
+    if (run >= minL) recDiag += 2 * run;
+  }
+  /* verticais (laminaridade) */
+  let recVert = 0;
+  for (let j = 0; j < n; j++) {
+    let run = 0;
+    for (let i = 0; i < n; i++) {
+      if (i !== j && R[i][j]) run++;
+      else { if (run >= minL) recVert += run; run = 0; }
+    }
+    if (run >= minL) recVert += run;
+  }
+  return {
+    ok: true, n,
+    recurrenceRate: +(nRec / (n * (n - 1))).toFixed(4),
+    determinism: +(Math.min(1, recDiag / nRec)).toFixed(4),
+    laminarity: +(Math.min(1, recVert / nRec)).toFixed(4),
+    params: { epsilonSd: eps, minLine: minL }
+  };
+}
+
+/* stunAnalysis(rows, offMin, opts{implantDate}) — o orquestrador. */
+function stunAnalysis(rows, offMin, opts) {
+  const o = opts || {};
+  const cp = changePointsInTime(rows, { offMin, aggregation: 'median' });
+  if (!cp.ok) return { ok: false, reason: cp.reason };
+  const dias = cp.days;
+  const med = cp.dailyValues;
+  const nD = dias.length;
+
+  /* taxa de variação diária, normalizada pela mediana global (Feldmann) */
+  const medGlobal = median(med.filter(isFinite));
+  const rate = med.map((v, i) => i > 0 && isFinite(v) && isFinite(med[i - 1]) && medGlobal > 0
+    ? +(Math.abs(v - med[i - 1]) / medGlobal).toFixed(4) : NaN);
+  const meia = Math.floor(nD / 2);
+  const rateEarly = mean(rate.slice(1, meia).filter(isFinite));
+  const rateLate = mean(rate.slice(meia).filter(isFinite));
+
+  /* RQA nas duas metades — a estabilização de Feldmann é queda e platô */
+  const rqaEarly = rqa(med.slice(0, meia), o);
+  const rqaLate = rqa(med.slice(meia), o);
+
+  /* dias pós-implante, quando a data existe no JSON */
+  const implantMs = o.implantDate ? Date.parse(String(o.implantDate).slice(0, 10) + 'T00:00:00Z') : NaN;
+  const diaPosOp = dk => isFinite(implantMs) ? Math.round((Date.parse(dk + 'T00:00:00Z') - implantMs) / 864e5) : NaN;
+  const startPostOp = diaPosOp(dias[0]);
+  const endPostOp = diaPosOp(dias[nD - 1]);
+
+  const pontos = (cp.points || []).map(p => ({
+    dayKey: p.dayKey, index: p.index, p: p.p,
+    postOpDay: diaPosOp(p.dayKey),
+    levelBefore: +median(med.slice(Math.max(0, p.index - 6), p.index + 1).filter(isFinite)).toFixed(1),
+    levelAfter: +median(med.slice(p.index + 1, Math.min(nD, p.index + 8)).filter(isFinite)).toFixed(1)
+  }));
+  const ultimoCp = pontos.length ? pontos[pontos.length - 1] : null;
+
+  /* veredito */
+  const lit = STUN_DEFAULTS.literatureWindow;
+  const avisos = [];
+  let verdict;
+  if (isFinite(startPostOp)) {
+    if (startPostOp >= STUN_DEFAULTS.safeDay && !pontos.length) {
+      verdict = 'estável';
+    } else if (endPostOp < lit[0]) {
+      verdict = 'dentro da janela de instabilidade';
+      avisos.push(`todo o registro cai antes do dia ${lit[0]} pós-implante — dentro da janela de instabilidade publicada ` +
+        `(${lit[0]}–${lit[1]} dias); NÃO fixe contatos nem limiares com este trecho`);
+    } else if (ultimoCp && isFinite(ultimoCp.postOpDay)) {
+      verdict = ultimoCp.postOpDay <= lit[1] + 7 ? 'estabilização detectada' : 'mudança de regime tardia';
+      if (verdict === 'estabilização detectada')
+        avisos.push(`mudança de regime no dia ${ultimoCp.postOpDay} pós-implante — compatível com as janelas publicadas ` +
+          `(24–40 dias, de Neeling 2026; 22–29, Feldmann 2025); prefira os dias APÓS o change-point para derivar limiares`);
+      else avisos.push(`mudança de regime no dia ${ultimoCp.postOpDay} pós-implante, fora da janela do stun effect — ` +
+        'procure outra causa (mudança de programação, medicação, evento clínico) antes de atribuir ao implante');
+    } else {
+      verdict = startPostOp < STUN_DEFAULTS.safeDay ? 'possivelmente instável' : 'estável';
+      if (verdict === 'possivelmente instável')
+        avisos.push(`o registro começa no dia ${startPostOp} pós-implante, dentro/da borda da janela de instabilidade, ` +
+          'e nenhum change-point foi detectado — a estabilização pode ter ocorrido fora do trecho registrado');
+    }
+  } else {
+    verdict = pontos.length ? 'mudança de regime detectada (data de implante desconhecida)' : 'sem mudança de regime detectada';
+    avisos.push('sem data de implante no arquivo — informe-a para posicionar o registro em relação à janela de ' +
+      'estabilização de 22–40 dias');
+  }
+  if (isFinite(rateEarly) && isFinite(rateLate) && rateLate < rateEarly * 0.7)
+    avisos.push(`taxa de variação diária caiu de ${(100 * rateEarly).toFixed(1)}% para ${(100 * rateLate).toFixed(1)}% da mediana ` +
+      'entre a primeira e a segunda metade — sinal convergente de estabilização (Feldmann 2025)');
+
+  return {
+    ok: true,
+    days: dias, dailyMedians: med, nDays: nD,
+    changePoints: pontos, changePointDetail: { method: cp.method, nPermutations: cp.nPermutations, alpha: cp.alpha, seed: cp.seed },
+    rate: { series: rate, earlyMean: isFinite(rateEarly) ? +rateEarly.toFixed(4) : NaN, lateMean: isFinite(rateLate) ? +rateLate.toFixed(4) : NaN },
+    rqa: { early: rqaEarly, late: rqaLate },
+    implant: { date: o.implantDate || null, startPostOpDay: startPostOp, endPostOpDay: endPostOp },
+    verdict, warnings: avisos,
+    aperiodicCaveat: 'o Timeline entrega potência numa banda de 5 Hz sem o espectro: parte da subida pós-operatória pode ser ' +
+      'deslocamento do componente aperiódico (1/f), não oscilação beta (Darmani 2023) — indistinguíveis neste dado',
+    literature: { window: lit.slice(), safeDay: STUN_DEFAULTS.safeDay },
+    version: STUN_VERSION, refs: STUN_REFS
+  };
+}
+
+const STUN = {
+  VERSION: STUN_VERSION, REFS: STUN_REFS, DEFAULTS: STUN_DEFAULTS,
+  rqa, stunAnalysis
+};
+
+/* ---------- core/adbs/practice.js ---------- */
+/* adbs/practice.js — armadilhas do duplo limiar e vigilância pós-configuração
+
+   O que a prática real de aDBS ensinou e a simulação básica não mostra,
+   catalogado do ADAPT-START (Cascino et al., npj Parkinsons Dis 2026;12:85,
+   doi:10.1038/s41531-026-01269-z) e das recomendações de mitigação de
+   van Rheede 2022 (doi:10.1038/s41531-022-00350-7):
+
+   1. A ARMADILHA DO CONGELAMENTO. No modo de duplo limiar, sinal ENTRE os
+      limiares mantém a última amplitude. Se o paciente atingiu o teto por
+      beta alto e o sinal recua para a faixa intermediária sem cruzar o limiar
+      inferior, a estimulação FICA NO MÁXIMO. Cascino observou pacientes cuja
+      amplitude alternava entre os dois limites poucas vezes por dia —
+      funcionalmente uma cDBS de dois níveis, não uma aDBS.
+
+   2. A META DE ≥0,7 mA. Janela de amplitude (iMax − iMin) menor que ~0,7 mA
+      dá ao controlador pouco espaço para trabalhar (meta empírica do
+      ADAPT-START; teto de 1,5 mA naquele estudo).
+
+   3. A DERIVA DE DISTRIBUIÇÃO. Limiar fixado numa janela de dias vale para a
+      distribuição daquela janela. Se artefato ou progressão empurrar a
+      distribuição, a estimulação encosta cronicamente num dos limites —
+      reproduzindo a cDBS e anulando o benefício. van Rheede recomenda
+      inspeção REGULAR da distribuição como vigilância; Cascino acrescenta que
+      ajustar limiares pelas médias de 10 min mostrou-se pouco confiável, e a
+      própria variação da amplitude ao longo do tempo é o melhor indicador.
+
+   4. O CUSTO DE BATERIA DO STREAMING (Percept PC): ~1 dia de longevidade
+      perdido por hora de streaming; streaming contínuo máximo ~4 h
+      (Saengphatrachai & Jimenez-Shahed, Neurodegener Dis Manag 2024;14:
+      131–147, doi:10.1080/17582024.2024.2404386).
+
+   Estas funções ficam FORA do namespace TIDAL de propósito: o TIDAL-DT tem
+   espelho 1:1 em R para validação cruzada, e estes utilitários de vigilância
+   são camada de leitura clínica, não do método de limiares.                 */
+
+
+const PRACTICE_VERSION = '1.0';
+
+const PRACTICE_REFS = [
+  { key: 'cascino2026', doi: '10.1038/s41531-026-01269-z', note: 'ADAPT-START: congelamento entre limiares, meta ≥0,7 mA, médias de 10 min pouco confiáveis para ajustar limiares' },
+  { key: 'vanrheede2022', doi: '10.1038/s41531-022-00350-7', note: 'mitigação: inspeção regular da distribuição; artefato crônico acima do limiar reproduz a cDBS no teto' },
+  { key: 'saengphatrachai2024', doi: '10.1080/17582024.2024.2404386', note: 'custo de bateria do streaming no Percept PC' },
+  { key: 'khawaldeh2022', doi: '10.1093/brain/awab264', note: 'bursts beta sozinhos explicam 16% da variância motora; todos os estados espectrais, 50% — controlador só-beta descarta a maior parte da informação' }
+];
+
+const PRACTICE_DEFAULTS = {
+  minWindowMa: 0.7,            /* meta empírica do ADAPT-START */
+  fewSwingsPerDay: 2,          /* abaixo disso, com ocupação alta dos limites: cDBS de dois níveis */
+  pinnedFracForCdbs: 0.5,      /* fração do tempo encostado nos limites */
+  driftLastDays: 7,
+  driftWarnPct: 15             /* deslocamento do P50 que dispara o aviso */
+};
+
+/* dualThresholdTrap(trajectory, opts) — lê a TRAJETÓRIA simulada de corrente
+   (saída de TIDAL.simulateDualThreshold) e mede o comportamento que Cascino
+   descreveu: quanto tempo encostado em cada limite e quantas travessias
+   completas entre os limites por dia. Não altera a função espelhada em R —
+   só a interpreta.                                                          */
+function dualThresholdTrap(trajectory, opts) {
+  const o = opts || {};
+  const iMin = o.iMin, iMax = o.iMax;
+  if (!isFinite(iMin) || !isFinite(iMax) || !(iMax > iMin)) return { ok: false, reason: 'limites de corrente ausentes' };
+  const eps = (iMax - iMin) * 1e-6 + 1e-9;
+  const fewSwings = isFinite(o.fewSwingsPerDay) ? o.fewSwingsPerDay : PRACTICE_DEFAULTS.fewSwingsPerDay;
+  const pinFrac = isFinite(o.pinnedFracForCdbs) ? o.pinnedFracForCdbs : PRACTICE_DEFAULTS.pinnedFracForCdbs;
+  let n = 0, pinHigh = 0, pinLow = 0, swings = 0;
+  let estado = 0;                      /* −1 tocou o piso, +1 tocou o teto */
+  const dias = new Set();
+  for (let i = 0; i < trajectory.length; i++) {
+    const I = trajectory[i];
+    if (!isFinite(I)) continue;
+    n++;
+    if (o.dayKeys) dias.add(o.dayKeys[i]);
+    const tocaTeto = I >= iMax - eps, tocaPiso = I <= iMin + eps;
+    if (tocaTeto) pinHigh++;
+    if (tocaPiso) pinLow++;
+    if (tocaTeto && estado === -1) swings++;
+    if (tocaPiso && estado === 1) swings++;
+    if (tocaTeto) estado = 1;
+    else if (tocaPiso) estado = -1;
+  }
+  const nd = Math.max(1, dias.size || Math.ceil(n / 144));
+  const pctHigh = 100 * pinHigh / Math.max(1, n);
+  const pctLow = 100 * pinLow / Math.max(1, n);
+  const swingsDay = +(swings / nd).toFixed(2);
+  const cdbsFuncional = (pctHigh + pctLow) / 100 >= pinFrac && swingsDay < fewSwings;
+  return {
+    ok: true, n, nDays: nd,
+    pctPinnedHigh: +pctHigh.toFixed(1), pctPinnedLow: +pctLow.toFixed(1),
+    fullSwingsPerDay: swingsDay, functionallyCdbs: cdbsFuncional,
+    params: { fewSwingsPerDay: fewSwings, pinnedFracForCdbs: pinFrac },
+    reading: cdbsFuncional
+      ? `a corrente simulada passa ${(pctHigh + pctLow).toFixed(0)}% do tempo encostada nos limites e cruza de um limite ao ` +
+        `outro só ${swingsDay}×/dia — funcionalmente uma cDBS de dois níveis, o comportamento que o ADAPT-START descreveu; ` +
+        'reveja a largura da janela de limiares e lembre o congelamento: entre os limiares a amplitude NÃO desce'
+      : `corrente encostada nos limites ${(pctHigh + pctLow).toFixed(0)}% do tempo, ${swingsDay} travessias completas/dia — ` +
+        'o controlador está de fato modulando',
+    freezeNote: 'entre os limiares a amplitude mantém o último valor: recuo do sinal para a faixa intermediária SEM cruzar ' +
+      'o limiar inferior deixa a estimulação presa no teto (Cascino 2026, §programming principles)'
+  };
+}
+
+/* amplitudeWindowCheck(iMin, iMax) — meta empírica de ≥0,7 mA de janela. */
+function amplitudeWindowCheck(iMin, iMax) {
+  if (!isFinite(iMin) || !isFinite(iMax)) return { ok: false, reason: 'limites de corrente não informados (entrada do clínico)' };
+  if (iMax <= iMin) return { ok: false, reason: 'iMax deve exceder iMin' };
+  const w = +(iMax - iMin).toFixed(2);
+  const meets = w >= PRACTICE_DEFAULTS.minWindowMa;
+  return {
+    ok: true, widthMa: w, meetsTarget: meets, targetMa: PRACTICE_DEFAULTS.minWindowMa,
+    reading: meets
+      ? `janela de ${w} mA ≥ meta empírica de ${PRACTICE_DEFAULTS.minWindowMa} mA (ADAPT-START)`
+      : `janela de ${w} mA abaixo da meta empírica de ≥${PRACTICE_DEFAULTS.minWindowMa} mA do ADAPT-START — pouco espaço ` +
+        'para o controlador trabalhar; considere reavaliar os limites com o teste de monopolar'
+  };
+}
+
+/* distributionDrift(wakeRows, offMin, opts) — vigilância pós-configuração:
+   compara os percentis 25/50/75 dos ÚLTIMOS `lastDays` dias de vigília com a
+   janela de referência (todos os dias anteriores). wakeRows: [{t, x}] já em
+   escala de limiar (log ou nativa, a mesma da proposta).                    */
+function distributionDrift(wakeRows, offMin, opts) {
+  const o = opts || {};
+  const lastDays = isFinite(o.lastDays) ? Math.max(2, Math.round(o.lastDays)) : PRACTICE_DEFAULTS.driftLastDays;
+  const warnPct = isFinite(o.warnPct) ? o.warnPct : PRACTICE_DEFAULTS.driftWarnPct;
+  const porDia = new Map();
+  (wakeRows || []).forEach(r => {
+    if (!r || !isFinite(r.t) || !isFinite(r.x)) return;
+    const dk = localDayKey(r.t, offMin);
+    if (!porDia.has(dk)) porDia.set(dk, []);
+    porDia.get(dk).push(r.x);
+  });
+  const dias = Array.from(porDia.keys()).sort();
+  if (dias.length < lastDays + 5) return {
+    ok: false,
+    reason: `são precisos ≥${lastDays + 5} dias (referência ≥5 + janela recente de ${lastDays}); há ${dias.length}`
+  };
+  const ref = dias.slice(0, dias.length - lastDays).flatMap(d => porDia.get(d));
+  const rec = dias.slice(-lastDays).flatMap(d => porDia.get(d));
+  const q = (v, p) => quantile(v, p);
+  const shift = p => {
+    const a = q(ref, p), b = q(rec, p);
+    return a !== 0 ? +(100 * (b - a) / Math.abs(a)).toFixed(1) : NaN;
+  };
+  const s25 = shift(0.25), s50 = shift(0.5), s75 = shift(0.75);
+  const drift = [s25, s50, s75].some(s => isFinite(s) && Math.abs(s) > warnPct);
+  return {
+    ok: true, drift,
+    reference: { p25: +q(ref, .25).toFixed(3), p50: +q(ref, .5).toFixed(3), p75: +q(ref, .75).toFixed(3), n: ref.length, nDays: dias.length - lastDays },
+    recent: { p25: +q(rec, .25).toFixed(3), p50: +q(rec, .5).toFixed(3), p75: +q(rec, .75).toFixed(3), n: rec.length, nDays: lastDays },
+    shiftPct: { p25: s25, p50: s50, p75: s75 },
+    params: { lastDays, warnPct },
+    reading: drift
+      ? `a distribuição de vigília dos últimos ${lastDays} dias deslocou-se ` +
+        `(P25 ${s25 > 0 ? '+' : ''}${s25}% · P50 ${s50 > 0 ? '+' : ''}${s50}% · P75 ${s75 > 0 ? '+' : ''}${s75}%) em relação à janela de referência — ` +
+        'limiares fixados na referência podem estar ocupando outra zona hoje: reavalie antes de interpretar a adaptação, ' +
+        'e lembre o cenário de falha de van Rheede (artefato crônico acima do limiar = estimulação contínua no teto). ' +
+        'Cascino: a variação da AMPLITUDE ao longo do tempo é indicador mais confiável que as médias de 10 min'
+      : `distribuição recente estável em relação à referência (deslocamentos ≤ ${warnPct}%) — sem sinal de maladaptação por deriva`
+  };
+}
+
+/* streamingBatteryCost(totalSeconds, model) — Percept PC: ~1 dia de
+   longevidade por hora de streaming; streaming contínuo máximo ~4 h. No RC
+   (recarregável) o custo é carga, não longevidade — a nota diz isso.        */
+function streamingBatteryCost(totalSeconds, model) {
+  const h = (totalSeconds || 0) / 3600;
+  /* \brc\b — "Percept" contém "rc" e não pode disparar o ramo recarregável */
+  const isRC = /(^|[^a-z0-9])rc([^a-z0-9]|$)/i.test(String(model || ''));
+  return {
+    hoursStreamed: +h.toFixed(2),
+    estimatedLongevityDaysLost: isRC ? 0 : +h.toFixed(1),
+    model: isRC ? 'RC (recarregável)' : 'PC (não recarregável)',
+    reading: isRC
+      ? `${h.toFixed(1)} h de streaming neste conjunto — no Percept RC o custo é de recarga, não de longevidade`
+      : `${h.toFixed(1)} h de streaming neste conjunto ≈ ${h.toFixed(1)} dia(s) de longevidade de bateria no Percept PC ` +
+        '(≈1 dia/h; streaming contínuo máximo ~4 h — Saengphatrachai 2024). Planeje sessões de pesquisa com esse orçamento',
+    source: 'doi:10.1080/17582024.2024.2404386'
+  };
+}
+
+const PRACTICE = {
+  VERSION: PRACTICE_VERSION, REFS: PRACTICE_REFS, DEFAULTS: PRACTICE_DEFAULTS,
+  dualThresholdTrap, amplitudeWindowCheck, distributionDrift, streamingBatteryCost
+};
+
 /* ---------- core/metrics/mrds.js ---------- */
 /* metrics/mrds.js — MRDS: (des)sincronização relacionada ao movimento
    ------------------------------------------------------------------------
@@ -7436,6 +8324,9 @@ const CHECKLIST_ITEMS = [
     ['firmware', 'Versão de firmware'],
     ['programmer_version', 'Versão do programador'],
     ['target', 'Alvo e modelo de eletrodo'],
+    ['ipg_position', 'Posição do IPG (subclavicular E/D, abdominal) — determinante do artefato de ECG'],
+    ['months_post_op', 'Tempo desde a cirurgia — janela de estabilização de 22–40 dias'],
+    ['peak_selection', 'Como o pico foi escolhido (inspeção visual vs algorítmica)'],
     ['sensing_channel', 'Par bipolar de registro'],
     ['fs_nominal', 'Frequência de amostragem nominal (Hz)'],
     ['fs_effective', 'Frequência de amostragem efetiva medida (Hz)'],
@@ -7619,6 +8510,26 @@ function valorDe(chave, prov, metrics, profile) {
           : '');
     }
     case 'device_model': return val(arq.deviceModel || sub.device_model);
+    /* posição do IPG não consta do JSON exportado; é determinante da contaminação
+       cardíaca (Neumann et al., Brain Stimul 2021: IPG subclavicular esquerdo +
+       lead 3389 concentra o artefato de ECG) e por isso precisa ser declarada */
+    case 'ipg_position': return null;
+    case 'months_post_op': {
+      const ses = (metrics && metrics.sessions) || [];
+      const dsi = ses.map(s2 => s2.days_since_implant).filter(isFinite);
+      if (!dsi.length) return null;
+      const dmin = Math.min.apply(null, dsi);
+      return `${dmin} dia(s) na primeira sessão` +
+        (dmin < 42 ? ' — DENTRO/na borda da janela de instabilidade pós-operatória (22–40 dias; de Neeling 2026, Feldmann 2025): ' +
+          'decisões de contato/limiar com este registro exigem cautela' : '');
+    }
+    case 'peak_selection': {
+      /* se este software calculou métricas espectrais, o pico foi algorítmico;
+         a ressalva do ADAPT-PD (automática detecta 56,3% vs 84,8% da inspeção
+         clínica) acompanha a declaração */
+      return val(ag.spectrum_channel) ? 'algorítmica (maior pico na banda do perfil, ajuste aperiódico como fundo) — ' +
+        'nota: a detecção automática é mais conservadora que a inspeção clínica (ADAPT-PD: 56,3% vs 84,8% dos núcleos)' : null;
+    }
     case 'firmware': return val(arq.firmware || sub.firmware);
     case 'programmer_version': return val(arq.programmerVersion);
     case 'target': return val((sub.targets || []).map(t => `${t.hemisphere}:${t.target} (${t.model || '—'})`).join(', '));
@@ -8634,6 +9545,8 @@ const DIC = {
     'Assistente de limiares de aDBS (TIDAL-DT)': 'aDBS Threshold Advisor (TIDAL-DT)',
     'Percentis de vigília — 7–14 dias em escala': 'Wake-time percentiles — 7–14 days at scale',
     'Arquitetura do sono estimada do LFP': 'Sleep architecture estimated from LFP',
+    'Cronotipo do marcador — pipeline de van Rheede': 'Biomarker chronotype — the van Rheede pipeline',
+    'Estabilização pós-operatória — stun effect': 'Post-operative stabilization — stun effect',
     'Survey longitudinal — o mesmo par através das sessões': 'Longitudinal Survey — the same pair across sessions',
     'ODR e features por janela — dinâmica multi-banda do registro agudo':
       'ODR and windowed features — multi-band dynamics of the acute recording',
@@ -14525,226 +15438,6 @@ function actigraphyPanel(rows, offMin, opts) {
   };
 }
 
-/* ---------- core/stats/changepoint.js ---------- */
-/* stats/changepoint.js — pontos de mudança na série crônica.
-
-   POR QUE ESTE MÓDULO EXISTE. Olhar um Timeline de seis semanas e dizer "o beta
-   caiu" é, na maior parte das vezes, descrever ruído. A pergunta correta não é
-   se a média do fim é menor que a do começo — é se houve uma MUDANÇA DE NÍVEL
-   num instante identificável. É essa distinção que separa evento clínico (troca
-   de medicação, reprogramação, intercorrência) de deriva lenta, e as duas coisas
-   pedem condutas diferentes.
-
-   O QUE TORNA ISSO DIFÍCIL AQUI. A série de dez minutos do Timeline é
-   fortemente autocorrelacionada: valores vizinhos se parecem porque o processo
-   é lento, não porque haja estrutura. Um teste de mudança de média aplicado
-   ingenuamente a ruído AR(1) puro encontra pontos de mudança com facilidade
-   embaraçosa — e eles não existem. Por isso:
-
-     · a permutação padrão em `changePointsInTime` é POR BLOCOS, que preserva a
-       autocorrelação dentro do bloco e só destrói a posição dele na série;
-     · a agregação padrão é por dia, o que reduz a autocorrelação de dez minutos
-       a uma escala em que ela é fraca;
-     · a permutação simples continua disponível, e a saída declara qual foi
-       usada e por quê ela é anticonservadora.
-
-   O QUE O MÓDULO NÃO FAZ. Não estabelece causa. Um ponto de mudança que cai no
-   mesmo dia de uma reprogramação é compatível com a reprogramação tê-lo causado,
-   com ela ter sido feita POR CAUSA de uma piora já em curso, e com coincidência.
-   `annotateChangePoints` associa e diz exatamente isso.
-
-   Unidades: entrada na unidade de potência do arquivo; `t` em epoch ms;
-   `delta` na unidade de entrada; `pctChange` em porcento.
-
-   Referências:
-     Page ES. Continuous inspection schemes. Biometrika 1954;41:100-15 (CUSUM).
-     Killick R, Fearnhead P, Eckley IA. Optimal detection of changepoints with a
-       linear computational cost. J Am Stat Assoc 2012;107:1590-8 (PELT, e a
-       discussão de penalização que a segmentação binária aqui aproxima).      */
-
-
-/* Estatística de mudança de média no ponto k: diferença padronizada entre os
-   dois lados, ponderada pelos tamanhos. É a forma do CUSUM de duas amostras. */
-function cpEstatistica(v, a, b) {
-  const n = b - a;
-  if (n < 4) return { k: -1, stat: 0 };
-  let melhor = -1, melhorStat = 0;
-  const total = v.slice(a, b).reduce((x, y) => x + y, 0);
-  let esq = 0;
-  for (let k = a; k < b - 1; k++) {
-    esq += v[k];
-    const nE = k - a + 1, nD = b - (k + 1);
-    if (nE < 2 || nD < 2) continue;
-    const mE = esq / nE, mD = (total - esq) / nD;
-    /* variância combinada dos dois lados, para não premiar o corte que cai num
-       trecho quieto só porque ali a escala é menor */
-    let sE = 0, sD = 0;
-    for (let i = a; i <= k; i++) sE += (v[i] - mE) * (v[i] - mE);
-    for (let i = k + 1; i < b; i++) sD += (v[i] - mD) * (v[i] - mD);
-    const pooled = Math.sqrt((sE + sD) / Math.max(1, n - 2));
-    if (!(pooled > 0)) continue;
-    const stat = Math.abs(mE - mD) / (pooled * Math.sqrt(1 / nE + 1 / nD));
-    if (stat > melhorStat) { melhorStat = stat; melhor = k; }
-  }
-  return { k: melhor, stat: melhorStat };
-}
-
-const cpPrng = semente => {
-  let s = (isFinite(semente) ? semente : 20240517) >>> 0;
-  return () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
-};
-
-/* Embaralha a série. `tamBloco > 1` embaralha BLOCOS contíguos, o que preserva
-   a autocorrelação dentro do bloco — é o nulo correto para série suave. */
-function cpEmbaralha(v, prox, tamBloco) {
-  if (!(tamBloco > 1)) {
-    const s = v.slice();
-    for (let i = s.length - 1; i > 0; i--) { const j = (prox() * (i + 1)) | 0; const tmp = s[i]; s[i] = s[j]; s[j] = tmp; }
-    return s;
-  }
-  const blocos = [];
-  for (let i = 0; i < v.length; i += tamBloco) blocos.push(v.slice(i, i + tamBloco));
-  for (let i = blocos.length - 1; i > 0; i--) { const j = (prox() * (i + 1)) | 0; const t = blocos[i]; blocos[i] = blocos[j]; blocos[j] = t; }
-  return blocos.flat();
-}
-
-/* changePoints(y, opts) — segmentação binária recursiva com significância por
-   permutação. Devolve os pontos em ordem de posição.                         */
-function changePoints(y, opts) {
-  opts = opts || {};
-  const minSeg = isFinite(opts.minSegment) ? opts.minSegment : 5;
-  const nPerm = isFinite(opts.nPermutations) ? opts.nPermutations : 500;
-  const alfa = isFinite(opts.alpha) ? opts.alpha : 0.05;
-  const semente = isFinite(opts.seed) ? (opts.seed >>> 0) : 20240517;
-  const tamBloco = isFinite(opts.blockPermutation) ? opts.blockPermutation : 0;
-  const maxPontos = isFinite(opts.maxPoints) ? opts.maxPoints : 8;
-
-  const bruto = Array.from(y || []);
-  const idx = [], v = [];
-  bruto.forEach((x, i) => { if (isFinite(x)) { idx.push(i); v.push(x); } });
-  const nNaN = bruto.length - v.length;
-  const base = {
-    penalty: null, minSegment: minSeg, method: 'segmentação binária + CUSUM de duas amostras',
-    nPermutations: nPerm, seed: semente, alpha: alfa,
-    blockPermutation: tamBloco || null, nValid: v.length, nNaN
-  };
-  if (v.length < 2 * minSeg + 2) return Object.assign({
-    ok: false, points: [], nPoints: 0,
-    reason: `só ${v.length} ponto(s) finito(s) — são necessários ao menos ${2 * minSeg + 2} para procurar mudança de nível`
-  }, base);
-
-  const prox = cpPrng(semente);
-  const pontos = [];
-  const fila = [[0, v.length]];
-  while (fila.length && pontos.length < maxPontos) {
-    const [a, b] = fila.shift();
-    if (b - a < 2 * minSeg) continue;
-    const { k, stat } = cpEstatistica(v, a, b);
-    if (k < 0 || k - a + 1 < minSeg || b - (k + 1) < minSeg) continue;
-    /* nulo: a MESMA janela embaralhada, para que o teste responda "este corte é
-       melhor do que o melhor corte que o acaso produziria NESTE trecho" */
-    const janela = v.slice(a, b);
-    let piores = 0;
-    for (let p = 0; p < nPerm; p++) {
-      const s = cpEmbaralha(janela, prox, tamBloco);
-      if (cpEstatistica(s, 0, s.length).stat >= stat) piores++;
-    }
-    const pval = (piores + 1) / (nPerm + 1);
-    if (pval > alfa) continue;
-    const mE = mean(v.slice(a, k + 1)), mD = mean(v.slice(k + 1, b));
-    pontos.push({
-      index: idx[k], indexValid: k, statistic: +stat.toFixed(4), p: +pval.toFixed(4),
-      meanBefore: +mE.toFixed(4), meanAfter: +mD.toFixed(4), delta: +(mD - mE).toFixed(4),
-      pctChange: mE !== 0 ? +(100 * (mD - mE) / Math.abs(mE)).toFixed(2) : NaN,
-      nBefore: k - a + 1, nAfter: b - (k + 1)
-    });
-    fila.push([a, k + 1]); fila.push([k + 1, b]);
-  }
-  pontos.sort((x, z) => x.index - z.index);
-  return Object.assign({
-    ok: true, points: pontos, nPoints: pontos.length, reason: '',
-    caveat: tamBloco > 1
-      ? `a permutação embaralha blocos de ${tamBloco} pontos, o que preserva a autocorrelação dentro do bloco — é o nulo ` +
-        'apropriado para série suave'
-      : 'a permutação simples destrói a autocorrelação da série, e por isso é ANTICONSERVADORA em dado suave como o ' +
-        'Timeline: ela acha ponto de mudança em ruído AR(1) puro. Use permutação em blocos quando a série não for agregada por dia'
-  }, base);
-}
-
-/* changePointsInTime(rows, opts) — envelope que agrega o Timeline por dia antes
-   de procurar mudança. Agregar reduz a autocorrelação de dez minutos a uma
-   escala em que ela é fraca, e é por isso que este é o caminho recomendado.  */
-function changePointsInTime(rows, opts) {
-  opts = opts || {};
-  const offMin = isFinite(opts.offMin) ? opts.offMin : 0;
-  const agregacao = opts.aggregation === 'mean' ? 'mean' : 'median';
-  const porDia = {};
-  (rows || []).forEach(r => {
-    if (!r || !isFinite(r.t) || !isFinite(r.lfp)) return;
-    const d = localDayKey(r.t, offMin);
-    (porDia[d] = porDia[d] || []).push(r);
-  });
-  const dias = Object.keys(porDia).sort();
-  if (dias.length < 6) return {
-    ok: false, points: [], nPoints: 0, aggregation: agregacao,
-    reason: `só ${dias.length} dia(s) de registro — procurar mudança de nível em menos de 6 dias produz achado que não se sustenta`
-  };
-  const serie = dias.map(d => {
-    const v = porDia[d].map(r => r.lfp);
-    return agregacao === 'mean' ? mean(v) : median(v);
-  });
-  const cp = changePoints(serie, Object.assign({ blockPermutation: 0 }, opts, { minSegment: opts.minSegment || 3 }));
-  if (!cp.ok) return Object.assign({}, cp, { aggregation: agregacao, days: dias });
-  const pontos = cp.points.map(p => {
-    /* o ponto de mudança fica ENTRE o dia p.index e o seguinte; o instante
-       reportado é o início do dia seguinte, que é onde o nível novo começa */
-    const diaDepois = dias[Math.min(dias.length - 1, p.index + 1)];
-    const t = porDia[diaDepois][0].t;
-    return Object.assign({}, p, { t, dayKey: diaDepois, dayBefore: dias[p.index] });
-  });
-  return Object.assign({}, cp, {
-    points: pontos, aggregation: agregacao, days: dias, nDays: dias.length,
-    dailyValues: serie.map(x => +x.toFixed(4)),
-    binPerDay: dias.map(d => porDia[d].length),
-    note: `um valor por dia (${agregacao === 'mean' ? 'média' : 'mediana'} dos pontos do dia); a agregação é declarada porque ` +
-      'ela muda o resultado — a mediana resiste a outlier de movimento, a média não'
-  });
-}
-
-/* annotateChangePoints(points, marcos, opts) — associa cada ponto ao marco
-   conhecido mais próximo. Coincidência temporal NÃO estabelece causa, e a
-   leitura devolvida diz isso com todas as letras.                           */
-function annotateChangePoints(points, marcos, opts) {
-  opts = opts || {};
-  const tolDias = isFinite(opts.toleranceDays) ? opts.toleranceDays : 2;
-  const tolMs = tolDias * 86400000;
-  const lista = (marcos || []).filter(m => m && isFinite(m.t));
-  const anotados = (points || []).map(p => {
-    let perto = null, dt = Infinity;
-    lista.forEach(m => { const d = Math.abs(m.t - p.t); if (d < dt) { dt = d; perto = m; } });
-    const explicado = !!perto && dt <= tolMs;
-    return Object.assign({}, p, {
-      nearestMarker: perto ? perto.label : null,
-      nearestMarkerT: perto ? perto.t : NaN,
-      deltaDays: perto ? +(( p.t - perto.t) / 86400000).toFixed(2) : NaN,
-      explained: explicado
-    });
-  });
-  const nExp = anotados.filter(a => a.explained).length;
-  return {
-    ok: true, annotated: anotados, nExplained: nExp, nUnexplained: anotados.length - nExp,
-    toleranceDays: tolDias, nMarkers: lista.length,
-    reading: !anotados.length ? 'nenhuma mudança de nível detectada no período'
-      : `${nExp} de ${anotados.length} mudança(s) coincidem, dentro de ${tolDias} dia(s), com um marco conhecido. ` +
-        (anotados.length - nExp > 0
-          ? `As outras ${anotados.length - nExp} não têm marco correspondente e são as que merecem investigação.`
-          : 'Nenhuma ficou sem marco correspondente.'),
-    caveat: 'coincidência temporal não estabelece causa. Uma mudança que cai no dia de uma reprogramação é igualmente ' +
-      'compatível com a reprogramação tê-la causado, com a reprogramação ter sido feita POR CAUSA de uma piora já em ' +
-      'curso, e com acaso — e a ordem dos dois primeiros não é recuperável a partir desta série'
-  };
-}
-
 /* ---------- core/metrics/diary.js ---------- */
 /* metrics/diary.js — diário de estados ON/OFF, matriz hora × dia, e a mesma
    grade aplicada ao Timeline crônico.
@@ -18906,8 +19599,13 @@ function longitudinalReliability(bundles, opts) {
 const PREVALENCIA_BETA = {
   coortesPequenas: '64–69,5% por hemisfério',
   adaptPd: '84,8% por hemisfério; 64,2% bilateral (n = 51)',
+  adaptPdPivotal: '91,5% off-med e 84,8% on-med por detecção do clínico (n = 68); elegibilidade 84% (57/68) — 78% dos STN, 100% dos GPi (Bronte-Stewart, JAMA Neurol 2025)',
+  algoritmoAutomatico: 'a detecção automática offline achou pico em só 56,3% dos núcleos, contra 84,8% da inspeção clínica (ADAPT-PD) — algoritmos são conservadores, incluindo o deste software',
+  mundoReal: 'ADAPT-START (prática real, critérios técnicos rígidos): 9/20 (45%) elegíveis — artefato cardíaco (3), configuração incompatível com sensing (3), comorbidade psiquiátrica (1), 4 adiados',
   registroBrainSense: '89,0% por hemisfério; 69,4% bilateral (n = 113)',
-  nota: 'uma proporção substancial de pacientes simplesmente não expressa beta — isso precisa entrar no cálculo amostral'
+  alfaNoGpi: 'picos na faixa ALFA são muito mais comuns no GPi (58,6% off-med) que no STN (19,7%) — significado clínico desconhecido (ADAPT-PD); num GPi sem pico beta, procure alfa antes de declarar ausência de pico',
+  nota: 'uma proporção substancial de pacientes simplesmente não expressa beta — isso precisa entrar no cálculo amostral; ' +
+    'e a diferença entre 84% (ensaio) e 45% (prática real) é o número que importa para planejar implementação clínica'
 };
 
 const crit = (id, rotulo, veredito, evidencia, pendencia) =>
@@ -18954,7 +19652,11 @@ function assessEligibility(parsedList, opts) {
         picos.length
           ? `pico em ${picoHz.toFixed(1)} Hz (fonte ${spec.source}); verificação de harmônicos: ${h.verdict}`
           : `nenhum pico destacado do fundo aperiódico em ${pb.lo}–${pb.hi} Hz`,
-        temPico ? null : 'sem pico distinto o aDBS guiado por essa banda não é programável neste hemisfério'));
+        temPico ? null : 'sem pico distinto o aDBS guiado por essa banda não é programável neste hemisfério — ' +
+          'mas a detecção ALGORÍTMICA é conservadora (ADAPT-PD: 56,3% vs 84,8% da inspeção clínica): confira o PSD ' +
+          'visualmente antes de concluir ausência' +
+          (/gpi|pallid/i.test(String((p0.leads || []).find(l => l.hemisphere === hemi) ? (p0.leads || []).find(l => l.hemisphere === hemi).target : ''))
+            ? '; no GPi, 58,6% dos picos off-med caem na faixa ALFA (ADAPT-PD) — procure alfa também' : '')));
     }
 
     /* 2. ausência de artefato relevante ------------------------------------ */
@@ -19739,6 +20441,9 @@ function leadSpan(spec, ids) {
 
 
 
+
+
+
 const API = {
   parsePercept, parsePerceptText, salvageJson, MODALITIES, BANDS, HARDWARE_FILTERS, hardwareFilterDescription, IMPEDANCE_LIMITS, shortThresholdOhms, prettyChannel, parseUtcOffsetMin, localHour, localDayKey, hashId,
   fft, nextPow2, welchPSD, spectrogram, bandpassFFT, hilbertEnvelope, detectBursts, fitAperiodic,
@@ -19750,6 +20455,9 @@ const API = {
   mergeTrend, collectThresholds, chronicMetrics, censoringSummary, splitByLocalDay, dayRangeOf, wakePercentiles, extractMetrics,
   TIDAL,
   SLEEP,
+  CHRONOTYPE,
+  STUN,
+  PRACTICE,
   MRDS_VERSION, MRDS_PROTOCOL, MRDS_BANDS, MRDS_TOTAL_BAND, MRDS_CELLS, MRDS_LIMITACOES, MRDS_COLUMNS,
   zscoreEpochs, mrdsEpochPSD, mrdsPair, mrdsBroadbandVerdict, mrdsDesign, mrdsSignFlipTest, mrdsTable, mrdsMeta, mrdsReading,
   /* ranking dos pares bipolares do Survey (F1) */
@@ -23532,6 +24240,196 @@ const FIGURES = [
     }
   },
 
+  /* ----------------------------------------------------------------- F40 */
+  /* Pipeline de referência do cronotipo (van Rheede 2022) — a resposta padrão
+     da área para "existe ritmo diurno?" com VE, permutação circular por dia,
+     VE dia/noite, flag de bimodalidade (discinesia) e especificidade de
+     banda. O núcleo vive em core/metrics/chronotype.js (C.CHRONOTYPE).      */
+  {
+    id: 'F40', title: 'Cronotipo do marcador — pipeline de van Rheede',
+    sub: 'variância explicada pela hora do dia · permutação circular por dia · bimodalidade como alarme de discinesia',
+    has: d => Object.keys(d.trend).length,
+    render(node, d) {
+      const CT = C.CHRONOTYPE;
+      const hemis = Object.keys(d.trend);
+      const nPerm = opt('F40', 'nperm', 1000);
+      const binMin = opt('F40', 'bin', 30);
+      const zThr = opt('F40', 'z', 6);
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlNumber('permutações', nPerm, 100, 2000, 100, v => setOpt('F40', 'nperm', v)),
+        ctrlNumber('bin (min)', binMin, 10, 120, 10, v => setOpt('F40', 'bin', v)),
+        ctrlNumber('outlier |z| >', zThr, 3, 10, 0.5, v => setOpt('F40', 'z', v))
+      ]));
+
+      const resultados = {};
+      const csvRows = [];
+      hemis.forEach(h => {
+        const r = CT.chronotypePipeline(d.trend[h], offMin(), { nPermutations: nPerm, binMinutes: binMin, zThreshold: zThr });
+        resultados[h] = r;
+        node.appendChild(el('h3', { class: 'qc-title', html: `<span class="hemi-${h[0]}">${rotuloLado(h)}</span> — cronotipo` }));
+        if (!r.ok) {
+          node.appendChild(el('div', { class: 'warnbox', html: `<b>Não calculável.</b> ${r.reason}` }));
+          return;
+        }
+        /* (a) perfil por bin de 30 min, na escala destendida (mediana diária = 1) */
+        const box = plotBox(node, 210);
+        {
+          const vs = r.profile.values.filter(isFinite);
+          const ch = new P.Chart(box.canvas, {
+            width: box.width, height: box.height, xlim: [0, 24],
+            ylim: [Math.min.apply(null, vs) * 0.95, Math.max.apply(null, vs) * 1.08],
+            xlabel: 'hora local', ylabel: 'potência ÷ mediana do dia',
+            title: `perfil médio por bin de ${r.profile.binMinutes} min · VE = ${(100 * r.ve).toFixed(1)}% · p(permutação) = ${r.permutation.p}`,
+            pad: { l: 62, r: 14, t: 24, b: 40 }
+          });
+          ch.axes({ nx: 8 });
+          ch.hline(1, { color: '#9AA7B4', width: 1, dash: [4, 3] });
+          ch.line(r.profile.hours, r.profile.values, { color: hcol(h), width: 2 });
+        }
+        /* (b) números do pipeline */
+        node.appendChild(table(['métrica', 'este registro', 'publicado (van Rheede 2022, n=6)'], [
+          ['variância explicada pela hora do dia', `${(100 * r.ve).toFixed(1)}% (p = ${r.permutation.p}, ${r.permutation.nPermutations} permutações circulares)`, '41 ± 9% (p<0,001 em todos)'],
+          ['VE dentro da vigília (08–20 h)', isFinite(r.veDay.ve) ? (100 * r.veDay.ve).toFixed(1) + '%' : '—', '13 ± 11%'],
+          ['VE dentro do sono (00–06 h)', isFinite(r.veNight.ve) ? (100 * r.veNight.ve).toFixed(1) + '%' : '—', '14 ± 13%'],
+          ['limiar do nulo (95º percentil)', (100 * r.permutation.null95).toFixed(1) + '%', '—'],
+          ['outliers |z|>' + r.params.zThreshold + ' substituídos', `${r.outliers.nReplaced} (${r.outliers.iterations} iteração(ões)) — interpolação do método publicado, contada`, '18 ± 23 por série'],
+          ['dias · amostras', `${r.nDays} · ${r.nSamples}`, '34 ± 13 dias']
+        ]));
+        /* (c) bimodalidade diurna — o alarme de discinesia */
+        if (r.bimodality.ok) node.appendChild(el('div', {
+          class: r.bimodality.flag ? 'warnbox' : 'note',
+          html: `<b>Distribuição diurna${r.bimodality.flag ? ' — BIMODAL' : ''}.</b> BC de Sarle = ${r.bimodality.sarleBC} ` +
+            `(limiar 0,555) · d de Ashman = ${r.bimodality.ashmanD} (limiar 2). ${r.bimodality.reading}.`
+        }));
+        r.profile.hours.forEach((hh, i) => csvRows.push({
+          hemisphere: h, bin_center_hour: hh, mean_detrended: r.profile.values[i], n_samples: r.profile.counts[i],
+          ve: r.ve, ve_p: r.permutation.p, ve_day: r.veDay.ve, ve_night: r.veNight.ve,
+          n_outliers_replaced: r.outliers.nReplaced, bimodality_flag: r.bimodality.ok && r.bimodality.flag ? 1 : 0,
+          n_permutations: r.permutation.nPermutations, bin_minutes: r.profile.binMinutes,
+          z_threshold: r.params.zThreshold, utc_offset_min: offMin()
+        }));
+      });
+
+      /* (d) especificidade: correlação entre os dois hemisférios destendidos */
+      if (hemis.length === 2 && resultados[hemis[0]].ok && resultados[hemis[1]].ok) {
+        const [hA, hB] = hemis;
+        const rA = resultados[hA], rB = resultados[hB];
+        const spec = CT.bandSpecificityCheck(d.trend[hA], rA.detrended, d.trend[hB], rB.detrended, {});
+        node.appendChild(el('div', {
+          class: spec.ok && spec.suspicious ? 'warnbox' : 'note',
+          html: `<b>Especificidade de banda (passo 8)${spec.ok && spec.suspicious ? ' — SUSPEITA DE ARTEFATO COMUM' : ''}.</b> ` +
+            (spec.ok
+              ? `Correlação entre as séries destendidas dos dois hemisférios: r = ${spec.r} (n = ${spec.n}). ${spec.reading}. ` +
+                `Faixa publicada: ${spec.published}.`
+              : `Não verificável: ${spec.reason}.`)
+        }));
+      }
+
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Método.</b> Reprodução passo a passo do pipeline de van Rheede et al. ` +
+          `[doi:10.1038/s41531-022-00350-7; toolbox original Circa Diem, doi:10.5281/zenodo.5961105]: outliers |z|>6 ` +
+          `interpolados iterativamente (contagem exportada), detrending pela mediana diária, ajuste por bins de 30 min, ` +
+          `VE e permutação circular por dia (preserva a autocorrelação intradiária, destrói só o alinhamento entre dias; ` +
+          `semente fixa). O confundimento central está declarado no artigo: ritmo circadiano fisiológico e ritmo dos ` +
+          `artefatos (ECG, movimento) são temporalmente sincronizados pela atividade — um perfil diurno pode ser ` +
+          `fisiologia, artefato, ou os dois. A bimodalidade diurna e a correlação inter-hemisférica são os dois ` +
+          `indicadores indiretos que o próprio artigo recomenda inspecionar. No GPi o cronotipo difere ` +
+          `(beta sustentado no sono — Yin 2023) e a comparação com os números publicados (STN) não se transfere.`
+      }));
+      if (csvRows.length) node.appendChild(exportRow([
+        { label: '⤓ CSV (R-compatible)', fn: () => P.downloadText(P.toCSV(csvRows), 'F40_chronotype_vanrheede.csv', 'text/csv') }
+      ]));
+    }
+  },
+
+  /* ----------------------------------------------------------------- F41 */
+  /* Janela de estabilização pós-operatória (stun effect): change-point da
+     mediana diária (de Neeling 2026) + taxa de variação e RQA (Feldmann
+     2025). O núcleo vive em core/metrics/stun.js (C.STUN).                  */
+  {
+    id: 'F41', title: 'Estabilização pós-operatória — stun effect',
+    sub: 'change-point da mediana diária · 22–40 dias é a janela publicada · não fixe limiares antes de ~1 mês',
+    has: d => Object.keys(d.trend).length,
+    render(node, d) {
+      const ST = C.STUN;
+      const hemis = Object.keys(d.trend);
+      const implantAuto = (d.all[0] && d.all[0].device && d.all[0].device.implantDate) ? String(d.all[0].device.implantDate).slice(0, 10) : '';
+      const implantUser = opt('F41', 'implant', '');
+      const implante = implantUser || implantAuto;
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlText('data de implante (AAAA-MM-DD)', implantUser || implantAuto, implantAuto ? implantAuto + ' (do arquivo)' : 'não consta do arquivo — informe',
+          v => setOpt('F41', 'implant', v))
+      ]));
+
+      const csvRows = [];
+      hemis.forEach(h => {
+        const r = ST.stunAnalysis(d.trend[h], offMin(), { implantDate: implante || null });
+        node.appendChild(el('h3', { class: 'qc-title', html: `<span class="hemi-${h[0]}">${rotuloLado(h)}</span> — mediana diária e mudança de regime` }));
+        if (!r.ok) {
+          node.appendChild(el('div', { class: 'warnbox', html: `<b>Não calculável.</b> ${r.reason}` }));
+          return;
+        }
+        /* (a) mediana diária com os change-points */
+        const box = plotBox(node, 210);
+        {
+          const xs = r.days.map((_, i) => i);
+          const vs = r.dailyMedians.filter(isFinite);
+          const ch = new P.Chart(box.canvas, {
+            width: box.width, height: box.height, xlim: [-0.5, r.nDays - 0.5],
+            ylim: [Math.min.apply(null, vs) * 0.9, Math.max.apply(null, vs) * 1.1],
+            xlabel: isFinite(r.implant.startPostOpDay) ? 'dia pós-implante' : 'dia do registro',
+            ylabel: 'mediana diária (LFP nativo)',
+            title: `veredito: ${r.verdict}` + (r.changePoints.length ? ` · ${r.changePoints.length} change-point(s)` : ''),
+            pad: { l: 66, r: 14, t: 24, b: 40 }
+          });
+          const rotX = i => isFinite(r.implant.startPostOpDay) ? String(r.implant.startPostOpDay + Math.round(i)) : r.days[Math.round(i)].slice(5);
+          const passo = Math.max(1, Math.ceil(r.nDays / 9));
+          ch.axes({ xticks: xs.filter(i => i % passo === 0), xfmt: rotX });
+          ch.line(xs, r.dailyMedians, { color: hcol(h), width: 1.8 });
+          r.changePoints.forEach(pt => {
+            const x = pt.index + 0.5;
+            ch.ctx.strokeStyle = '#B0433C'; ch.ctx.lineWidth = 1.5; ch.ctx.setLineDash([5, 3]);
+            ch.ctx.beginPath(); ch.ctx.moveTo(ch.X(x), ch.y0); ch.ctx.lineTo(ch.X(x), ch.y1); ch.ctx.stroke();
+            ch.ctx.setLineDash([]);
+          });
+        }
+        /* (b) tabela de change-points e métricas convergentes */
+        if (r.changePoints.length) node.appendChild(table(
+          ['change-point (dia local)', 'dia pós-implante', 'p (permutação)', 'nível antes → depois'],
+          r.changePoints.map(pt => [pt.dayKey, isFinite(pt.postOpDay) ? pt.postOpDay : '—', pt.p, `${pt.levelBefore} → ${pt.levelAfter}`])));
+        node.appendChild(table(['métrica convergente', 'primeira metade', 'segunda metade'], [
+          ['taxa de variação diária (fração da mediana global)', f(100 * r.rate.earlyMean, 1) + '%', f(100 * r.rate.lateMean, 1) + '%'],
+          ['RQA — taxa de recorrência', r.rqa.early.ok ? r.rqa.early.recurrenceRate : '—', r.rqa.late.ok ? r.rqa.late.recurrenceRate : '—'],
+          ['RQA — laminaridade', r.rqa.early.ok ? r.rqa.early.laminarity : '—', r.rqa.late.ok ? r.rqa.late.laminarity : '—'],
+          ['RQA — determinismo', r.rqa.early.ok ? r.rqa.early.determinism : '—', r.rqa.late.ok ? r.rqa.late.determinism : '—']
+        ]));
+        r.warnings.forEach(w => node.appendChild(el('div', { class: 'warnbox', html: `<b>Atenção.</b> ${w}.` })));
+        node.appendChild(el('div', { class: 'note', html: `<b>Ambiguidade declarada.</b> ${r.aperiodicCaveat}.` }));
+        r.days.forEach((dk, i) => csvRows.push({
+          hemisphere: h, day_local: dk,
+          post_op_day: isFinite(r.implant.startPostOpDay) ? r.implant.startPostOpDay + i : NaN,
+          daily_median_lfp: r.dailyMedians[i], daily_rate_of_change: r.rate.series[i],
+          is_change_point: r.changePoints.some(pt => pt.dayKey === dk) ? 1 : 0,
+          verdict: r.verdict, implant_date: r.implant.date || '', utc_offset_min: offMin()
+        }));
+      });
+
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Método e por que importa.</b> Duas metodologias independentes convergem: change-point da ` +
+          `mediana diária de beta muda de regime em <b>24–40 dias</b> pós-implante (de Neeling et al., Mov Disord 2026, n=32 ` +
+          `[doi:10.1002/mds.70042]) e taxa de variação + quantificação de recorrência estabilizam em <b>22–29 dias</b> ` +
+          `(Feldmann et al., Brain Stimul 2025, n=14 [doi:10.1016/j.brs.2025.08.002]). A implicação prática: seleção de ` +
+          `contato e limiares de aDBS baseados em eletrofisiologia antes de ~1 mês pós-implante são pouco confiáveis. ` +
+          `O beta NÃO cai com a ativação da DBS nesse período — continua subindo (efeito da microlesão se dissipando). ` +
+          `Este painel posiciona o SEU registro nessa janela; o TIDAL-DT (F36) e o assistente de contato devem ler o ` +
+          `veredito antes de propor números.`
+      }));
+      if (csvRows.length) node.appendChild(exportRow([
+        { label: '⤓ CSV (R-compatible)', fn: () => P.downloadText(P.toCSV(csvRows), 'F41_stun_effect.csv', 'text/csv') }
+      ]));
+    }
+  },
+
   /* ----------------------------------------------------------------- F13 */
   {
     id: 'F13', title: 'Estados ON/OFF pela amplitude do beta',
@@ -25030,6 +25928,14 @@ const FIGURES = [
             (isFinite(ub.batteryDropPctPerMonth) ? ` Bateria caindo ${f(ub.batteryDropPctPerMonth, 1)} pontos percentuais por mês.` : '') +
             ` ${ub.caveat}`
         }));
+        /* custo de bateria do streaming: ~1 dia de longevidade por hora no PC */
+        {
+          const segStream = d.bsTimeDomain.reduce((a, t2) => a + (t2.data ? t2.data.length / (t2.fsEff || t2.fs || 250) : 0), 0);
+          if (segStream > 0) {
+            const bc = C.PRACTICE.streamingBatteryCost(segStream, (d.all[0].device || {}).model || '');
+            node.appendChild(el('div', { class: 'note', html: `<b>Custo do streaming.</b> ${bc.reading} [doi:10.1080/17582024.2024.2404386].` }));
+          }
+        }
       }
 
       node.appendChild(exportRow([
@@ -26154,6 +27060,58 @@ const FIGURES = [
             class: 'exphint', text: `auto-tuned: ${tuned.lower}/${tuned.upper} (cost ${f(tuned.cost, 1)} vs ${f(tuned.baseCost, 1)} at proposal)`
           }));
           node.appendChild(linhaTune);
+        }
+
+        /* (d2) armadilhas da prática real (ADAPT-START / van Rheede) — camada
+           de leitura clínica FORA do espelho JS↔R do TIDAL (C.PRACTICE)     */
+        {
+          const PR2 = C.PRACTICE;
+          /* meta de janela de amplitude ≥ 0,7 mA */
+          const wc = PR2.amplitudeWindowCheck(iMin, iMax);
+          if (wc.ok && !wc.meetsTarget) node.appendChild(el('div', {
+            class: 'warnbox', html: `<b>Amplitude window below target.</b> ${wc.widthMa} mA between current limits — ` +
+              `ADAPT-START's empirical target is ≥${wc.targetMa} mA of working range (ceiling 1.5 mA in that study). ` +
+              `A narrow window gives the controller little room to modulate.`
+          }));
+          /* congelamento entre limiares + cDBS de dois níveis */
+          if (s.hasCurrent && s.trajectory) {
+            const trap = PR2.dualThresholdTrap(s.trajectory, {
+              iMin, iMax, dayKeys: res.wakeRows.map(r => C.localDayKey(r.t, offMin()))
+            });
+            if (trap.ok) node.appendChild(el('div', {
+              class: trap.functionallyCdbs ? 'warnbox' : 'note',
+              html: `<b>Dual-threshold behavior check${trap.functionallyCdbs ? ' — TWO-LEVEL cDBS PATTERN' : ''}.</b> ` +
+                `Simulated current pinned at the limits ${f(trap.pctPinnedHigh + trap.pctPinnedLow, 0)}% of the time ` +
+                `(${f(trap.pctPinnedHigh, 0)}% ceiling / ${f(trap.pctPinnedLow, 0)}% floor), ${trap.fullSwingsPerDay} full ` +
+                `limit-to-limit crossings per day. ` +
+                (trap.functionallyCdbs
+                  ? `This is the pattern ADAPT-START described as functionally a two-level cDBS, not an aDBS. `
+                  : ``) +
+                `Freeze caveat: between the thresholds the amplitude HOLDS its last value — a signal that retreats to the ` +
+                `intermediate band without crossing the lower threshold leaves stimulation stuck at the ceiling [Cascino 2026].`
+            }));
+          }
+          /* deriva de distribuição — vigilância pós-configuração */
+          const dr = PR2.distributionDrift(res.wakeRows.map(r => ({ t: r.t, x: r.x })), offMin(), {});
+          node.appendChild(el('div', {
+            class: dr.ok && dr.drift ? 'warnbox' : 'note',
+            html: `<b>Distribution drift check${dr.ok ? (dr.drift ? ' — DRIFT' : ' — stable') : ''}.</b> ` +
+              (dr.ok
+                ? `Last ${dr.recent.nDays} days vs reference (${dr.reference.nDays} days), wake log-power percentiles: ` +
+                  `P25 ${dr.shiftPct.p25 > 0 ? '+' : ''}${dr.shiftPct.p25}% · P50 ${dr.shiftPct.p50 > 0 ? '+' : ''}${dr.shiftPct.p50}% · ` +
+                  `P75 ${dr.shiftPct.p75 > 0 ? '+' : ''}${dr.shiftPct.p75}% (warn at ±${dr.params.warnPct}%). ` +
+                  (dr.drift ? `Thresholds derived from the reference window may occupy a different zone today — re-check before ` +
+                    `interpreting adaptation; chronic artifact above threshold reproduces cDBS at the ceiling [van Rheede 2022]. ` +
+                    `Cascino: the stimulation-amplitude trace over time is a more reliable indicator than 10-min averages.` : ``)
+                : `Not verifiable: ${dr.reason}.`)
+          }));
+          /* limite informacional do controlador só-beta */
+          node.appendChild(el('div', {
+            class: 'note', html: `<b>Single-biomarker ceiling.</b> Beta bursts alone explained 16% of hemibody impairment ` +
+              `variance; a model with ALL spectral states (theta, alpha, low/high-beta) explained 50% [Khawaldeh 2022, ` +
+              `doi:10.1093/brain/awab264]. A beta-only controller discards most of the information in the signal — a limit ` +
+              `of the commercial mode itself, stated here so the proposal is read at its true size.`
+          }));
         }
 
         /* (e) medication-cycle check */
@@ -27708,7 +28666,7 @@ const ABAS = [
   },
   {
     id: 'cronico', label: 'Crônico', sub: 'dias · vida real', camada: 'cronico',
-    figuras: ['F8', 'F32', 'F9', 'F37', 'F39', 'F13', 'F10', 'F25', 'F28', 'F29'],
+    figuras: ['F8', 'F32', 'F9', 'F40', 'F37', 'F39', 'F41', 'F13', 'F10', 'F25', 'F28', 'F29'],
     orient: {
       titulo: 'Registro crônico — vida real, sem supervisão',
       camada: 'crônico · observacional',

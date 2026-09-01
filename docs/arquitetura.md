@@ -260,6 +260,48 @@ mexe na arquitetura:
 `ds()` passou a expor `indefiniteStreaming` (Record Streaming, tempo-domínio
 sem estimulação). O parser já o lia; até a F35 nenhuma figura o consumia.
 
+## Catálogo metodológico 2026: cronotipo, stun effect e prática de aDBS
+
+Onda derivada da revisão estruturada de registros crônicos com Percept (set/2026),
+que catalogou os métodos estatísticos da área. Três módulos novos:
+
+**metrics/chronotype.js — o pipeline de van Rheede** (npj Parkinsons Dis 2022;8:88).
+O padrão informal da área, passo a passo: outliers |z|>6 interpolados
+iterativamente (interpolação é o método publicado; contagem e posições são
+exportadas), detrending pela mediana diária, ajuste por bins de 30 min,
+variância explicada (VE) pela hora do dia, permutação circular por dia (1000×,
+semente fixa — preserva a autocorrelação intradiária, destrói só o alinhamento
+entre dias), VE dentro da vigília e do sono, e os dois indicadores indiretos de
+contaminação que o próprio artigo recomenda: bimodalidade da distribuição
+diurna (BC de Sarle > 0,555 E d de Ashman > 2 — assinatura de discinesia
+sustentada nas janelas de 10 min) e correlação entre as séries destendidas dos
+dois hemisférios (fonte comum de banda larga; faixa publicada −0,24 a 0,61).
+
+**metrics/stun.js — janela de estabilização pós-operatória.** Change-point da
+mediana diária (reutiliza stats/changepoint.js; de Neeling, Mov Disord 2026:
+24–40 dias) + taxa de variação diária e RQA determinística (taxa de
+recorrência, determinismo, laminaridade; ε = 0,2·DP declarado; Feldmann, Brain
+Stimul 2025: 22–29 dias). Veredito posicionado pela data de implante
+(DeviceInformation.ImplantDate do JSON, ou entrada manual), com a ambiguidade
+do componente aperiódico declarada (Darmani 2023: parte da subida pode ser 1/f,
+e o Timeline sem espectro não separa).
+
+**adbs/practice.js — armadilhas da prática real.** Fora do namespace TIDAL de
+propósito (o TIDAL tem espelho 1:1 em R; estes utilitários são camada de
+leitura): detecção do padrão "cDBS de dois níveis" na trajetória simulada
+(corrente encostada nos limites com poucas travessias/dia — Cascino 2026),
+lembrete do congelamento entre limiares, meta empírica de ≥0,7 mA de janela de
+amplitude, vigilância de deriva de distribuição (últimos 7 dias vs referência —
+van Rheede: artefato crônico acima do limiar reproduz a cDBS no teto) e custo
+de bateria do streaming (~1 dia de longevidade por hora no PC).
+
+O checklist de reporte ganhou os itens que a revisão apontou como
+sistematicamente ausentes: posição do IPG (determinante do artefato de ECG),
+tempo desde a cirurgia (auto-preenchido do implantDate), e método de escolha do
+pico (com a ressalva ADAPT-PD: algorítmica detecta 56,3% vs 84,8% da inspeção
+clínica). A elegibilidade incorporou os números pivotais (91,5%/84% no ensaio
+vs 45% na prática real; alfa em 58,6% dos GPi off-med).
+
 ## Arquitetura do sono sem sensores (metrics/sleep.js)
 
 Reprodução adaptada de Averna et al., *Mov Disord* 2026 (doi:10.1002/mds.70493):

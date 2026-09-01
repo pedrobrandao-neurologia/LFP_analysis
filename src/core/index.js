@@ -24,6 +24,9 @@ import { peakInBand, pickSpectrum, spectralMetrics, burstMetrics, doseResponse, 
 import { mergeTrend, collectThresholds, chronicMetrics, thresholdSummary, censoringSummary, splitByLocalDay, dayRangeOf, wakePercentiles } from './metrics/chronic.js';
 import { TIDAL } from './metrics/tidal.js';
 import { SLEEP } from './metrics/sleep.js';
+import { CHRONOTYPE } from './metrics/chronotype.js';
+import { STUN } from './metrics/stun.js';
+import { PRACTICE } from './adbs/practice.js';
 import { MRDS_VERSION, MRDS_PROTOCOL, MRDS_BANDS, MRDS_TOTAL_BAND, MRDS_CELLS, MRDS_LIMITACOES, MRDS_COLUMNS, zscoreEpochs, mrdsEpochPSD, mrdsPair, mrdsBroadbandVerdict, mrdsDesign, mrdsSignFlipTest, mrdsTable, mrdsMeta, mrdsReading } from './metrics/mrds.js';
 import { extractMetrics, daysSince } from './metrics/extract.js';
 import { rankSurveyChannels } from './metrics/survey.js';
@@ -99,6 +102,9 @@ const API = {
   mergeTrend, collectThresholds, chronicMetrics, censoringSummary, splitByLocalDay, dayRangeOf, wakePercentiles, extractMetrics,
   TIDAL,
   SLEEP,
+  CHRONOTYPE,
+  STUN,
+  PRACTICE,
   MRDS_VERSION, MRDS_PROTOCOL, MRDS_BANDS, MRDS_TOTAL_BAND, MRDS_CELLS, MRDS_LIMITACOES, MRDS_COLUMNS,
   zscoreEpochs, mrdsEpochPSD, mrdsPair, mrdsBroadbandVerdict, mrdsDesign, mrdsSignFlipTest, mrdsTable, mrdsMeta, mrdsReading,
   /* ranking dos pares bipolares do Survey (F1) */

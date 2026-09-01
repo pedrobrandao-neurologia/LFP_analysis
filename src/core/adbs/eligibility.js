@@ -32,8 +32,13 @@ import { getProfile } from '../profiles/index.js';
 export const PREVALENCIA_BETA = {
   coortesPequenas: '64–69,5% por hemisfério',
   adaptPd: '84,8% por hemisfério; 64,2% bilateral (n = 51)',
+  adaptPdPivotal: '91,5% off-med e 84,8% on-med por detecção do clínico (n = 68); elegibilidade 84% (57/68) — 78% dos STN, 100% dos GPi (Bronte-Stewart, JAMA Neurol 2025)',
+  algoritmoAutomatico: 'a detecção automática offline achou pico em só 56,3% dos núcleos, contra 84,8% da inspeção clínica (ADAPT-PD) — algoritmos são conservadores, incluindo o deste software',
+  mundoReal: 'ADAPT-START (prática real, critérios técnicos rígidos): 9/20 (45%) elegíveis — artefato cardíaco (3), configuração incompatível com sensing (3), comorbidade psiquiátrica (1), 4 adiados',
   registroBrainSense: '89,0% por hemisfério; 69,4% bilateral (n = 113)',
-  nota: 'uma proporção substancial de pacientes simplesmente não expressa beta — isso precisa entrar no cálculo amostral'
+  alfaNoGpi: 'picos na faixa ALFA são muito mais comuns no GPi (58,6% off-med) que no STN (19,7%) — significado clínico desconhecido (ADAPT-PD); num GPi sem pico beta, procure alfa antes de declarar ausência de pico',
+  nota: 'uma proporção substancial de pacientes simplesmente não expressa beta — isso precisa entrar no cálculo amostral; ' +
+    'e a diferença entre 84% (ensaio) e 45% (prática real) é o número que importa para planejar implementação clínica'
 };
 
 const crit = (id, rotulo, veredito, evidencia, pendencia) =>
@@ -80,7 +85,11 @@ export function assessEligibility(parsedList, opts) {
         picos.length
           ? `pico em ${picoHz.toFixed(1)} Hz (fonte ${spec.source}); verificação de harmônicos: ${h.verdict}`
           : `nenhum pico destacado do fundo aperiódico em ${pb.lo}–${pb.hi} Hz`,
-        temPico ? null : 'sem pico distinto o aDBS guiado por essa banda não é programável neste hemisfério'));
+        temPico ? null : 'sem pico distinto o aDBS guiado por essa banda não é programável neste hemisfério — ' +
+          'mas a detecção ALGORÍTMICA é conservadora (ADAPT-PD: 56,3% vs 84,8% da inspeção clínica): confira o PSD ' +
+          'visualmente antes de concluir ausência' +
+          (/gpi|pallid/i.test(String((p0.leads || []).find(l => l.hemisphere === hemi) ? (p0.leads || []).find(l => l.hemisphere === hemi).target : ''))
+            ? '; no GPi, 58,6% dos picos off-med caem na faixa ALFA (ADAPT-PD) — procure alfa também' : '')));
     }
 
     /* 2. ausência de artefato relevante ------------------------------------ */
