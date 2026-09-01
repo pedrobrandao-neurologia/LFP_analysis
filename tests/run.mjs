@@ -5454,6 +5454,187 @@ sec('arquitetura do sono sem sensores (F39, método de Averna 2026)');
   });
 }
 
+sec('catálogo metodológico 2026: cronotipo, stun effect e prática de aDBS');
+{
+  const CT = C.CHRONOTYPE, ST = C.STUN, PR = C.PRACTICE;
+  const lcg = seed => { let s = seed; return () => { s = (s * 48271) % 2147483647; return s / 2147483647; }; };
+  const gaussDe = rnd => () => Math.sqrt(-2 * Math.log(Math.max(rnd(), 1e-12))) * Math.cos(2 * Math.PI * rnd());
+
+  /* 14 dias com ritmo diurno plantado (pico 15 h), deriva lenta e 1% de outliers */
+  const geraRitmo = (comRitmo, seed) => {
+    const t0 = Date.parse('2026-04-01T00:00:00Z');
+    const rnd = lcg(seed || 777), gauss = gaussDe(rnd);
+    const rows = [];
+    for (let i = 0; i < 14 * 144; i++) {
+      const t = t0 + i * 600000, h = (t / 3600000) % 24;
+      /* deriva em DEGRAUS diários: contínua criaria uma rampa intradiária
+         alinhada entre dias — um efeito real de hora do dia que o teste de
+         permutação detectaria corretamente e falsearia o caso "sem ritmo" */
+      let v = 800 + 15 * Math.floor(i / 144) + (comRitmo ? 220 * Math.cos(2 * Math.PI * (h - 15) / 24) : 0) + 60 * gauss();
+      if (rnd() < 0.01) v += 4000;
+      rows.push({ t, lfp: Math.max(0, v) });
+    }
+    return rows;
+  };
+
+  t('van Rheede: ritmo plantado dá VE alta com p mínimo; série plana dá VE baixa sem significância', () => {
+    const r = CT.chronotypePipeline(geraRitmo(true), 0, { nPermutations: 200 });
+    assert(r.ok, 'pipeline falhou: ' + r.reason);
+    assert(r.ve > 0.5, `VE ${r.ve} baixa demais para ritmo plantado`);
+    assert(r.permutation.p <= 0.01, `p ${r.permutation.p} deveria ser mínimo`);
+    assert(r.outliers.nReplaced > 5, `outliers plantados não encontrados (${r.outliers.nReplaced})`);
+    const rf = CT.chronotypePipeline(geraRitmo(false), 0, { nPermutations: 200 });
+    assert(rf.ve < 0.15, `VE ${rf.ve} de série plana deveria ser pequena`);
+    assert(rf.permutation.p > 0.05, `p ${rf.permutation.p} de série plana deveria ser não significativo`);
+    /* determinismo: mesma semente, mesmo p */
+    const r2 = CT.chronotypePipeline(geraRitmo(true), 0, { nPermutations: 200 });
+    assert(r2.permutation.p === r.permutation.p, 'a permutação não é determinística');
+    return `ritmo: VE ${(100 * r.ve).toFixed(0)}% (p=${r.permutation.p}) · plano: VE ${(100 * rf.ve).toFixed(1)}% (p=${rf.permutation.p}) · ${r.outliers.nReplaced} outliers`;
+  });
+
+  t('van Rheede: bimodalidade diurna acende com discinesia plantada e cala com ritmo limpo', () => {
+    const rnd = lcg(31), gauss = gaussDe(rnd);
+    const t0 = Date.parse('2026-04-01T00:00:00Z');
+    const dys = [];
+    for (let i = 0; i < 14 * 144; i++) {
+      const t = t0 + i * 600000, h = (t / 3600000) % 24;
+      const boost = (h >= 13 && h < 19 && rnd() < 0.5) ? 1800 : 0;
+      dys.push({ t, lfp: Math.max(0, 700 + 50 * gauss() + boost) });
+    }
+    const rd = CT.chronotypePipeline(dys, 0, { nPermutations: 100 });
+    assert(rd.bimodality.ok && rd.bimodality.flag, `discinesia plantada não acendeu o alarme (BC ${rd.bimodality.sarleBC})`);
+    assert(/discinesia/.test(rd.bimodality.reading), 'a leitura não nomeia a discinesia');
+    const rl = CT.chronotypePipeline(geraRitmo(true), 0, { nPermutations: 100 });
+    assert(rl.bimodality.ok && !rl.bimodality.flag, 'ritmo limpo não deveria disparar bimodalidade');
+    return `discinesia: BC ${rd.bimodality.sarleBC} + Ashman ${rd.bimodality.ashmanD} → alarme · limpo: BC ${rl.bimodality.sarleBC} → silêncio`;
+  });
+
+  t('van Rheede: artefato comum entre hemisférios é apontado pela correlação', () => {
+    const A = geraRitmo(true, 555);
+    const rnd = lcg(66), gauss = gaussDe(rnd);
+    const B = A.map(r => ({ t: r.t, lfp: Math.max(0, r.lfp * 0.8 + 30 * gauss()) }));
+    const dA = CT.detrendDailyMedian(A, A.map(x => x.lfp), 0);
+    const dB = CT.detrendDailyMedian(B, B.map(x => x.lfp), 0);
+    const spec = CT.bandSpecificityCheck(A, dA.x, B, dB.x, {});
+    assert(spec.ok && spec.suspicious && spec.r > 0.9, `fonte comum não detectada: r=${spec.r}`);
+    /* séries independentes: sem suspeita */
+    const Cser = geraRitmo(false, 909);
+    const dC = CT.detrendDailyMedian(Cser, Cser.map(x => x.lfp), 0);
+    const spec2 = CT.bandSpecificityCheck(A, dA.x, Cser, dC.x, {});
+    assert(spec2.ok && !spec2.suspicious, `séries independentes não deveriam ser suspeitas: r=${spec2.r}`);
+    return `comum: r=${spec.r} suspeito · independentes: r=${spec2.r} dentro da faixa publicada`;
+  });
+
+  t('stun effect: rampa até o dia 28 pós-op → estabilização detectada na janela publicada', () => {
+    const rnd = lcg(999), gauss = gaussDe(rnd);
+    const t0 = Date.parse('2026-02-06T00:00:00Z');   /* dia 5 pós-op */
+    const rows = [];
+    for (let i = 0; i < 56 * 144; i++) {
+      const t = t0 + i * 600000, dpo = 5 + i / 144;
+      const nivel = dpo < 28 ? 500 + 14 * (dpo - 5) : 822;
+      rows.push({ t, lfp: Math.max(0, nivel + 45 * gauss()) });
+    }
+    const r = ST.stunAnalysis(rows, 0, { implantDate: '2026-02-01' });
+    assert(r.ok && r.verdict === 'estabilização detectada', `veredito ${r.verdict}`);
+    const ultimo = r.changePoints[r.changePoints.length - 1];
+    assert(ultimo.postOpDay >= 20 && ultimo.postOpDay <= 35, `último change-point no dia ${ultimo.postOpDay}, plantado ~28`);
+    assert(r.rate.lateMean < r.rate.earlyMean, 'a taxa de variação não caiu na segunda metade');
+    assert(/aperiódico|1\/f/.test(r.aperiodicCaveat), 'a ambiguidade do 1/f sumiu');
+    /* registro inteiramente precoce: bloqueio com motivo */
+    const rc = ST.stunAnalysis(rows.slice(0, 10 * 144), 0, { implantDate: '2026-02-01' });
+    assert(rc.verdict === 'dentro da janela de instabilidade' && /NÃO fixe/.test(rc.warnings[0]),
+      'registro precoce deveria bloquear decisões: ' + rc.verdict);
+    /* sem data de implante: pede a data */
+    const sd2 = ST.stunAnalysis(rows, 0, {});
+    assert(sd2.warnings.some(w => /implante/.test(w)), 'sem data de implante deveria pedir a data');
+    return `change-point no dia pós-op ${ultimo.postOpDay} (plantado 28) · precoce bloqueado · sem data pede data`;
+  });
+
+  t('prática de aDBS: congelamento entre limiares vira "cDBS de dois níveis" e modulação real não', () => {
+    const T = C.TIDAL;
+    const vals = [], dk = [];
+    for (let d = 0; d < 7; d++) for (let i = 0; i < 144; i++) {
+      vals.push(i >= 48 && i < 60 ? 3.5 : 2.5);   /* sobe uma vez, depois congela entre os limiares */
+      dk.push('d' + d);
+    }
+    const sim = T.simulateDualThreshold(vals, { lower: 2, upper: 3, iMin: 1, iMax: 2, step: 0.1, dayKeys: dk });
+    const trap = PR.dualThresholdTrap(sim.trajectory, { iMin: 1, iMax: 2, dayKeys: dk });
+    assert(trap.ok && trap.functionallyCdbs && trap.pctPinnedHigh > 80,
+      `armadilha não detectada: teto ${trap.pctPinnedHigh}%, cDBS ${trap.functionallyCdbs}`);
+    assert(/cDBS de dois níveis/.test(trap.reading) && /congelamento|NÃO desce/.test(trap.reading + trap.freezeNote),
+      'a leitura não explica o congelamento');
+    const v2 = [], dk2 = [];
+    for (let d = 0; d < 7; d++) for (let i = 0; i < 144; i++) { v2.push(i % 24 < 8 ? 3.5 : i % 24 < 16 ? 1.5 : 2.5); dk2.push('d' + d); }
+    const sim2 = T.simulateDualThreshold(v2, { lower: 2, upper: 3, iMin: 1, iMax: 2, step: 0.1, dayKeys: dk2 });
+    const t2 = PR.dualThresholdTrap(sim2.trajectory, { iMin: 1, iMax: 2, dayKeys: dk2 });
+    assert(t2.ok && !t2.functionallyCdbs, 'modulação real não deveria disparar o alarme');
+    return `congelado: ${trap.pctPinnedHigh}% no teto, ${trap.fullSwingsPerDay} travessias/dia → alarme · modulando: silêncio`;
+  });
+
+  t('prática de aDBS: janela <0,7 mA avisa; deriva de distribuição é vigiada; bateria distingue PC de RC', () => {
+    assert(!PR.amplitudeWindowCheck(1.0, 1.5).meetsTarget, '0,5 mA deveria ficar abaixo da meta');
+    assert(PR.amplitudeWindowCheck(1.0, 2.0).meetsTarget, '1,0 mA deveria atender');
+    assert(!PR.amplitudeWindowCheck(NaN, 2).ok, 'limite ausente deveria declarar entrada do clínico');
+    const rnd = lcg(5);
+    const t0 = Date.parse('2026-05-01T00:00:00Z');
+    const rows = [];
+    for (let d = 0; d < 21; d++) for (let i = 0; i < 72; i++) {
+      rows.push({ t: t0 + d * 864e5 + (8 * 3600 + i * 600) * 1000, x: (d >= 14 ? 1.25 : 1.0) * (2 + 0.3 * rnd()) });
+    }
+    const dr = PR.distributionDrift(rows, 0, {});
+    assert(dr.ok && dr.drift && Math.abs(dr.shiftPct.p50) > 15, `deriva de +25% não detectada: ${JSON.stringify(dr.shiftPct)}`);
+    assert(/teto|cDBS/.test(dr.reading), 'a leitura da deriva não cita o cenário de falha');
+    const est = PR.distributionDrift(rows.filter(r => r.t < t0 + 14 * 864e5), 0, {});
+    assert(est.ok && !est.drift, 'período estável não deveria acusar deriva');
+    const pc = PR.streamingBatteryCost(7200, 'Percept PC');
+    const rc2 = PR.streamingBatteryCost(7200, 'Percept RC');
+    assert(pc.estimatedLongevityDaysLost === 2 && rc2.estimatedLongevityDaysLost === 0,
+      `custo de bateria errado: PC ${pc.estimatedLongevityDaysLost} · RC ${rc2.estimatedLongevityDaysLost} ("Percept" contém "rc")`);
+    return `0,5 mA avisa · deriva +25% pega, estável cala · PC 2 h = 2 dias, RC = 0`;
+  });
+
+  t('checklist ganhou IPG, tempo pós-op e escolha do pico; elegibilidade cita o mundo real', () => {
+    const chaves = C.CHECKLIST_ITEMS.flatMap(([, itens]) => itens.map(([k]) => k));
+    ['ipg_position', 'months_post_op', 'peak_selection'].forEach(k =>
+      assert(chaves.indexOf(k) >= 0, `item ${k} ausente do checklist`));
+    assert(/56,3%/.test(JSON.stringify(C.PREVALENCIA_BETA)), 'a ressalva do algoritmo automático (56,3%) sumiu');
+    assert(/45%/.test(C.PREVALENCIA_BETA.mundoReal), 'o número do mundo real (45%) sumiu');
+    assert(/58,6%/.test(C.PREVALENCIA_BETA.alfaNoGpi), 'a nota do alfa no GPi sumiu');
+    return `3 itens novos no checklist · elegibilidade com 56,3% / 45% / alfa-GPi 58,6%`;
+  });
+
+  t('F40 e F41 renderizam no exemplo; F36 mostra as checagens da prática real', () => {
+    const d = H.ds();
+    const txt = n => { let x = (n.textContent || '') + ' ' + (n.innerHTML || ''); (n.children || []).forEach(c => { x += ' ' + txt(c); }); return x; };
+    const f40 = H.FIGURES.find(x => x.id === 'F40');
+    assert(f40 && f40.has(d), 'F40 sem dados no exemplo');
+    H.S.opts.F40 = { nperm: 100 };
+    const n1 = document.createElement('div'); f40.render(n1, d);
+    const s1 = txt(n1);
+    assert(/variância explicada|variância explicada/i.test(s1) && /41 ± 9%/.test(s1), 'F40 sem VE ou sem o publicado');
+    assert(/Especificidade de banda|hemisfério/.test(s1), 'F40 sem a checagem de especificidade');
+    const f41 = H.FIGURES.find(x => x.id === 'F41');
+    assert(f41 && f41.has(d), 'F41 sem dados no exemplo');
+    H.S.opts.F41 = {};
+    const n2 = document.createElement('div'); f41.render(n2, d);
+    const s2 = txt(n2);
+    assert(/veredito/.test(s2) && /22–40|24–40/.test(s2), 'F41 sem veredito ou sem a janela publicada');
+    assert(/aperiódic/.test(s2), 'F41 sem a ambiguidade do 1/f');
+    /* F36: com limites de corrente informados, as checagens aparecem */
+    const f36 = H.FIGURES.find(x => x.id === 'F36');
+    if (f36.has(d)) {
+      H.S.opts.F36 = { imin: '1.0', imax: '1.5' };
+      const n3 = document.createElement('div'); f36.render(n3, d);
+      const s3 = txt(n3);
+      assert(/Amplitude window below target/.test(s3), 'F36 não avisou janela <0,7 mA');
+      assert(/Dual-threshold behavior check/.test(s3), 'F36 sem a checagem do congelamento');
+      assert(/Distribution drift check/.test(s3), 'F36 sem a vigilância de deriva');
+      assert(/Khawaldeh/.test(s3), 'F36 sem o teto informacional do só-beta');
+    }
+    return 'F40 com VE e publicado · F41 com veredito e 1/f · F36 com as 4 checagens da prática';
+  });
+}
+
 /* ------------------------------------------------------------- resultado -- */
 console.log(`\n${'='.repeat(58)}`);
 console.log(`  ${ok} passaram   ${falhas} falharam   ${pulados} sem dados`);

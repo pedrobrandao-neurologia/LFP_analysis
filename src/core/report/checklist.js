@@ -27,6 +27,9 @@ export const CHECKLIST_ITEMS = [
     ['firmware', 'Versão de firmware'],
     ['programmer_version', 'Versão do programador'],
     ['target', 'Alvo e modelo de eletrodo'],
+    ['ipg_position', 'Posição do IPG (subclavicular E/D, abdominal) — determinante do artefato de ECG'],
+    ['months_post_op', 'Tempo desde a cirurgia — janela de estabilização de 22–40 dias'],
+    ['peak_selection', 'Como o pico foi escolhido (inspeção visual vs algorítmica)'],
     ['sensing_channel', 'Par bipolar de registro'],
     ['fs_nominal', 'Frequência de amostragem nominal (Hz)'],
     ['fs_effective', 'Frequência de amostragem efetiva medida (Hz)'],
@@ -210,6 +213,26 @@ function valorDe(chave, prov, metrics, profile) {
           : '');
     }
     case 'device_model': return val(arq.deviceModel || sub.device_model);
+    /* posição do IPG não consta do JSON exportado; é determinante da contaminação
+       cardíaca (Neumann et al., Brain Stimul 2021: IPG subclavicular esquerdo +
+       lead 3389 concentra o artefato de ECG) e por isso precisa ser declarada */
+    case 'ipg_position': return null;
+    case 'months_post_op': {
+      const ses = (metrics && metrics.sessions) || [];
+      const dsi = ses.map(s2 => s2.days_since_implant).filter(isFinite);
+      if (!dsi.length) return null;
+      const dmin = Math.min.apply(null, dsi);
+      return `${dmin} dia(s) na primeira sessão` +
+        (dmin < 42 ? ' — DENTRO/na borda da janela de instabilidade pós-operatória (22–40 dias; de Neeling 2026, Feldmann 2025): ' +
+          'decisões de contato/limiar com este registro exigem cautela' : '');
+    }
+    case 'peak_selection': {
+      /* se este software calculou métricas espectrais, o pico foi algorítmico;
+         a ressalva do ADAPT-PD (automática detecta 56,3% vs 84,8% da inspeção
+         clínica) acompanha a declaração */
+      return val(ag.spectrum_channel) ? 'algorítmica (maior pico na banda do perfil, ajuste aperiódico como fundo) — ' +
+        'nota: a detecção automática é mais conservadora que a inspeção clínica (ADAPT-PD: 56,3% vs 84,8% dos núcleos)' : null;
+    }
     case 'firmware': return val(arq.firmware || sub.firmware);
     case 'programmer_version': return val(arq.programmerVersion);
     case 'target': return val((sub.targets || []).map(t => `${t.hemisphere}:${t.target} (${t.model || '—'})`).join(', '));

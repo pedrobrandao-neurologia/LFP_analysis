@@ -77,6 +77,8 @@ const DIC = {
     'Assistente de limiares de aDBS (TIDAL-DT)': 'aDBS Threshold Advisor (TIDAL-DT)',
     'Percentis de vigília — 7–14 dias em escala': 'Wake-time percentiles — 7–14 days at scale',
     'Arquitetura do sono estimada do LFP': 'Sleep architecture estimated from LFP',
+    'Cronotipo do marcador — pipeline de van Rheede': 'Biomarker chronotype — the van Rheede pipeline',
+    'Estabilização pós-operatória — stun effect': 'Post-operative stabilization — stun effect',
     'Survey longitudinal — o mesmo par através das sessões': 'Longitudinal Survey — the same pair across sessions',
     'ODR e features por janela — dinâmica multi-banda do registro agudo':
       'ODR and windowed features — multi-band dynamics of the acute recording',

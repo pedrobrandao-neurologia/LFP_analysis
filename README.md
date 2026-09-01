@@ -8,7 +8,7 @@
 
 ## O que é
 
-Um aplicativo web de **arquivo único** (`index.html`, 1523 KB) que lê os *Session Reports* em JSON exportados do programador do neuroestimulador Medtronic Percept™ e produz **38 figuras interativas** organizadas em sete abas, métricas quantitativas, relatório clínico em PDF e exportações prontas para estatística.
+Um aplicativo web de **arquivo único** (`index.html`, 1577 KB) que lê os *Session Reports* em JSON exportados do programador do neuroestimulador Medtronic Percept™ e produz **40 figuras interativas** organizadas em sete abas, métricas quantitativas, relatório clínico em PDF e exportações prontas para estatística.
 
 Abre com **duplo clique**. Não instala nada, não precisa de servidor, não faz uma única requisição de rede.
 
@@ -74,7 +74,7 @@ Cada aba abre com um cabeçalho de orientação que declara **a camada de infer�
 | Modo | Para quê | O que mostra |
 |---|---|---|
 | **Clínico** | Consulta, decisão de programação | O subconjunto de figuras que responde às perguntas de consultório, escolhido pelo perfil de doença, mais leituras em linguagem simples |
-| **Pesquisa** | Análise, publicação | Todas as 38 figuras, todos os controles de parâmetro, todas as exportações |
+| **Pesquisa** | Análise, publicação | Todas as 40 figuras, todos os controles de parâmetro, todas as exportações |
 
 Os mesmos números, as mesmas ressalvas e os mesmos parâmetros declarados nos dois modos — o modo clínico esconde figuras, nunca esconde incerteza. A preferência fica no `localStorage` (apenas a preferência de interface; nenhum dado de paciente é gravado).
 
@@ -162,6 +162,8 @@ junto com o aplicativo no GitHub Pages (`/wiki/`).
 |---|---|---|---|
 | **F8** | Timeline crônico — série multi-dia **ou um painel por dia civil** | `LFPTrendLogs` | Como o marcador se comporta ao longo de semanas, e como é cada dia por dentro |
 | **F9** | **Ritmo circadiano** — heatmap dia × hora, polar, cosinor | `LFPTrendLogs` (≥ 2 dias) | Se há ritmo de 24 h, qual a amplitude, a que horas é o pico — com IC por bootstrap de dias inteiros |
+| **F40** | **Cronotipo — pipeline de van Rheede** | `LFPTrendLogs` (≥ 3 dias) | Variância explicada pela hora do dia com permutação circular por dia, VE dia/noite, alarme de bimodalidade (discinesia) e especificidade de banda |
+| **F41** | **Estabilização pós-operatória (stun effect)** | `LFPTrendLogs` (≥ 6 dias) | Change-point da mediana diária + RQA: o registro está dentro ou fora da janela de instabilidade de 22–40 dias pós-implante? |
 | **F37** | Percentis de vigília — 7–14 dias em escala | `LFPTrendLogs` | Os P25/P75 do beta acordado — os números do método manual de limiares, visíveis |
 | **F39** | **Arquitetura do sono estimada do LFP** — hipnograma por noite, sem sensores | `LFPTrendLogs` | Vigília/REM/NREM leve/NREM profundo em épocas de 10 min (método de Averna 2026 adaptado), com WASO, despertares e % por estágio |
 | **F10** | Resposta alinhada a evento | Timeline + eventos marcados | O que acontece com o marcador em torno do que o paciente registrou |
