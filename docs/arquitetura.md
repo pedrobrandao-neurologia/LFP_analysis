@@ -260,6 +260,41 @@ mexe na arquitetura:
 `ds()` passou a expor `indefiniteStreaming` (Record Streaming, tempo-domínio
 sem estimulação). O parser já o lia; até a F35 nenhuma figura o consumia.
 
+## Arquitetura do sono sem sensores (metrics/sleep.js)
+
+Reprodução adaptada de Averna et al., *Mov Disord* 2026 (doi:10.1002/mds.70493):
+estágios de sono (vigília noturna, REM, NREM leve, NREM profundo) inferidos do
+Timeline crônico em épocas de 10 min, usando os três biomarcadores do artigo —
+beta, baixa frequência (~8 Hz) e FTG (metade da frequência de estimulação),
+tipados pela frequência de sensing de cada hemisfério.
+
+O artigo usava um relógio de pulso para (1) delimitar o intervalo de sono de
+cada noite e (2) rotular épocas de treino de um classificador supervisionado
+(RUSBoost). Sem sensor, as duas funções são substituídas por alternativas
+declaradas:
+
+1. **Intervalo de sono**: o detector circadiano do TIDAL-DT (cosinor 24+12 h +
+   change-point) ancorado no tipo de maior dinâmica circadiana (beta > FTG >
+   low; low é invertida antes do ajuste, porque o vale dela é a vigília), ou
+   horários habituais informados pelo usuário — a mesma informação com que o
+   artigo configurava o relógio.
+2. **Classificação**: não supervisionada, por centróide mais próximo no espaço
+   dos z-scores por intervalo de sono (a normalização do artigo), com
+   centróides digitalizados da Fig. 3C (z medianos de grupo por estágio).
+   Margem pequena entre o 1º e o 2º centróide marca a época como de baixa
+   confiança — contada, exportada e desenhada translúcida.
+
+Regras de honestidade específicas: tipos repetidos em hemisférios diferentes
+viram média bilateral declarada; época sem amostra é NaN (nunca interpolação);
+noite com cobertura < 70% sai do agregado com o motivo listado; com beta
+sozinho a figura avisa que REM e vigília são pouco separáveis (beta alto em
+ambos no artigo) e que Core e Deep distam ~0,25 z; sensing sem frequência
+declarada é tratado como beta **com aviso**; alvo não subtalâmico dispara o
+aviso de extrapolação (no GPi o beta se sustenta no sono — Yin 2023). O
+auto-teste determinístico planta um hipnograma sintético e exige ≥85% de
+acurácia com os três biomarcadores, ≥80% com beta+low e ≥70% de separação
+vigília×profundo no modo só-beta.
+
 ## Camada de apresentação
 
 `src/styles.css` abre com um bloco de tokens — cor, tipografia, ritmo de 4 px,

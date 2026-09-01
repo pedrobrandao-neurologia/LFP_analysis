@@ -2735,6 +2735,184 @@ const FIGURES = [
     }
   },
 
+  /* ----------------------------------------------------------------- F39 */
+  /* Arquitetura do sono estimada SÓ do LFP crônico — método de Averna et al.
+     (Mov Disord 2026, doi:10.1002/mds.70493) adaptado para a ausência de
+     sensor vestível. O núcleo vive em core/metrics/sleep.js (C.SLEEP); a
+     figura só orquestra: hipnograma por noite em épocas de 10 min, tabela de
+     arquitetura e agregado comparado à coorte do artigo, com as ressalvas
+     por combinação de biomarcadores sempre visíveis.                        */
+  {
+    id: 'F39', title: 'Arquitetura do sono estimada do LFP',
+    sub: 'hipnograma por noite (épocas de 10 min) sem sensores · centróides de Averna 2026 · Vigília / REM / NREM leve / NREM profundo',
+    has: d => Object.keys(d.trend).length,
+    render(node, d) {
+      avisoDeAlvo(node, 'Os centróides de estágio vêm de registros do NST (Averna 2026); no GPi o beta se sustenta durante o sono (Yin 2023) e o estadiamento não se transfere');
+      const S = C.SLEEP;
+      const hemis = Object.keys(d.trend);
+      const modo = opt('F39', 'modo', 'auto');
+      const bedH = opt('F39', 'bed', 23);
+      const riseH = opt('F39', 'rise', 7);
+      const minCov = opt('F39', 'mincov', 100 * S.DEFAULTS.minNightCoverage);
+      node.appendChild(el('div', { class: 'ctrls' }, [
+        ctrlSelect('janela de sono', [
+          { value: 'auto', label: 'automática (cosinor + change-point, âncora circadiana)' },
+          { value: 'manual', label: 'horários habituais (como o artigo configurava o sensor)' }
+        ], modo, v => setOpt('F39', 'modo', v)),
+        modo === 'manual' ? ctrlNumber('deitar (h)', bedH, 0, 24, 0.5, v => setOpt('F39', 'bed', v)) : el('span'),
+        modo === 'manual' ? ctrlNumber('levantar (h)', riseH, 0, 24, 0.5, v => setOpt('F39', 'rise', v)) : el('span'),
+        ctrlNumber('cobertura mínima da noite (%)', minCov, 30, 100, 5, v => setOpt('F39', 'mincov', v))
+      ]));
+
+      /* frequência de sensing por hemisfério → tipo de biomarcador */
+      const th = C.collectThresholds(d.all);
+      const centros = {};
+      hemis.forEach(h => { centros[h] = th[h] ? th[h].centerFreq : NaN; });
+
+      const res = S.sleepPipeline(d.trend, centros, offMin(), {
+        sleepMode: modo, bedH, riseH, minNightCoverage: minCov / 100
+      });
+      if (!res.ok) {
+        node.appendChild(el('div', { class: 'warnbox', html: `<b>Não calculável.</b> ${res.reason}` }));
+        return;
+      }
+
+      /* tabela dos biomarcadores usados — a suposição de beta, quando houver,
+         aparece aqui e não some */
+      node.appendChild(table(['hemisfério', 'biomarcador (tipo)', 'limpeza'], res.biomarkers.map(b => [
+        rotuloLado(b.hemisphere),
+        b.label + (b.assumed ? ' ⚠' : ''),
+        `${b.nRejected} de ${b.nFinite} amostras rejeitadas (Hampel)`
+      ])));
+      if (res.biomarkers.some(b => b.assumed)) node.appendChild(el('div', {
+        class: 'warnbox', html: `<b>Suposição declarada.</b> Pelo menos um hemisfério não declara a frequência de sensing no ` +
+          `arquivo; a série foi tratada como <b>beta</b> (a banda de sensing padrão do Percept). Se o sensing estava em outra ` +
+          `banda, o estadiamento abaixo está errado — confira a configuração na F31.`
+      }));
+
+      const cores = { awake: '#E2903B', rem: '#7B5EA7', core: '#5B8FC9', deep: '#1B4A72' };
+      const durH = (((res.sleep[1] - res.sleep[0]) % 24) + 24) % 24;
+
+      /* (a) hipnograma: uma linha por noite, épocas de 10 min coloridas */
+      const rowH = 16, gapH = 5, mL = 84, mT = 34, mB = 34;
+      const alt = mT + res.nights.length * (rowH + gapH) + mB;
+      const box = plotBox(node, alt);
+      const cv = box.canvas;
+      cv.width = box.width; cv.height = alt; cv.style.height = alt + 'px';
+      const ctx = cv.getContext('2d');
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, alt);
+      const wPlot = cv.width - mL - 12;
+      /* legenda no topo */
+      {
+        let x = mL;
+        ctx.font = '10px ui-monospace,monospace'; ctx.textBaseline = 'middle';
+        S.STAGES.forEach(st => {
+          ctx.fillStyle = cores[st]; ctx.fillRect(x, 8, 12, 10);
+          ctx.fillStyle = '#0E1A24'; ctx.textAlign = 'left';
+          const lb = S.STAGE_LABELS[st].split(' (')[0];
+          ctx.fillText(lb, x + 16, 13);
+          x += 16 + ctx.measureText(lb).width + 14;
+        });
+        ctx.globalAlpha = .40; ctx.fillStyle = cores.core; ctx.fillRect(x, 8, 12, 10); ctx.globalAlpha = 1;
+        ctx.fillStyle = '#0E1A24'; ctx.fillText('translúcido = baixa confiança (margem < ' + res.params.marginFloor + ' z)', x + 16, 13);
+      }
+      res.nights.forEach((n, i) => {
+        const y0 = mT + i * (rowH + gapH);
+        const wEp = wPlot / n.nEpochs;
+        for (let e = 0; e < n.nEpochs; e++) {
+          const st = n.stages[e];
+          if (!st) { ctx.fillStyle = '#EEF1F4'; ctx.globalAlpha = 1; }
+          else { ctx.fillStyle = cores[st]; ctx.globalAlpha = n.lowConfidence[e] ? .40 : 1; }
+          ctx.fillRect(mL + e * wEp, y0, Math.ceil(wEp), rowH);
+        }
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = n.ok ? '#0E1A24' : '#B0433C';
+        ctx.textAlign = 'right'; ctx.font = '10px ui-monospace,monospace';
+        ctx.fillText(n.nightKey.slice(5) + (n.ok ? '' : ' ✕'), mL - 6, y0 + rowH / 2);
+      });
+      /* eixo de horas da noite */
+      ctx.fillStyle = '#5C7284'; ctx.textAlign = 'center'; ctx.font = '9px ui-monospace,monospace';
+      const nTicks = Math.min(12, Math.max(4, Math.round(durH)));
+      for (let k = 0; k <= nTicks; k++) {
+        const hh = (res.sleep[0] + durH * k / nTicks) % 24;
+        ctx.fillText(`${Math.floor(hh)}:${String(Math.round((hh % 1) * 60)).padStart(2, '0')}`,
+          mL + wPlot * k / nTicks, alt - mB + 12);
+      }
+      ctx.fillStyle = '#0E1A24'; ctx.textAlign = 'left'; ctx.font = '10px ui-monospace,monospace';
+      ctx.fillText(`janela de sono ${res.sleep[0]}–${res.sleep[1]} h (${res.wake.method}) · ✕ = noite excluída do agregado`, mL, alt - 8);
+      try {
+        cv.setAttribute('role', 'img');
+        cv.setAttribute('aria-label', `hipnograma estimado de ${res.nights.length} noites em épocas de 10 minutos, estágios vigília, REM, NREM leve e NREM profundo`);
+      } catch (e) { }
+
+      /* (b) arquitetura por noite */
+      node.appendChild(el('h3', { class: 'qc-title', text: 'Arquitetura por noite (épocas classificadas)' }));
+      node.appendChild(table(
+        ['noite', 'cobertura', 'TST est. (h)', 'latência (min)', 'WASO (min)', 'despertares', 'vigília %', 'REM %', 'NREM leve %', 'NREM prof. %', 'baixa conf. %'],
+        res.nights.filter(n => n.architecture).map(n => [
+          n.nightKey + (n.ok ? '' : ' ✕'),
+          f(100 * n.coverage, 0) + '%',
+          n.architecture.tstH, isFinite(n.architecture.solMin) ? n.architecture.solMin : '—',
+          n.architecture.wasoMin, n.architecture.nAwakenings,
+          n.architecture.pct.awake, n.architecture.pct.rem, n.architecture.pct.core, n.architecture.pct.deep,
+          f(100 * n.nLowConfidence / Math.max(1, n.nClassified), 0) + '%'
+        ])));
+      if (res.excluded.length) node.appendChild(el('div', {
+        class: 'note', html: `<b>Noites excluídas do agregado (${res.excluded.length}):</b> ` +
+          res.excluded.map(x => `${x.night} — ${x.reason}`).join(' · ')
+      }));
+
+      /* (c) agregado vs coorte do artigo */
+      const agg = res.aggregate;
+      if (agg.pct) {
+        const iqr = m => m ? `${m.median} (${m.q1}–${m.q3})` : '—';
+        node.appendChild(el('h3', { class: 'qc-title', text: `Agregado de ${agg.nNightsOk} noites vs coorte de Averna 2026` }));
+        node.appendChild(table(['métrica', 'este registro — mediana (IQR)', 'coorte do artigo (18 pacientes, vestível)'], [
+          ['vigília noturna %', iqr(agg.pct.awake), res.cohortRef.awakePct + '%'],
+          ['REM %', iqr(agg.pct.rem), res.cohortRef.remPct + '%'],
+          ['NREM leve (Core) %', iqr(agg.pct.core), res.cohortRef.corePct + '%'],
+          ['NREM profundo (Deep) %', iqr(agg.pct.deep), res.cohortRef.deepPct + '%'],
+          ['tempo de sono estimado (h)', iqr(agg.tstH), res.cohortRef.tstH + ' h'],
+          ['WASO (min)', iqr(agg.wasoMin), '—'],
+          ['épocas de baixa confiança', agg.lowConfidencePct + '%', '—']
+        ]));
+        if (!agg.ok) node.appendChild(el('div', { class: 'warnbox', html: `<b>Agregado insuficiente.</b> ${agg.reason}` }));
+      }
+
+      /* (d) ressalvas do método — sempre visíveis, nunca em <details> */
+      node.appendChild(el('div', {
+        class: 'warnbox', html: `<b>Limites do método (combinação disponível: ${res.combo}).</b><ul style="margin:4px 0 0 18px">` +
+          res.caveats.map(c => `<li>${c}</li>`).join('') + '</ul>'
+      }));
+      node.appendChild(el('div', {
+        class: 'note', html: `<b>Método.</b> Reprodução adaptada de Averna et al., Mov Disord 2026 ` +
+          `[doi:10.1002/mds.70493]: potência do Timeline em épocas de 10 min, z-score por intervalo de sono ` +
+          `(a normalização do artigo) e estágio pelo centróide mais próximo usando os z medianos por estágio da ` +
+          `Fig. 3C (${res.centroidSource.split('—')[1] || 'digitalizados'}). No artigo o intervalo de sono e os rótulos de treino vinham de um ` +
+          `relógio (Apple Watch); aqui, sem sensor, a janela vem ${res.params.sleepMode === 'manual' ? 'dos horários habituais informados' : 'do detector circadiano do TIDAL-DT'} ` +
+          `e a classificação é não supervisionada — leia como estimativa de pesquisa, não como polissonografia. ` +
+          `${S.DISCLAIMER}`
+      }));
+
+      node.appendChild(exportRow([
+        { label: '⤓ PNG', fn: () => P.downloadCanvas(cv, 'F39_hipnograma_lfp') },
+        { label: '⤓ CSV épocas (R-compatible)', fn: () => P.downloadText(P.toCSV(S.sleepCsvRows(res)), 'F39_sleep_epochs.csv', 'text/csv') },
+        {
+          label: '⤓ CSV noites', fn: () => P.downloadText(P.toCSV(res.nights.filter(n => n.architecture).map(n => ({
+            night_local: n.nightKey, included: n.ok ? 1 : 0, coverage: n.coverage,
+            tst_est_h: n.architecture.tstH, sol_min: n.architecture.solMin, waso_min: n.architecture.wasoMin,
+            n_awakenings: n.architecture.nAwakenings, transitions_per_h: n.architecture.transitionsPerH,
+            awake_pct: n.architecture.pct.awake, rem_pct: n.architecture.pct.rem,
+            core_pct: n.architecture.pct.core, deep_pct: n.architecture.pct.deep,
+            low_confidence_pct: +(100 * n.nLowConfidence / Math.max(1, n.nClassified)).toFixed(1),
+            combo: res.combo, sleep_window_local: `${res.sleep[0]}-${res.sleep[1]}`,
+            sleep_window_method: res.wake.method, version: S.VERSION
+          }))), 'F39_sleep_architecture.csv', 'text/csv')
+        }
+      ]));
+    }
+  },
+
   /* ----------------------------------------------------------------- F13 */
   {
     id: 'F13', title: 'Estados ON/OFF pela amplitude do beta',
@@ -6911,7 +7089,7 @@ const ABAS = [
   },
   {
     id: 'cronico', label: 'Crônico', sub: 'dias · vida real', camada: 'cronico',
-    figuras: ['F8', 'F32', 'F9', 'F37', 'F13', 'F10', 'F25', 'F28', 'F29'],
+    figuras: ['F8', 'F32', 'F9', 'F37', 'F39', 'F13', 'F10', 'F25', 'F28', 'F29'],
     orient: {
       titulo: 'Registro crônico — vida real, sem supervisão',
       camada: 'crônico · observacional',

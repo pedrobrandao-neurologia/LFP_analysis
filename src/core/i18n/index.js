@@ -76,6 +76,7 @@ const DIC = {
     'Agenda da próxima sessão': 'Agenda for the next session',
     'Assistente de limiares de aDBS (TIDAL-DT)': 'aDBS Threshold Advisor (TIDAL-DT)',
     'Percentis de vigília — 7–14 dias em escala': 'Wake-time percentiles — 7–14 days at scale',
+    'Arquitetura do sono estimada do LFP': 'Sleep architecture estimated from LFP',
     'Survey longitudinal — o mesmo par através das sessões': 'Longitudinal Survey — the same pair across sessions',
     'ODR e features por janela — dinâmica multi-banda do registro agudo':
       'ODR and windowed features — multi-band dynamics of the acute recording',

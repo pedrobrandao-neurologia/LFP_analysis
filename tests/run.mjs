@@ -5298,6 +5298,162 @@ sec('alvo anatômico: reconhecimento, rótulos e a fronteira das bandas');
   });
 }
 
+sec('arquitetura do sono sem sensores (F39, método de Averna 2026)');
+{
+  const S = C.SLEEP;
+
+  /* gerador compartilhado: 7 dias de Timeline 10-min, sono 23–7 h com
+     estrutura interna (profundo no início, REM no fim), bilateral            */
+  const geraTrend = () => {
+    const t0 = Date.parse('2026-03-01T00:00:00Z');
+    const rng = { s: 12345 };
+    const rnd = () => { rng.s = (rng.s * 48271) % 2147483647; return rng.s / 2147483647; };
+    const gauss = () => Math.sqrt(-2 * Math.log(Math.max(rnd(), 1e-12))) * Math.cos(2 * Math.PI * rnd());
+    const L = [], R = [];
+    for (let i = 0; i < 7 * 144; i++) {
+      const t = t0 + i * 600000;
+      const h = (t / 3600000) % 24;
+      const dormindo = (h >= 23 || h < 7);
+      let beta, low;
+      if (!dormindo) { beta = 1200 + 150 * gauss(); low = 500 + 80 * gauss(); }
+      else {
+        const hs = (h >= 23 ? h - 23 : h + 1);
+        if (hs < 2.5) { beta = 700 + 60 * gauss(); low = 950 + 90 * gauss(); }
+        else if (hs > 6.5) { beta = 950 + 80 * gauss(); low = 520 + 70 * gauss(); }
+        else { beta = 820 + 70 * gauss(); low = 640 + 70 * gauss(); }
+      }
+      L.push({ t, lfp: Math.max(0, beta) });
+      R.push({ t, lfp: Math.max(0, low) });
+    }
+    return { L, R };
+  };
+
+  t('a banda de sensing é tipada com fronteiras meio-abertas, e a falta dela é suposição declarada', () => {
+    assert(S.classifyBiomarker(8.79).type === 'low', '8,79 Hz deveria ser low');
+    assert(S.classifyBiomarker(12.9).type === 'low', '12,9 Hz deveria ser low');
+    assert(S.classifyBiomarker(13).type === 'beta', '13 Hz deveria ser beta (fronteira pertence à banda de cima)');
+    assert(S.classifyBiomarker(34.9).type === 'beta', '34,9 Hz deveria ser beta');
+    assert(S.classifyBiomarker(35).type === 'ftg', '35 Hz deveria ser FTG');
+    assert(S.classifyBiomarker(62.5).type === 'ftg', '62,5 Hz (metade da estimulação) deveria ser FTG');
+    const sem = S.classifyBiomarker(NaN);
+    assert(sem.type === 'beta' && sem.assumed === true && /declarada/.test(sem.label),
+      'sensing sem frequência deveria virar beta COM a suposição declarada');
+    return 'low <13 · beta [13–35) · FTG ≥35 · sem frequência → beta com aviso';
+  });
+
+  t('auto-teste com resposta conhecida: hipnograma plantado é recuperado', () => {
+    const st = S.selfTest({});
+    assert(st.pass, `self-test reprovou: ${JSON.stringify(st)}`);
+    assert(st.accuracyFull >= 0.85, `acurácia com 3 biomarcadores ${st.accuracyFull} < 0,85`);
+    assert(st.accuracyBetaLow >= 0.80, `acurácia beta+low ${st.accuracyBetaLow} < 0,80`);
+    assert(st.awakeVsDeepBetaOnly >= 0.70, `vigília×profundo só-beta ${st.awakeVsDeepBetaOnly} < 0,70`);
+    /* determinismo: a mesma semente produz o mesmo resultado */
+    const st2 = S.selfTest({});
+    assert(st2.accuracyFull === st.accuracyFull, 'o auto-teste não é determinístico');
+    return `3 biomarcadores ${(100 * st.accuracyFull).toFixed(1)}% · beta+low ${(100 * st.accuracyBetaLow).toFixed(1)}% · vigília×profundo (só beta) ${(100 * st.awakeVsDeepBetaOnly).toFixed(1)}%`;
+  });
+
+  t('as métricas de arquitetura seguem as convenções declaradas (SOL, WASO, transições contíguas)', () => {
+    const stages = ['awake', 'awake', 'core', 'core', 'awake', 'deep', 'rem', null, 'core'];
+    const a = S.nightArchitecture(stages, 600000);
+    assert(a.ok, 'arquitetura não calculada');
+    assert(a.solMin === 20, `latência ${a.solMin}, esperado 20 min (2 épocas de vigília antes do sono)`);
+    assert(a.wasoMin === 10, `WASO ${a.wasoMin}, esperado 10 min`);
+    assert(a.nAwakenings === 1, `${a.nAwakenings} despertares, esperado 1`);
+    assert(Math.abs(a.tstH - 5 * 600000 / 36e5) < 0.01, `TST ${a.tstH}, esperado 50 min (0,83 h com 2 casas)`);
+    /* transição através de época faltante NÃO conta */
+    const soma = a.pct.awake + a.pct.rem + a.pct.core + a.pct.deep;
+    assert(Math.abs(soma - 100) < 0.5, `os % por estágio somam ${soma}, esperado 100`);
+    return `SOL 20 min · WASO 10 min · 1 despertar · TST 0,83 h · %s somam ${soma.toFixed(1)}`;
+  });
+
+  t('z-score por intervalo se recusa com poucas épocas ou série constante', () => {
+    const poucos = S.zscoreInterval([1, 2, 3, NaN, NaN], 12);
+    assert(!poucos.ok && /épocas válidas/.test(poucos.reason), 'poucas épocas deveria recusar com motivo');
+    const constante = S.zscoreInterval(new Array(20).fill(7), 12);
+    assert(!constante.ok && /desvio/.test(constante.reason), 'série constante deveria recusar com motivo');
+    return 'n insuficiente e desvio nulo recusados com motivo declarado';
+  });
+
+  t('pipeline bilateral beta+low: janela de sono detectada e sono profundo no lugar certo', () => {
+    const { L, R } = geraTrend();
+    const res = S.sleepPipeline({ Left: L, Right: R }, { Left: 22.0, Right: 8.79 }, 0, {});
+    assert(res.ok, 'pipeline falhou: ' + res.reason);
+    assert(res.combo === 'beta+low', `combo ${res.combo}, esperado beta+low`);
+    assert(/anchor: beta/.test(res.wake.method), 'a âncora circadiana deveria ser o beta: ' + res.wake.method);
+    assert(res.wake.r2 > 0.3, `cosinor R² ${res.wake.r2} fraco demais — as fases opostas cancelaram?`);
+    assert(Math.abs(res.wake.wake[0] - 7) <= 1.5 && Math.abs(res.wake.wake[1] - 23) <= 1.5,
+      `vigília detectada ${res.wake.wake}, verdade 7–23 h`);
+    assert(res.aggregate.nNightsOk >= 5, `só ${res.aggregate.nNightsOk} noites utilizáveis de ~7`);
+    /* o sintético tem ~28% de sono profundo por noite — o agregado deve vê-lo */
+    assert(res.aggregate.pct.deep.median > 15, `profundo mediano ${res.aggregate.pct.deep.median}% — o Deep sumiu`);
+    /* cada noite fecha 100% */
+    const n1 = res.nights.find(n => n.ok);
+    const soma = n1.architecture.pct.awake + n1.architecture.pct.rem + n1.architecture.pct.core + n1.architecture.pct.deep;
+    assert(Math.abs(soma - 100) < 0.5, `os % da noite somam ${soma}`);
+    return `vigília ${res.wake.wake[0]}–${res.wake.wake[1]} h (R²=${res.wake.r2.toFixed(2)}) · ${res.aggregate.nNightsOk} noites · profundo ${res.aggregate.pct.deep.median}%`;
+  });
+
+  t('só low-frequency: o sinal é invertido para ancorar o circadiano, e o método declara', () => {
+    const { R } = geraTrend();
+    const res = S.sleepPipeline({ Right: R }, { Right: 8.79 }, 0, {});
+    assert(res.ok, 'pipeline low-only falhou: ' + res.reason);
+    assert(/anchor: low, inverted/.test(res.wake.method), 'a inversão da low não foi declarada: ' + res.wake.method);
+    assert(Math.abs(res.wake.wake[0] - 7) <= 2 && Math.abs(res.wake.wake[1] - 23) <= 2,
+      `vigília detectada ${res.wake.wake} com low invertida, verdade 7–23 h`);
+    return `low invertida recupera a vigília ${res.wake.wake[0]}–${res.wake.wake[1]} h`;
+  });
+
+  t('modo manual usa os horários declarados, e a exclusão de noite tem motivo', () => {
+    const { L, R } = geraTrend();
+    const res = S.sleepPipeline({ Left: L, Right: R }, { Left: 22.0, Right: 8.79 }, 0, { sleepMode: 'manual', bedH: 23, riseH: 7 });
+    assert(res.sleep[0] === 23 && res.sleep[1] === 7, `janela manual ${res.sleep}, esperado 23–7`);
+    assert(/user-declared/.test(res.wake.method), 'o método deveria declarar a origem manual');
+    /* a primeira noite (véspera do registro) é parcial → excluída com motivo */
+    assert(res.excluded.length >= 1 && res.excluded.some(x => /cobertura|z-score|biomarcador/.test(x.reason)),
+      'noite parcial deveria ser excluída com motivo: ' + JSON.stringify(res.excluded));
+    /* só beta: as ressalvas dizem que REM×vigília não se separa */
+    const rb = S.sleepPipeline({ Left: L }, { Left: 22.0 }, 0, { sleepMode: 'manual', bedH: 23, riseH: 7 });
+    assert(rb.combo === 'beta' && rb.caveats.some(c => /apenas beta/.test(c)),
+      'o modo só-beta deveria carregar a ressalva REM×vigília');
+    return `manual 23–7 honrado · ${res.excluded.length} noite(s) excluída(s) com motivo · só-beta avisa`;
+  });
+
+  t('o CSV de épocas tem exatamente as colunas declaradas, em inglês', () => {
+    const { L, R } = geraTrend();
+    const res = S.sleepPipeline({ Left: L, Right: R }, { Left: 22.0, Right: 8.79 }, 0, {});
+    const rows = S.sleepCsvRows(res);
+    assert(rows.length > 100, `só ${rows.length} linhas de época`);
+    const keys = Object.keys(rows[0]);
+    assert(keys.length === S.CSV_COLUMNS.length && S.CSV_COLUMNS.every((c, i) => keys[i] === c),
+      `colunas divergem do contrato: ${keys.join(',')}`);
+    assert(rows.every(r => ['awake', 'rem', 'core', 'deep', 'unclassified'].indexOf(r.stage) >= 0), 'estágio fora do vocabulário');
+    assert(rows[0].centroid_source === 'Averna2026_Fig3C_digitized', 'a fonte dos centróides não é exportada');
+    return `${rows.length} épocas · ${keys.length} colunas conforme SLEEP_CSV_COLUMNS`;
+  });
+
+  t('F39 renderiza no exemplo com hipnograma, ressalvas e agregado — e declara alvo fora do STN', () => {
+    const d = H.ds();
+    const fig = H.FIGURES.find(x => x.id === 'F39');
+    assert(fig && fig.has(d), 'F39 sem dados no exemplo');
+    H.S.opts.F39 = {};
+    const txt = n => { let x = (n.textContent || '') + ' ' + (n.innerHTML || ''); (n.children || []).forEach(c => { x += ' ' + txt(c); }); return x; };
+    const n1 = document.createElement('div'); fig.render(n1, d);
+    const s1 = txt(n1);
+    assert(/Arquitetura por noite/.test(s1), 'a tabela de arquitetura por noite não apareceu');
+    assert(/Limites do método/.test(s1), 'as ressalvas do método não estão visíveis');
+    assert(/Averna/.test(s1), 'a referência do método não aparece');
+    assert(/não é polissonografia|não como polissonografia/i.test(s1), 'o disclaimer de PSG sumiu');
+    /* alvo GPi: a extrapolação é declarada (Yin 2023 — beta se sustenta no sono) */
+    const leadsOrig = H.S.files[0].parsed.leads;
+    H.S.files[0].parsed.leads = leadsOrig.map(l => Object.assign({}, l, { target: 'Gpi' }));
+    const n2 = document.createElement('div'); fig.render(n2, d);
+    assert(/Alvo fora do STN/.test(txt(n2)), 'F39 não declarou a extrapolação com alvo GPi');
+    H.S.files[0].parsed.leads = leadsOrig;
+    return 'hipnograma + ressalvas + referência no exemplo · GPi dispara a extrapolação';
+  });
+}
+
 /* ------------------------------------------------------------- resultado -- */
 console.log(`\n${'='.repeat(58)}`);
 console.log(`  ${ok} passaram   ${falhas} falharam   ${pulados} sem dados`);
