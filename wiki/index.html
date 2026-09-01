@@ -353,6 +353,17 @@ th{background:var(--box)}
 </dl>
 </div>
 
+<div class="figbox" id="f39">
+<h4><span class="fid">F39</span>Arquitetura do sono estimada do LFP</h4>
+<dl>
+<dt>O que mostra</dt><dd>Um <b>hipnograma estimado por noite</b> — vigília noturna, REM, NREM leve (“Core”) e NREM profundo (“Deep”) em épocas de 10&nbsp;min — construído só com o Timeline crônico, sem relógio, sem actigrafia, sem polissonografia. Abaixo, a arquitetura de cada noite (tempo de sono estimado, latência, WASO, despertares, % por estágio) e o agregado comparado à coorte do artigo-fonte.</dd>
+<dt>Como usar</dt><dd>Escolha a janela de sono: <b>automática</b> (o detector circadiano do TIDAL-DT, cosinor 24+12&nbsp;h + change-point, ancorado no biomarcador de maior dinâmica circadiana) ou <b>manual</b> (horários habituais de deitar/levantar — exatamente a informação com que o artigo configurava o relógio do paciente). O programa tipa cada hemisfério pela frequência de sensing (baixa frequência &lt;13&nbsp;Hz, beta 13–35, FTG ≥35) e usa a combinação disponível; épocas com margem pequena entre estágios aparecem translúcidas (baixa confiança). Noites com cobertura insuficiente são excluídas do agregado — e listadas.</dd>
+<dt>Para que isso serve?</dt><dd>Levar ao consultório uma leitura de <b>sono</b> que hoje não existe no programador: o Percept grava a noite inteira há semanas, mas o dado dorme no JSON. Queixas de insônia, sono fragmentado e hiperatividade noturna ganham um correlato eletrofisiológico de semanas, não de uma noite de laboratório.</dd>
+<dt>Aplicabilidade clínica e em pesquisa</dt><dd><b>Clínica:</b> triagem de fragmentação do sono (WASO e despertares estimados noite a noite) e do efeito de mudanças de medicação ou estimulação noturna sobre a arquitetura — para conversa e encaminhamento, nunca para diagnóstico. <b>Pesquisa:</b> a base de uma aDBS informada pelo sono (estimular diferente no NREM profundo), e comparação com diários de sono e PSQI em coortes ambulatoriais. <i>Exemplo:</i> paciente com sonolência diurna mostra 12 despertares estimados por noite e NREM profundo de 4% (coorte do artigo: 9,8%); depois de mover a última dose de levodopa, os despertares caem à metade — um sinal para investigar, não uma conclusão.</dd>
+<dt>Método e referência</dt><dd>Reprodução adaptada de Averna et&nbsp;al. 2026<sup class="ref"><a href="#r36">[36]</a></sup>: os mesmos três biomarcadores do Timeline (beta, baixa frequência, FTG), o mesmo z-score por intervalo de sono — mas <b>sem sensor</b>: a janela de sono vem do detector circadiano (ou de horários declarados) e a classificação é por centróide mais próximo usando os z medianos por estágio publicados na Fig.&nbsp;3C do artigo (digitalização declarada), em vez do classificador supervisionado treinado com rótulos do relógio. Desempenho esperado abaixo do artigo, por construção; com beta sozinho, REM e vigília são pouco separáveis e a figura avisa. Estadiamento por LFP de alta resolução: Christensen et&nbsp;al.<sup class="ref"><a href="#r37">[37]</a></sup>; flutuação naturalística sono-vigília: Baumgartner et&nbsp;al.<sup class="ref"><a href="#r38">[38]</a></sup>; no GPi o beta se sustenta no sono<sup class="ref"><a href="#r30">[30]</a></sup> — os centróides do NST não se transferem, e a figura declara a extrapolação de alvo.</dd>
+</dl>
+</div>
+
 <div class="figbox" id="f13">
 <h4><span class="fid">F13</span>Estados ON/OFF pela amplitude do beta</h4>
 <dl>
@@ -618,11 +629,14 @@ th{background:var(--box)}
   <li id="r33">Stanslaski S, et al. Dinâmica do controlador de aDBS do Percept (disparo &gt;1,2 s; rampas ~2,5/5 min; passos 0,1/0,01 mA). <i>npj Parkinsons Dis</i> 2024. <a class="ext" href="https://doi.org/10.1038/s41531-024-00772-5">doi:10.1038/s41531-024-00772-5</a></li>
   <li id="r34">Habets JGV, Merk T, Mathiopoulou V, et al. Movement dependent neural substates within levodopa-induced dyskinesia in Parkinson's disease. <i>Brain</i> 2026. <a class="ext" href="https://doi.org/10.1093/brain/awag256">doi:10.1093/brain/awag256</a></li>
   <li id="r35">Alves ALM, et al. Transcutaneous spinal magnetic stimulation affects subthalamic activity in Parkinson's disease. <i>Mov Disord</i> 2025;40:2543–2545. <a class="ext" href="https://doi.org/10.1002/mds.70035">doi:10.1002/mds.70035</a></li>
+  <li id="r36">Averna A, Bernasconi E, Colombo A, et al. Decoding sleep architecture from ambulatory basal ganglia signals in Parkinson's disease. <i>Mov Disord</i> 2026. <a class="ext" href="https://doi.org/10.1002/mds.70493">doi:10.1002/mds.70493</a></li>
+  <li id="r37">Christensen E, Abosch A, Thompson JA, Zylberberg J. Inferring sleep stage from local field potentials recorded in the subthalamic nucleus of Parkinson's patients. <i>J Sleep Res</i> 2019;28:e12806. <a class="ext" href="https://doi.org/10.1111/jsr.12806">doi:10.1111/jsr.12806</a></li>
+  <li id="r38">Baumgartner AJ, et al. Diurnal fluctuations of subthalamic nucleus local field potentials with naturalistic sleep-wake behavior in Parkinson's disease. <i>Sleep</i> 2025;48:zsaf005. <a class="ext" href="https://doi.org/10.1093/sleep/zsaf005">doi:10.1093/sleep/zsaf005</a></li>
 </ol>
 
 <h2 id="vertambem">13 · Ver também</h2>
 <ul>
-  <li><a href="../">O aplicativo</a> · <a href="../docs/arquitetura.md">arquitetura do código</a> · <a href="../docs/auditoria-whitepaper.md">auditoria contra o white paper</a> · <a href="../docs/odr.md">ODR</a> · <a href="../docs/mrds.md">MRDS</a> · <a href="../docs/tidal.md">TIDAL-DT</a></li>
+  <li><a href="../">O aplicativo</a> · <a href="../docs/arquitetura.md">arquitetura do código</a> · <a href="../docs/auditoria-whitepaper.md">auditoria contra o white paper</a> · <a href="../docs/odr.md">ODR</a> · <a href="../docs/mrds.md">MRDS</a> · <a href="../docs/tidal.md">TIDAL-DT</a> · <a href="../docs/sono.md">arquitetura do sono</a></li>
   <li>Toolboxes do ecossistema Percept (leitura de arquitetura, não dependência): <a class="ext" href="https://github.com/neuromodulation/perceive">perceive</a> · Percept Toolbox (Thenaisie) · DBScope · BRAVO (Fixel Institute) · <a class="ext" href="https://github.com/neuromodulation/py_neuromodulation">py_neuromodulation</a></li>
 </ul>
 
