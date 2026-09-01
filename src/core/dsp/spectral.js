@@ -124,7 +124,14 @@ export function bandOf(f) { const b = BANDS.find(b => f >= b.lo && f < b.hi); re
 
 export function bandPower(f, p, lo, hi) {
   let s = 0, n = 0;
-  for (let i = 0; i < f.length; i++) if (f[i] >= lo && f[i] <= hi) { s += p[i]; n++; }
+  /* Intervalo MEIO-ABERTO [lo, hi): o bin que cai exatamente na fronteira
+     pertence à banda de cima, e nunca às duas. Com o intervalo fechado, o bin
+     de 35 Hz entrava em beta (13–35) E em gama (35–100): a soma das bandas
+     passava do total, e toda fração de banda saía inflada. Com meio-aberto,
+     bandas adjacentes formam uma PARTIÇÃO — a soma fecha com o total por
+     construção. (Buscas de pico continuam inclusivas; isto vale só para a
+     integração.) */
+  for (let i = 0; i < f.length; i++) if (f[i] >= lo && f[i] < hi) { s += p[i]; n++; }
   return n ? s * (f[1] - f[0]) : NaN;
 }
 

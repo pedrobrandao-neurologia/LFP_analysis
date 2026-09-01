@@ -5199,6 +5199,105 @@ sec('exportação interrompida: salvamento do prefixo e layout de Survey 1.3');
   });
 }
 
+/* ========================================================================= */
+sec('alvo anatômico: reconhecimento, rótulos e a fronteira das bandas');
+{
+  t('o LeadLocation do JSON é normalizado para STN, GPi, Vim, ANT e denteado', () => {
+    const casos = [
+      ['LeadLocationDef.Stn', 'stn', 'STN'], ['STN', 'stn', 'STN'], ['SubthalamicNucleus', 'stn', 'STN'],
+      ['Gpi', 'gpi', 'GPi'], ['GPI', 'gpi', 'GPi'], ['Pallidum', 'gpi', 'GPi'],
+      ['Vim', 'vim', 'Vim'], ['Vim_Psa', 'vim', 'Vim'],
+      ['Ant', 'ant', 'ANT'], ['AnteriorNucleus', 'ant', 'ANT'],
+      ['Dentate', 'dentate', 'N. denteado'], ['CerebellarDentate', 'dentate', 'N. denteado']
+    ];
+    casos.forEach(([raw, key, label]) => {
+      const t2 = C.normalizeTarget(raw);
+      assert(t2.key === key && t2.label === label, `${raw} → ${t2.key}/${t2.label}, esperado ${key}/${label}`);
+    });
+    /* alvo desconhecido preserva o texto em vez de chutar */
+    const x = C.normalizeTarget('LeadLocationDef.Nbm');
+    assert(x.key === 'other' && x.label === 'Nbm', 'alvo fora da tabela deveria preservar o texto');
+    assert(C.normalizeTarget('').key === null, 'string vazia deveria dar alvo nulo');
+    return `${casos.length} grafias normalizadas · desconhecido preservado · vazio nulo`;
+  });
+
+  t('a divergência alvo × perfil é declarada, e alvo fora do STN aciona a ressalva de método', () => {
+    const gpi = { leads: [{ hemisphere: 'Left', target: 'Gpi' }, { hemisphere: 'Right', target: 'Gpi' }] };
+    /* GPi com perfil de Parkinson: compatível (o perfil aceita Stn e Gpi) */
+    const c1 = C.targetProfileCheck(gpi, 'pd');
+    assert(c1.warnings.length === 0, 'GPi no perfil PD não deveria divergir: ' + c1.warnings[0]);
+    assert(c1.stnMethodCaveat && /extrapola/.test(c1.stnMethodCaveat),
+      'sem eletrodo no STN, a ressalva de método subtalâmico deveria existir');
+    /* Vim com perfil de distonia: divergência declarada */
+    const vim = { leads: [{ hemisphere: 'Left', target: 'Vim' }] };
+    const c2 = C.targetProfileCheck(vim, 'dystonia');
+    assert(c2.warnings.length === 1 && /Vim/.test(c2.warnings[0]) && /Distonia/.test(c2.warnings[0]),
+      'a divergência Vim × distonia não foi declarada: ' + JSON.stringify(c2.warnings));
+    /* STN com perfil PD: nada a avisar */
+    const stn = { leads: [{ hemisphere: 'Left', target: 'LeadLocationDef.Stn' }] };
+    const c3 = C.targetProfileCheck(stn, 'pd');
+    assert(c3.warnings.length === 0 && !c3.stnMethodCaveat && c3.anyStn, 'STN×PD deveria passar limpo');
+    return 'GPi×PD compatível com ressalva de método · Vim×distonia divergente · STN×PD limpo';
+  });
+
+  t('os rótulos das figuras seguem o alvo declarado — GPi não vira "STN esquerdo"', () => {
+    const leadsOrig = H.S.files[0].parsed.leads;
+    const txt = n => { let x = (n.textContent || '') + ' ' + (n.innerHTML || ''); (n.children || []).forEach(c => { x += ' ' + txt(c); }); return x; };
+    const fig = H.FIGURES.find(x => x.id === 'F9');
+    const d = H.ds();
+
+    /* com o alvo do exemplo (Stn), o rótulo é o de sempre */
+    const n1 = document.createElement('div'); fig.render(n1, d);
+    assert(/STN (esquerdo|direito)/.test(txt(n1)), 'com alvo STN o rótulo deveria dizer STN');
+
+    /* trocando o alvo declarado para Gpi, o rótulo acompanha */
+    H.S.files[0].parsed.leads = leadsOrig.map(l => Object.assign({}, l, { target: 'Gpi' }));
+    const n2 = document.createElement('div'); fig.render(n2, d);
+    const s2 = txt(n2);
+    assert(/GPi (esquerdo|direito)/.test(s2), 'com alvo GPi o rótulo não acompanhou');
+    assert(!/STN (esquerdo|direito)/.test(s2), 'rótulo STN sobrou num registro de GPi');
+
+    /* sem alvo declarado, o rótulo honesto é "hemisfério" */
+    H.S.files[0].parsed.leads = leadsOrig.map(l => Object.assign({}, l, { target: '' }));
+    const n3 = document.createElement('div'); fig.render(n3, d);
+    assert(/hemisfério (esquerdo|direito)/.test(txt(n3)), 'sem alvo o rótulo deveria ser neutro');
+    H.S.files[0].parsed.leads = leadsOrig;
+    return 'Stn → "STN" · Gpi → "GPi" · sem alvo → "hemisfério"';
+  });
+
+  t('as figuras de protocolo subtalâmico declaram a extrapolação quando o alvo é outro', () => {
+    const leadsOrig = H.S.files[0].parsed.leads;
+    const txt = n => { let x = (n.textContent || '') + ' ' + (n.innerHTML || ''); (n.children || []).forEach(c => { x += ' ' + txt(c); }); return x; };
+    const d = H.ds();
+    H.S.files[0].parsed.leads = leadsOrig.map(l => Object.assign({}, l, { target: 'Vim' }));
+    ['F34', 'F36'].forEach(id => {
+      const fig = H.FIGURES.find(x => x.id === id);
+      if (!fig.has(d)) return;
+      const n = document.createElement('div'); fig.render(n, d);
+      assert(/Alvo fora do STN/.test(txt(n)), `${id} não declarou a extrapolação com alvo Vim`);
+    });
+    /* e com STN o aviso NÃO aparece */
+    H.S.files[0].parsed.leads = leadsOrig;
+    const f34 = H.FIGURES.find(x => x.id === 'F34');
+    const n0 = document.createElement('div'); f34.render(n0, d);
+    assert(!/Alvo fora do STN/.test(txt(n0)), 'aviso de extrapolação apareceu com alvo STN');
+    return 'F34/F36 avisam com Vim · silêncio com STN';
+  });
+
+  t('bandPower é meio-aberto: bandas adjacentes formam partição exata', () => {
+    const f = []; for (let i = 0; i <= 400; i++) f.push(i * 0.25);   /* grade com 35,0 exato */
+    const p2 = f.map(() => 1);
+    const beta = C.bandPower(f, p2, 13, 35), gama = C.bandPower(f, p2, 35, 100);
+    const total = C.bandPower(f, p2, 13, 100);
+    assert(Math.abs(beta + gama - total) < 1e-12,
+      `o bin da fronteira ainda conta duas vezes: β=${beta} γ=${gama} total=${total}`);
+    /* e a soma de TODAS as bandas do perfil fecha com o total 1–100 */
+    const soma = C.BANDS.reduce((a, b) => a + C.bandPower(f, p2, b.lo, b.hi), 0);
+    assert(Math.abs(soma - C.bandPower(f, p2, 1, 100)) < 1e-12, 'a partição das bandas do perfil não fecha');
+    return `β+γ = total na grade de 0,25 Hz · as ${C.BANDS.length} bandas somam o total exato`;
+  });
+}
+
 /* ------------------------------------------------------------- resultado -- */
 console.log(`\n${'='.repeat(58)}`);
 console.log(`  ${ok} passaram   ${falhas} falharam   ${pulados} sem dados`);
