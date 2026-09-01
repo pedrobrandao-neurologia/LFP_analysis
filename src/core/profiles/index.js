@@ -357,3 +357,76 @@ export function movingAverageDays(serie, dias) {
     return { t: pt.t, v: n ? s / n : NaN, n };
   });
 }
+
+/* ------------------------------------------------------------------------ */
+/*  Alvo anatômico por hemisfério                                           */
+/* ------------------------------------------------------------------------ */
+
+/* O LeadLocation do JSON diz ONDE cada eletrodo está — STN, GPi, tálamo
+   (Vim/PSA), ANT, núcleo denteado — e isso muda a leitura de quase tudo:
+   os rótulos ("STN esquerdo" num eletrodo palidal é erro de prontuário),
+   qual banda é biomarcador e quais métodos foram derivados em outro alvo.
+   A tabela normaliza as grafias que aparecem nos arquivos reais
+   (LeadLocationDef.Stn, "STN", "Gpi", "Vim_Psa", …).                       */
+export const TARGETS = [
+  { key: 'stn',     label: 'STN',        full: 'núcleo subtalâmico',                    re: /stn|subthal/i },
+  { key: 'gpi',     label: 'GPi',        full: 'globo pálido interno',                  re: /gpi|pallid/i },
+  { key: 'ant',     label: 'ANT',        full: 'núcleo anterior do tálamo',             re: /\bant\b|anterior.?nucleus/i },
+  { key: 'vim',     label: 'Vim',        full: 'núcleo ventral intermédio do tálamo',   re: /vim|\bpsa\b|vop|ventral/i },
+  { key: 'thalamus', label: 'tálamo',    full: 'tálamo (núcleo não especificado)',      re: /thalam|cm.?pf/i },
+  { key: 'dentate', label: 'N. denteado', full: 'núcleo denteado do cerebelo',          re: /dentat|cerebel/i }
+];
+
+export function normalizeTarget(raw) {
+  const s = String(raw == null ? '' : raw).replace(/^.*\./, '').trim();
+  if (!s) return { key: null, label: null, full: null, raw: '' };
+  for (const t of TARGETS) if (t.re.test(s)) return { key: t.key, label: t.label, full: t.full, raw: s };
+  /* alvo declarado mas fora da tabela: preserva o texto em vez de chutar */
+  return { key: 'other', label: s, full: `alvo declarado no arquivo: ${s}`, raw: s };
+}
+
+/* hemisphereTargets(parsed) → { Left: {key,label,...}|null, Right: ... }    */
+export function hemisphereTargets(parsed) {
+  const out = { Left: null, Right: null };
+  ((parsed && parsed.leads) || []).forEach(l => {
+    const h = l && l.hemisphere;
+    if ((h === 'Left' || h === 'Right') && !out[h]) out[h] = normalizeTarget(l.target);
+  });
+  return out;
+}
+
+/* targetProfileCheck(parsed, profileId) — o alvo declarado combina com o
+   perfil ativo? Devolve, por hemisfério, o veredito, e uma lista de avisos
+   prontos para a interface. NUNCA troca o perfil sozinho: quem decide é quem
+   analisa; o software declara a divergência.                               */
+export function targetProfileCheck(parsed, profileId) {
+  const perfil = getProfile(profileId);
+  const alvos = hemisphereTargets(parsed);
+  const aceita = raw => !perfil.targets.length ||
+    perfil.targets.some(t => normalizeTarget(t).key === normalizeTarget(raw).key);
+  const porHemi = {};
+  const avisos = [];
+  ['Left', 'Right'].forEach(h => {
+    const a = alvos[h];
+    if (!a || !a.raw) { porHemi[h] = { declared: null, match: null }; return; }
+    const ok = aceita(a.raw);
+    porHemi[h] = { declared: a, match: ok };
+    if (!ok) avisos.push(
+      `O eletrodo ${h === 'Left' ? 'esquerdo' : 'direito'} está declarado em ${a.label} (${a.full}), ` +
+      `mas o perfil ativo é "${perfil.label}". As bandas e leituras do perfil podem não valer para este alvo — ` +
+      `confira o perfil, ou leia as figuras sabendo da divergência.`);
+  });
+  /* métodos derivados em STN: se NENHUM hemisfério é STN, as figuras que
+     replicam protocolos subtalâmicos precisam dizer isso */
+  const temStn = ['Left', 'Right'].some(h => porHemi[h] && porHemi[h].declared && porHemi[h].declared.key === 'stn');
+  const temAlvo = ['Left', 'Right'].some(h => porHemi[h] && porHemi[h].declared);
+  return {
+    byHemisphere: porHemi, warnings: avisos,
+    anyDeclared: temAlvo, anyStn: temStn,
+    stnMethodCaveat: temAlvo && !temStn
+      ? 'nenhum eletrodo deste registro está no STN — métodos derivados em coortes subtalâmicas ' +
+        '(ODR, MRDS com β/γ, limiares de aDBS por beta) foram validados em outro alvo e a ' +
+        'transposição é extrapolação, não medida'
+      : null
+  };
+}

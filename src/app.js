@@ -26,6 +26,32 @@ const COL = {
 const hcol = h => COL[h] || COL.accent;
 const hname = h => h === 'Left' ? 'esquerdo' : h === 'Right' ? 'direito' : h;
 
+/* rotuloLado(h) — o rótulo anatômico HONESTO do hemisfério: "STN esquerdo"
+   só quando o LeadLocation do arquivo diz STN. Eletrodo no GPi vira "GPi
+   esquerdo"; no Vim, "Vim esquerdo"; alvo não declarado vira "hemisfério
+   esquerdo" — porque escrever STN sem o arquivo dizer isso é inventar
+   anatomia, e esse rótulo acaba em relatório e em figura de artigo. */
+/* avisoDeAlvo(node, metodo) — quando o método da figura foi derivado em
+   coortes de STN e nenhum eletrodo deste registro está no STN, a figura diz
+   isso ANTES do número. Também devolve os avisos de divergência perfil×alvo
+   para quem quiser mostrá-los. */
+function avisoDeAlvo(node, metodo) {
+  const f0 = activeFiles()[0];
+  if (!f0 || !f0.parsed) return null;
+  const chk = C.targetProfileCheck(f0.parsed, activeProfile().id);
+  if (node && metodo && chk.stnMethodCaveat) node.appendChild(el('div', {
+    class: 'warnbox', html: `<b>Alvo fora do STN.</b> ${metodo} — e ${chk.stnMethodCaveat}.`
+  }));
+  return chk;
+}
+
+function rotuloLado(h) {
+  const f0 = typeof activeFiles === 'function' ? activeFiles()[0] : null;
+  const alvos = f0 && f0.parsed ? C.hemisphereTargets(f0.parsed) : null;
+  const alvo = alvos ? alvos[h] : null;
+  return `${alvo && alvo.label ? alvo.label : 'hemisfério'} ${hname(h)}`;
+}
+
 /* ============================================ trabalho em segundo plano ====
    POR QUE. Mesmo depois de a Onda 8.0 tornar cada etapa visível, o cálculo
    continua na thread principal: enquanto ele roda, a página não repinta e nada
@@ -652,7 +678,7 @@ function painelVarredura(parent, canais, hemi, o) {
     ch = new P.Chart(bx.canvas, {
       width: larguraAtual(), height: altura, xlim: [0, fmax], ylim: [0, n + 0.45],
       xlabel: 'frequência (Hz)',
-      title: `STN ${hname(hemi)} — ${n} pares bipolares`,
+      title: `${rotuloLado(hemi)} — ${n} pares bipolares`,
       pad: { l: 78, r: 14, t: 24, b: 40 }
     });
     ch.axes({
@@ -713,7 +739,7 @@ function painelVarredura(parent, canais, hemi, o) {
     if (i !== hover) { hover = i; desenha(); }
     if (i >= 0) {
       const c = canais[i];
-      tip.innerHTML = `<b>${c.label}</b> · STN ${hname(hemi)} · <b>#${c.rank}</b> de ${n}<br>` +
+      tip.innerHTML = `<b>${c.label}</b> · ${rotuloLado(hemi)} · <b>#${c.rank}</b> de ${n}<br>` +
         `pico ${isFinite(c.peakHz) ? f(c.peakHz, 1) + ' Hz' : '—'} · acima do 1/f ${f(c.bandAreaCorrected, 2)} · bruta ${f(c.bandArea, 2)}` +
         (c.hasDistinctPeak ? '' : '<br><i>sem pico destacado do fundo aperiódico</i>') +
         (c.nRecords > 1 ? `<br><i>mediana de ${c.nRecords} registros</i>` : '');
@@ -1064,7 +1090,7 @@ function painelEletrodo(parent, opts) {
   P.drawLead(cv, geo, {
     width: opts.largura || 210, height: alturaEl,
     highlight: marcacao,
-    title: opts.title || `${spec.label} · STN ${hname(hemi)}`,
+    title: opts.title || `${spec.label} · ${rotuloLado(hemi)}`,
     subtitle: opts.subtitle || (lead && lead.target ? `alvo ${lead.target}` : null),
     ruler: !opts.semRegua
   });
@@ -1439,12 +1465,12 @@ const FIGURES = [
         const vals = labels.map(L => { const m = d.impedance[h].mono.find(x => x.b === L || x.a === L); return m ? m.ohm : NaN; });
         const w = (ch.X(1) - ch.X(0)) * .38;
         ch.bars(labels.map((_, i) => i + (hi - (hemis.length - 1) / 2) * w * 1.05), vals,
-          { color: hcol(h), width: w, label: `STN ${hname(h)}` });
+          { color: hcol(h), width: w, label: `${rotuloLado(h)}` });
       });
       ch.legend({ x: ch.x0 + 8, y: ch.y1 + 6 });
 
       const hSel = opt('F3', 'hemi', hemis[0]);
-      node.appendChild(el('div', { class: 'ctrls' }, [ctrlSelect('matriz bipolar', hemis.map(h => ({ value: h, label: 'STN ' + hname(h) })), hSel, v => setOpt('F3', 'hemi', v))]));
+      node.appendChild(el('div', { class: 'ctrls' }, [ctrlSelect('matriz bipolar', hemis.map(h => ({ value: h, label: rotuloLado(h) })), hSel, v => setOpt('F3', 'hemi', v))]));
       const b2 = plotBox(grid, 250);
       const M = labels.map(() => labels.map(() => NaN));
       d.impedance[hSel].bipolar.forEach(e => {
@@ -1453,7 +1479,7 @@ const FIGURES = [
       });
       const ch2 = new P.Chart(b2.canvas, {
         width: b2.width, height: b2.height, xlim: [0, labels.length], ylim: [0, labels.length],
-        xlabel: 'contato', ylabel: 'contato', title: `(b) bipolar — STN ${hname(hSel)} (Ω)`, pad: { l: 46, r: 62, t: 24, b: 40 }
+        xlabel: 'contato', ylabel: 'contato', title: `(b) bipolar — ${rotuloLado(hSel)} (Ω)`, pad: { l: 46, r: 62, t: 24, b: 40 }
       });
       ch2.heat(M, { cmap: 'ice', smooth: false });
       ch2.axes({ grid: false, xticks: labels.map((_, i) => i + .5), yticks: labels.map((_, i) => i + .5), xfmt: v => labels[Math.floor(v)] || '', yfmt: v => labels[labels.length - 1 - Math.floor(v)] || '' });
@@ -1592,7 +1618,7 @@ const FIGURES = [
         const box = plotBox(grid, 34 + rows.length * 15); boxes.push(box);
         const ch = new P.Chart(box.canvas, {
           width: box.width, height: box.height, xlim: [0, fmax], ylim: [0, rows.length],
-          xlabel: 'frequência (Hz)', title: `STN ${hname(h)} — ${rows.length} canais`, pad: { l: 62, r: 60, t: 24, b: 40 }
+          xlabel: 'frequência (Hz)', title: `${rotuloLado(h)} — ${rows.length} canais`, pad: { l: 62, r: 60, t: 24, b: 40 }
         });
         ch.heat(M, { cmap: 'magma', smooth: true });
         ch.axes({ grid: false, yticks: rows.map((_, i) => i + .5), yfmt: v => (rows[rows.length - 1 - Math.floor(v)] || {}).label || '' });
@@ -1645,7 +1671,11 @@ const FIGURES = [
           `use para identificar o eletrodo, não para comparar potência com os pares do Survey.`
       }));
       const doEcg = opt('F6', 'ecg', false);
-      const blo = opt('F6', 'blo', 13), bhi = opt('F6', 'bhi', 20);
+      /* a banda do burst segue a banda PRIMÁRIA do perfil ativo — beta baixo no
+         Parkinson, teta-alfa na distonia palidal, f0 medida no tremor. O 13–20
+         fixo assumia STN parkinsoniano para todo mundo. */
+      const pbF6 = activeProfile().primaryBand || { lo: 13, hi: 20 };
+      const blo = opt('F6', 'blo', Math.round(pbF6.lo)), bhi = opt('F6', 'bhi', Math.round(Math.min(pbF6.hi, pbF6.lo === 13 ? 20 : pbF6.hi)));
       const pct = opt('F6', 'pct', 75), minMs = opt('F6', 'minms', 100);
       const winS = opt('F6', 'win', Math.min(20, Math.round(td.data.length / td.fs)));
 
@@ -1995,7 +2025,7 @@ const FIGURES = [
           segmentosPorLacuna(xs, limiarLacuna).forEach((seg, i) => {
             const sx = xs.slice(seg[0], seg[1]), sy = ys.slice(seg[0], seg[1]);
             const yy = smooth > 1 ? movingMedian(sy, smooth) : sy;
-            ch.line(sx, yy, { color: hcol(h), width: smooth > 1 ? 1.6 : .8, label: i === 0 ? `STN ${hname(h)}` : null });
+            ch.line(sx, yy, { color: hcol(h), width: smooth > 1 ? 1.6 : .8, label: i === 0 ? `${rotuloLado(h)}` : null });
           });
         });
         if (showMa) {
@@ -2143,7 +2173,7 @@ const FIGURES = [
       const razao = detr && unidade === 'ratio';
       const uni = !detr ? 'u.a.' : razao ? '× a mediana do dia' : '% da mediana do dia';
       node.appendChild(el('div', { class: 'ctrls' }, [
-        ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: 'STN ' + hname(x) })), h, v => setOpt('F9', 'hemi', v)),
+        ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: rotuloLado(x) })), h, v => setOpt('F9', 'hemi', v)),
         ctrlCheck('detrending diário (cada dia pela própria mediana)', detr, v => setOpt('F9', 'detrend', v)),
         detr ? ctrlSelect('unidade', [{ value: 'ratio', label: '× da mediana (1 = mediana)' }, { value: 'percent', label: '% da mediana (100 = mediana)' }], unidade, v => setOpt('F9', 'unidade', v)) : el('span'),
         ctrlSelect('escala de cor', [
@@ -2170,7 +2200,7 @@ const FIGURES = [
       const ch = new P.Chart(box.canvas, {
         width: box.width, height: box.height, xlim: [0, 24], ylim: [0, dp.days.length],
         xlabel: 'hora local', ylabel: rotuloDia === 'numero' ? 'dia do registro' : 'dia',
-        title: `(a) dia × hora — STN ${hname(h)}${detr ? ' (cada dia normalizado pela própria mediana)' : ''}`,
+        title: `(a) dia × hora — ${rotuloLado(h)}${detr ? ' (cada dia normalizado pela própria mediana)' : ''}`,
         pad: { l: 76, r: 70, t: 24, b: 40 }
       });
       ch.heat(M, {
@@ -2318,7 +2348,7 @@ const FIGURES = [
       const normalize = opt('F10', 'norm', true);
       node.appendChild(el('div', { class: 'ctrls' }, [
         ctrlSelect('evento', names, evName, v => setOpt('F10', 'ev', v)),
-        ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: 'STN ' + hname(x) })), h, v => setOpt('F10', 'hemi', v)),
+        ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: rotuloLado(x) })), h, v => setOpt('F10', 'hemi', v)),
         ctrlNumber('pré (min)', pre, 10, 180, 10, v => setOpt('F10', 'pre', v)),
         ctrlNumber('pós (min)', post, 30, 480, 30, v => setOpt('F10', 'post', v)),
         ctrlCheck('normalizar pela linha de base', normalize, v => setOpt('F10', 'norm', v))
@@ -2334,7 +2364,7 @@ const FIGURES = [
         width: box.width, height: box.height, xlim: [-pre, post],
         ylim: [C.quantile(allv, .01) * .95, C.quantile(allv, .99) * 1.05],
         xlabel: 'minutos em relação ao evento', ylabel: normalize ? '% da linha de base' : 'potência LFP',
-        title: `"${evName}" — ${al.nTrials} ocorrências · STN ${hname(h)}`, pad: { l: 66, r: 14, t: 24, b: 42 }
+        title: `"${evName}" — ${al.nTrials} ocorrências · ${rotuloLado(h)}`, pad: { l: 66, r: 14, t: 24, b: 42 }
       });
       ch.axes();
       ch.span(-pre, 0, { color: COL.muted, alpha: .07, label: 'linha de base' });
@@ -2384,7 +2414,7 @@ const FIGURES = [
       const vals = clean.map(r => r.lfp);
       const auto = { lo: C.quantile(vals, .25), hi: C.quantile(vals, .75) };
       node.appendChild(el('div', { class: 'ctrls' }, [
-        ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: 'STN ' + hname(x) })), h, v => setOpt('F11', 'hemi', v)),
+        ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: rotuloLado(x) })), h, v => setOpt('F11', 'hemi', v)),
         ctrlNumber('limiar inferior', isFinite(lower) ? lower : Math.round(auto.lo), 0, 1e6, 1, v => setOpt('F11', 'lo', v)),
         ctrlNumber('limiar superior', isFinite(upper) ? upper : Math.round(auto.hi), 0, 1e6, 1, v => setOpt('F11', 'hi', v)),
         el('button', { class: 'btn', text: 'usar Q1/Q3 dos dados', onclick: () => { S.opts.F11.lo = auto.lo; S.opts.F11.hi = auto.hi; renderFigure('F11'); } })
@@ -2456,7 +2486,7 @@ const FIGURES = [
       const h = opt('F12', 'hemi', hemis[0]);
       const showAll = opt('F12', 'all', false);
       node.appendChild(el('div', { class: 'ctrls' }, [
-        ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: 'STN ' + hname(x) })), h, v => setOpt('F12', 'hemi', v)),
+        ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: rotuloLado(x) })), h, v => setOpt('F12', 'hemi', v)),
         ctrlCheck('mostrar espectros individuais', showAll, v => setOpt('F12', 'all', v))
       ]));
       const palette = ['#1B4A72', '#9C3050', '#0C6E6B', '#A8621B', '#5B3E86', '#2C7A4B'];
@@ -2474,7 +2504,7 @@ const FIGURES = [
       const ymax = Math.max(...groups.flatMap(g => g.med.filter((_, k) => g.f[k] <= fmax))) * 1.2;
       const ch = new P.Chart(box.canvas, {
         width: box.width, height: box.height, xlim: [0, fmax], ylim: [0, ymax],
-        xlabel: 'frequência (Hz)', ylabel: 'magnitude (µVp)', title: `espectro mediano por evento — STN ${hname(h)}`, pad: { l: 62, r: 14, t: 24, b: 42 }
+        xlabel: 'frequência (Hz)', ylabel: 'magnitude (µVp)', title: `espectro mediano por evento — ${rotuloLado(h)}`, pad: { l: 62, r: 14, t: 24, b: 42 }
       });
       ch.axes();
       profileBands().forEach(b => { if (b.lo < fmax) ch.span(b.lo, Math.min(b.hi, fmax), { color: b.color, alpha: .07, label: b.label }); });
@@ -2541,7 +2571,7 @@ const FIGURES = [
             width: boxA.width, height: boxA.height, xlim: [0, fmax],
             ylim: [0, Math.max.apply(null, q3.filter(isFinite)) * 1.15 || 1],
             xlabel: 'frequência (Hz)', ylabel: 'magnitude (µVp)',
-            title: `espectro acumulado de TODOS os snapshots — STN ${hname(h)} · n=${todosH.length} janelas ≈ ${f(minutos, 0)} min de sensing`,
+            title: `espectro acumulado de TODOS os snapshots — ${rotuloLado(h)} · n=${todosH.length} janelas ≈ ${f(minutos, 0)} min de sensing`,
             pad: { l: 62, r: 14, t: 24, b: 40 }
           });
           chA.axes();
@@ -2648,7 +2678,7 @@ const FIGURES = [
           kMad, lastDays: janela,
           wake: modoVigilia === 'fixa' ? [vIni, vFim] : null
         });
-        node.appendChild(el('h3', { class: 'qc-title', html: `<span class="hemi-${h[0]}">STN ${hname(h)}</span> — percentis da vigília` }));
+        node.appendChild(el('h3', { class: 'qc-title', html: `<span class="hemi-${h[0]}">${rotuloLado(h)}</span> — percentis da vigília` }));
         if (!r.ok) {
           node.appendChild(el('div', { class: 'warnbox', html: `<b>Não calculável.</b> ${r.reason}` }));
           return;
@@ -2713,10 +2743,13 @@ const FIGURES = [
     render(node, d) {
       const src = [];
       d.bsTimeDomain.forEach((t, i) => src.push({ value: 'st' + i, label: `Streaming ${t.label} (${(t.data.length / t.fs).toFixed(0)} s)`, kind: 'stream', td: t }));
-      Object.keys(d.trend).forEach(h => src.push({ value: 'tl' + h, label: `Timeline crônico — STN ${hname(h)}`, kind: 'timeline', hemi: h }));
+      Object.keys(d.trend).forEach(h => src.push({ value: 'tl' + h, label: `Timeline crônico — ${rotuloLado(h)}`, kind: 'timeline', hemi: h }));
       if (!src.length) return node.appendChild(el('div', { class: 'empty', text: 'Sem streaming nem Timeline.' }));
       const cur = src.find(s => s.value === opt('F13', 'src', src[0].value)) || src[0];
-      const lo = opt('F13', 'lo', 13), hi = opt('F13', 'hi', 30);
+      /* a banda dos estados segue a banda primária do perfil — o 13–30 fixo
+         assumia beta subtalâmico para qualquer alvo */
+      const pbF13 = activeProfile().primaryBand || { lo: 13, hi: 30 };
+      const lo = opt('F13', 'lo', Math.round(pbF13.lo)), hi = opt('F13', 'hi', Math.round(pbF13.hi));
 
       const ctrls = [
         ctrlSelect('fonte', src, cur.value, v => setOpt('F13', 'src', v)),
@@ -3042,7 +3075,7 @@ const FIGURES = [
       qc.rows.forEach(linha => {
         node.appendChild(el('h4', {
           class: 'qc-title',
-          html: `<span class="hemi-${linha.hemisphere[0]}">STN ${hname(linha.hemisphere)}</span> · ` +
+          html: `<span class="hemi-${linha.hemisphere[0]}">${rotuloLado(linha.hemisphere)}</span> · ` +
             `<span style="color:var(--ink-3)">${linha.file.replace(/^Report_Json_Session_Report_/, '').replace(/\.json$/, '')}</span> · ` +
             `estado do dispositivo: <b>${linha.deviceState}</b>`
         }));
@@ -3107,7 +3140,7 @@ const FIGURES = [
         ])));
 
       el2.hemispheres.forEach(h => {
-        node.appendChild(el('h4', { class: 'qc-title', html: `<b>STN ${hname(h.hemisphere)}</b> — critérios` }));
+        node.appendChild(el('h4', { class: 'qc-title', html: `<b>${rotuloLado(h.hemisphere)}</b> — critérios` }));
         const grid = el('div', { class: 'qcgrid' });
         h.criteria.forEach(c => {
           const cor = c.veredito === 'atende' ? 'verde'
@@ -3148,7 +3181,7 @@ const FIGURES = [
       const hi = opt('F23', 'hi', sug ? sug.suggestions[0].upper : NaN);
 
       node.appendChild(el('div', { class: 'ctrls' }, [
-        ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: 'STN ' + hname(x) })), h, v => setOpt('F23', 'hemi', v)),
+        ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: rotuloLado(x) })), h, v => setOpt('F23', 'hemi', v)),
         ctrlSelect('modo', [{ value: 'single', label: 'limiar único' }, { value: 'dual', label: 'limiar duplo' }], modo, v => setOpt('F23', 'modo', v)),
         ctrlNumber('limiar inferior', lo, 0, 1e6, 1, v => setOpt('F23', 'lo', v)),
         ctrlNumber('limiar superior', hi, 0, 1e6, 1, v => setOpt('F23', 'hi', v)),
@@ -3970,7 +4003,7 @@ const FIGURES = [
       const pb = profileBands().primary || { lo: 13, hi: 35 };
       const cLo = opt('F25', 'clo', 55), cHi = opt('F25', 'chi', 95);
       node.appendChild(el('div', { class: 'ctrls' }, [
-        hemis.length ? ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: 'STN ' + hname(x) })), h, v => setOpt('F25', 'hemi', v)) : el('span', { class: 'exphint', text: 'sem Timeline' }),
+        hemis.length ? ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: rotuloLado(x) })), h, v => setOpt('F25', 'hemi', v)) : el('span', { class: 'exphint', text: 'sem Timeline' }),
         ctrlSelect('bin', [{ value: 15, label: '15 min' }, { value: 30, label: '30 min' }, { value: 60, label: '60 min' }], binMin, v => setOpt('F25', 'bin', +v)),
         ctrlCheck('normalizar cada dia', norm, v => setOpt('F25', 'norm', v)),
         ctrlNumber('banda-controle de (Hz)', cLo, 1, 120, 5, v => setOpt('F25', 'clo', v)),
@@ -3988,7 +4021,7 @@ const FIGURES = [
           const ch = new P.Chart(box.canvas, {
             width: box.width, height: box.height, xlim: [0, 48], ylim: [0, ac.days.length],
             xlabel: 'hora local (dois dias por linha)', ylabel: 'dia',
-            title: `(a) actograma duplo-plot — STN ${hname(h)}, ${ac.days.length} dias`,
+            title: `(a) actograma duplo-plot — ${rotuloLado(h)}, ${ac.days.length} dias`,
             pad: { l: 76, r: 62, t: 24, b: 42 }
           });
           ch.heat(M, { cmap: norm ? 'divergent' : 'viridis', origin: 'top', zmin: ac.zmin, zmax: ac.zmax, smooth: false });
@@ -4264,7 +4297,7 @@ const FIGURES = [
       const canalPadrao = canais.slice().sort((a, b) => contagem(b) - contagem(a))[0];
       const canal = opt('F38', 'ch', canalPadrao);
       node.appendChild(el('div', { class: 'ctrls' }, [
-        ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: 'STN ' + hname(x) })), h, v => setOpt('F38', 'hemi', v)),
+        ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: rotuloLado(x) })), h, v => setOpt('F38', 'hemi', v)),
         ctrlSelect('par bipolar', canais.map(c => ({ value: c, label: `${c} (${contagem(c)} sessões)` })), canal, v => setOpt('F38', 'ch', v))
       ]));
 
@@ -4475,7 +4508,7 @@ const FIGURES = [
         binMin = opt('F28', 'bin', 30);
         metodo = opt('F28', 'thr', 'kmeans');
         escala = opt('F28', 'esc', 'cat');
-        barra.appendChild(ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: 'STN ' + hname(x) })), hemi, v => setOpt('F28', 'hemi', v)));
+        barra.appendChild(ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: rotuloLado(x) })), hemi, v => setOpt('F28', 'hemi', v)));
         barra.appendChild(ctrlSelect('bin', [{ value: 10, label: '10 min' }, { value: 30, label: '30 min' }, { value: 60, label: '60 min' }], binMin, v => setOpt('F28', 'bin', +v)));
         barra.appendChild(ctrlSelect('escala', [{ value: 'cat', label: 'categórica (limiar)' }, { value: 'cont', label: 'contínua (potência)' }], escala, v => setOpt('F28', 'esc', v)));
         barra.appendChild(ctrlSelect('limiar', [
@@ -4562,7 +4595,7 @@ const FIGURES = [
             : C.LFP_STATES.slice(0, 2).map(s => ({ label: s.label + ` (limiar ${f(tg.threshold, 1)})`, color: s.color })),
           doseRows: tg.days.map(dia => (doseInfo.ok && doseInfo.byDay[dia]) || dosesFixas),
           rowLabel: dia => String(dia).slice(5).split('-').reverse().join('/'),
-          title: `(a) Timeline — STN ${hname(hemi)} · ${tg.days.length} dias · bin de ${tg.binMin} min`
+          title: `(a) Timeline — ${rotuloLado(hemi)} · ${tg.days.length} dias · bin de ${tg.binMin} min`
         });
         node.appendChild(el('div', {
           class: 'note', html: `<b>A mesma grade, outro dado.</b> Esta é a estrutura do diário de Hauser aplicada ao BrainSense Timeline: ` +
@@ -4792,9 +4825,9 @@ const FIGURES = [
       const linhas = [];
       ['Left', 'Right'].forEach(h => {
         const b = pass.byHemisphere[h];
-        if (!b || b.channel == null) { linhas.push([`STN ${hname(h)}`, '—', '—', '—', { html: '<i>sem espectro neste arquivo</i>' }]); return; }
+        if (!b || b.channel == null) { linhas.push([`${rotuloLado(h)}`, '—', '—', '—', { html: '<i>sem espectro neste arquivo</i>' }]); return; }
         linhas.push([
-          `STN ${hname(h)}`,
+          `${rotuloLado(h)}`,
           `${b.label} (#${b.rank} de ${b.nCandidates})`,
           isFinite(b.peakHz) ? `${f(b.peakHz, 2)} Hz` : '—',
           `${f(b.bandLo, 1)}–${f(b.bandHi, 1)} Hz`,
@@ -4811,7 +4844,7 @@ const FIGURES = [
       ['Left', 'Right'].forEach(h => {
         const b = pass.byHemisphere[h];
         if (!b || b.channel == null) return;
-        node.appendChild(table([`STN ${hname(h)} — como este número foi obtido`, 'valor', 'o que significa'], [
+        node.appendChild(table([`${rotuloLado(h)} — como este número foi obtido`, 'valor', 'o que significa'], [
           ['definição do SNR', `${f(b.snrDb, 2)} dB`, b.snrDefinition || '—'],
           ['pico sobrevive ao fundo 1/f?', b.peakSurvivesAperiodic ? 'sim' : 'não',
             isFinite(b.peakExcessOverBackgroundPct) ? `excesso de ${f(b.peakExcessOverBackgroundPct, 0)}% sobre o fundo aperiódico` : '—'],
@@ -4832,8 +4865,8 @@ const FIGURES = [
         node.appendChild(table(['hemisfério', 'sugestão de sensing', 'confiança', 'por quê'],
           ['Left', 'Right'].map(h => {
             const s = sug.byHemisphere[h];
-            if (!s) return [`STN ${hname(h)}`, '—', '—', 'sem passaporte utilizável'];
-            return [`STN ${hname(h)}`,
+            if (!s) return [`${rotuloLado(h)}`, '—', '—', 'sem passaporte utilizável'];
+            return [`${rotuloLado(h)}`,
               `${f(s.centerFreq, 2)} Hz · ${s.label || s.channel}`,
               s.confidence, s.rationale];
           })));
@@ -4847,7 +4880,7 @@ const FIGURES = [
         ['Left', 'Right'].forEach(h => {
           const bh = m.byHemisphere && m.byHemisphere[h];
           (bh && bh.differences || []).forEach(dd => difs.push([
-            `STN ${hname(h)}`, dd.field,
+            `${rotuloLado(h)}`, dd.field,
             String(dd.passport == null ? '—' : dd.passport),
             String(dd.device == null ? '—' : dd.device),
             dd.matters ? 'invalida a comparação de escala' : 'não invalida'
@@ -4941,7 +4974,7 @@ const FIGURES = [
       const agreg = opt('F32', 'agreg', 'median');
       const tolDias = opt('F32', 'tol', 2);
       node.appendChild(el('div', { class: 'ctrls' }, [
-        ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: `STN ${hname(x)}` })), h, v => setOpt('F32', 'hemi', v)),
+        ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: `${rotuloLado(x)}` })), h, v => setOpt('F32', 'hemi', v)),
         ctrlSelect('atribuição temporal', [
           { value: 'retrospectiva', label: 'retrospectiva — a sessão descreve o período anterior' },
           { value: 'prospectiva', label: 'prospectiva — a sessão abre o período seguinte' }
@@ -4965,7 +4998,7 @@ const FIGURES = [
       const ch = new P.Chart(box.canvas, {
         width: box.width, height: box.height, xlim: [tmin, tmax], ylim: [0, vmax * 1.15],
         xlabel: 'data local', ylabel: 'potência LFP (u.a.)',
-        title: `STN ${hname(h)} — ${seg.nSegments || 0} segmento(s) de configuração`,
+        title: `${rotuloLado(h)} — ${seg.nSegments || 0} segmento(s) de configuração`,
         pad: { l: 62, r: 20, t: 24, b: 42 }
       });
       ch.axes({ nx: 7, xfmt: v => new Date(v + offMin() * 60000).toISOString().slice(5, 10).split('-').reverse().join('/') });
@@ -5103,6 +5136,7 @@ const FIGURES = [
     sub: 'Timeline-derived automated limits for dual threshold · Hampel → wake/sleep → GMM/BIC → controller simulation',
     has: d => Object.keys(d.trend).length,
     render(node, d) {
+      avisoDeAlvo(node, 'O TIDAL-DT deriva limiares do método de percentis diurnos validado em beta subtalâmico (Busch et al. 2025; ADAPT-START 2026)');
       const T = C.TIDAL;
       const hemis = Object.keys(d.trend);
       const device = opt('F36', 'device', 'PC');
@@ -5149,7 +5183,7 @@ const FIGURES = [
 
       const csvRows = [];
       hemis.forEach(h => {
-        node.appendChild(el('h3', { class: 'qc-title', html: `<span class="hemi-${h[0]}">STN ${hname(h)}</span> — TIDAL-DT proposal` }));
+        node.appendChild(el('h3', { class: 'qc-title', html: `<span class="hemi-${h[0]}">${rotuloLado(h)}</span> — TIDAL-DT proposal` }));
 
         /* mudança de configuração no meio do registro: segmenta e usa apenas o
            segmento mais longo (desempate: o mais recente), declarando isso */
@@ -5393,7 +5427,7 @@ const FIGURES = [
       const agreg = opt('F33', 'agreg', 'median');
       node.appendChild(el('div', { class: 'ctrls' }, [
         ctrlSelect('hemisfério', [{ value: '', label: 'automático (o com mais dias)' }]
-          .concat(hemis.map(x => ({ value: x, label: `STN ${hname(x)}` }))), hemi, v => setOpt('F33', 'hemi', v)),
+          .concat(hemis.map(x => ({ value: x, label: `${rotuloLado(x)}` }))), hemi, v => setOpt('F33', 'hemi', v)),
         ctrlSelect('resumo do dia', [
           { value: 'median', label: 'mediana' }, { value: 'mean', label: 'média' }
         ], agreg, v => setOpt('F33', 'agreg', v))
@@ -5486,6 +5520,7 @@ const FIGURES = [
     sub: 'Oscillatory Dynamics Ratio nas duas formulações · bandas z-scored · coerência inter-STN · variação espectral',
     has: d => d.bsTimeDomain.length || d.montageTD.length,
     render(node, d) {
+      avisoDeAlvo(node, 'O ODR e as features por janela replicam um protocolo derivado em registros do núcleo subtalâmico (Habets et al., Brain 2026)');
       const janela = opt('F34', 'win', 10);
       const sobrep = opt('F34', 'ov', 0);
       const form = opt('F34', 'form', 'log');
@@ -5573,10 +5608,10 @@ const FIGURES = [
         (odr.hemispheres || []).forEach(h => {
           const bh = odr.byHemisphere[h];
           if (bh && bh.withoutGamma) node.appendChild(el('div', {
-            class: 'warnbox', html: `<b>STN ${hname(h)} — variante sem gama.</b> ${bh.withoutGammaNote}`
+            class: 'warnbox', html: `<b>${rotuloLado(h)} — variante sem gama.</b> ${bh.withoutGammaNote}`
           }));
           if (bh && bh.entrainmentChecked === false) node.appendChild(el('div', {
-            class: 'warnbox', html: `<b>STN ${hname(h)} — não verificado.</b> ${bh.entrainmentNote}`
+            class: 'warnbox', html: `<b>${rotuloLado(h)} — não verificado.</b> ${bh.entrainmentNote}`
           }));
         });
       }
@@ -5601,7 +5636,7 @@ const FIGURES = [
           xlim: [xs[0], xs[xs.length - 1]],
           ylim: [Math.min.apply(null, tudo) - 0.3, Math.max.apply(null, tudo) + 0.3],
           xlabel: 'tempo do registro (s)', ylabel: 'z (log potência)',
-          title: `STN ${hname(primeiro.hemisphere)} — bandas z-scored ao longo do registro`,
+          title: `${rotuloLado(primeiro.hemisphere)} — bandas z-scored ao longo do registro`,
           pad: { l: 62, r: 20, t: 24, b: 42 }
         });
         ch.axes({ nx: 8 });
@@ -5796,6 +5831,7 @@ const FIGURES = [
     sub: 'repouso vs movimento por hemisfério · ΔMRDS entre momentos · decomposição banda-larga vs específica',
     has: d => (d.bsTimeDomain.length + d.indefiniteStreaming.length + d.montageTD.length) > 0,
     render(node, d) {
+      avisoDeAlvo(node, 'O MRDS com bandas β 13–35 e γ 35–100 Hz replica um protocolo derivado em registros do núcleo subtalâmico (Alves et al., Mov Disord 2025)');
       const regs = d.indefiniteStreaming.concat(d.bsTimeDomain, d.montageTD)
         .map((t, i) => Object.assign({}, t, { idx: i, dur: t.data.length / t.fs }));
       if (!regs.length) return node.appendChild(el('div', { class: 'empty', text: 'Sem registro de tempo-domínio.' }));
@@ -5910,7 +5946,7 @@ const FIGURES = [
         const ch = new P.Chart(box.canvas, {
           width: box.width, height: box.height, xlim: [2, 100], ylim: [0, ymax * 1.1],
           xlabel: 'frequência (Hz)', ylabel: `densidade de potência (${res.unit === 'µV²/Hz' ? 'µV²/Hz' : 'ad.'})`,
-          title: `PSD por condição — STN ${hname(u0.hemisphere)}`, pad: { l: 66, r: 14, t: 24, b: 42 }
+          title: `PSD por condição — ${rotuloLado(u0.hemisphere)}`, pad: { l: 66, r: 14, t: 24, b: 42 }
         });
         ch.axes({ nx: 6 });
         C.MRDS_BANDS.forEach(b => ch.span(b.lo, b.hi, { color: b.key === 'beta' ? CORBETA : '#8E3B4E', alpha: .07, label: b.label }));
@@ -6367,7 +6403,7 @@ const FIGURES = [
       const doseInfo = C.doseMarkers(d.snapshots, offMin(), { pattern: /medica|levodopa|dose/i, eventName: opt('F29', 'ev', null) || undefined });
       const nomes = Array.from(new Set(d.snapshots.map(s => s.name).filter(Boolean)));
       node.appendChild(el('div', { class: 'ctrls' }, [
-        ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: 'STN ' + hname(x) })), h, v => setOpt('F29', 'hemi', v)),
+        ctrlSelect('hemisfério', hemis.map(x => ({ value: x, label: rotuloLado(x) })), h, v => setOpt('F29', 'hemi', v)),
         ctrlSelect('evento de tomada', nomes.length ? nomes : ['—'], opt('F29', 'ev', '') || (doseInfo.ok ? doseInfo.doses[0].name : nomes[0]), v => setOpt('F29', 'ev', v)),
         ctrlNumber('pré (min)', pre, 20, 180, 10, v => setOpt('F29', 'pre', v)),
         ctrlNumber('pós (min)', post, 60, 480, 30, v => setOpt('F29', 'post', v))
@@ -6386,7 +6422,7 @@ const FIGURES = [
         width: box.width, height: 320, xlim: [-pre, post],
         ylim: [Math.min.apply(null, todos) * 0.96, Math.max.apply(null, todos) * 1.04],
         xlabel: 'minutos em relação à tomada marcada', ylabel: '% da linha de base pré-dose',
-        title: `resposta do beta à levodopa — STN ${hname(h)} · ${rl.nTrials} de ${rl.nDoses} tomadas com cobertura`,
+        title: `resposta do beta à levodopa — ${rotuloLado(h)} · ${rl.nTrials} de ${rl.nDoses} tomadas com cobertura`,
         pad: { l: 72, r: 14, t: 26, b: 46 }
       });
       ch.axes();
@@ -7165,6 +7201,15 @@ function painelTriagem(main, d) {
      qualquer pergunta, porque muda a leitura de tudo o que vem depois — uma
      modalidade pode estar ausente por não ter sido gravada ou por ter ficado
      do lado perdido do corte, e essas duas coisas não são a mesma. */
+  {
+    const chk = avisoDeAlvo(null, null);
+    if (chk) chk.warnings.forEach(w => main.appendChild(el('div', { class: 'warnbox', html: `<b>Alvo × perfil.</b> ${w}` })));
+    if (chk && chk.stnMethodCaveat) main.appendChild(el('div', {
+      class: 'note', html: `<b>Alvo declarado fora do STN.</b> Os rótulos das figuras seguem o alvo do arquivo, e ` +
+        `as figuras de protocolo subtalâmico (F34, F35, F36) declaram a extrapolação quando abertas.`
+    }));
+  }
+
   (d.all || []).filter(p2 => p2 && p2.truncated).forEach(p2 => {
     const t = p2.truncated;
     main.appendChild(el('div', {

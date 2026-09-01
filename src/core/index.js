@@ -27,7 +27,7 @@ import { MRDS_VERSION, MRDS_PROTOCOL, MRDS_BANDS, MRDS_TOTAL_BAND, MRDS_CELLS, M
 import { extractMetrics, daysSince } from './metrics/extract.js';
 import { rankSurveyChannels } from './metrics/survey.js';
 import { cohortSummary, wilsonCI } from './metrics/cohort.js';
-import { PROFILES, PROFILE_IDS, getProfile, suggestProfile, bandsOf, normalizeSpectrum, detectTremorFrequency, spearman, movingAverageDays } from './profiles/index.js';
+import { PROFILES, PROFILE_IDS, getProfile, suggestProfile, bandsOf, normalizeSpectrum, detectTremorFrequency, spearman, movingAverageDays, TARGETS, normalizeTarget, hemisphereTargets, targetProfileCheck } from './profiles/index.js';
 import { createProvenance, verifyManifest, sha256Hex, canonical } from './provenance/index.js';
 import { generateChecklist, checklistDocx, CHECKLIST_ITEMS } from './report/checklist.js';
 import { clinicalReadings, qcTrafficLight, odrReading } from './report/reading.js';
@@ -111,6 +111,7 @@ const API = {
   ecgSuppressionRatio, betaPeakRecovery, bandPowerPreservation, correlation, validateEcgRemoval,
   /* perfis de doença (Onda 5 — L37, L38, L39) */
   PROFILES, PROFILE_IDS, getProfile, suggestProfile, bandsOf, normalizeSpectrum,
+  TARGETS, normalizeTarget, hemisphereTargets, targetProfileCheck,
   detectTremorFrequency, spearman, movingAverageDays,
   /* proveniência e padrão de reporte (Onda 7.2 — L49, L50) */
   createProvenance, verifyManifest, sha256Hex, canonical,
